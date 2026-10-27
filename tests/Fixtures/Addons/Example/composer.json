@@ -1,0 +1,13 @@
+{
+    "name": "tests/example-addon",
+    "description": "An add-on for the core's tests: a view in every slot, a settings page, a cog menu link, a gym obstacle, an attempt listener, and bookmarks with a policy, capture-feed tags, lockdown-feed lockdowns, domain records, Livewire components, a rule field, templates, an edge-line add-on, Activity marks and a report metric.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "extra": {
+        "nicetry": {
+            "name": "Example",
+            "slug": "example",
+            "edition": "free"
+        }
+    }
+}

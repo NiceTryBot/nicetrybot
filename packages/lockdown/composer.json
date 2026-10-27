@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/lockdown",
+    "description": "Lockdown for emergencies: put sites behind a plain Scheduled Maintenance page at the edge, lock everything and release sites one at a time, and let admins through by IP or with a signed pass. In the cog menu.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\Lockdown\\": "src/",
+            "NiceTry\\Lockdown\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Lockdown",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\Lockdown\\LockdownServiceProvider"
+            ]
+        }
+    }
+}

@@ -1,0 +1,343 @@
+@import 'tailwindcss';
+@import '../../vendor/livewire/flux/dist/flux.css';
+
+@source '../views';
+/* The add-ons in packages/<slug>: the classes their views use are built in with the core's. */
+@source '../../packages/*/resources/views/**';
+@source '../../gym/obstacles';
+@source '../../packages/*/gym/obstacles/**';
+/* And the ones from the marketplace (php artisan addons:install), which Composer puts in vendor/. */
+@source '../../vendor/nicetry/*/resources/views/**';
+@source '../../vendor/nicetry/*/gym/obstacles/**';
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../vendor/livewire/flux-pro/stubs/**/*.blade.php';
+@source '../../vendor/livewire/flux/stubs/**/*.blade.php';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+
+    --color-zinc-50: #fafafa;
+    --color-zinc-100: #f5f5f5;
+    --color-zinc-200: #e5e5e5;
+    --color-zinc-300: #d4d4d4;
+    --color-zinc-400: #a3a3a3;
+    --color-zinc-500: #737373;
+    --color-zinc-600: #525252;
+    --color-zinc-700: #404040;
+    --color-zinc-800: #262626;
+    --color-zinc-900: #171717;
+    --color-zinc-950: #0a0a0a;
+
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+
+    /* NiceTryBot identity: ink and coral. */
+    --color-ink: #071c27;
+    --color-ink-soft: #213642;
+    --color-canvas: #f6f8fa;
+    --color-line: #e2e8eb;
+
+    --color-coral-50: #fff0f1;
+    --color-coral-100: #ffe0e3;
+    --color-coral-200: #ffc5cb;
+    --color-coral-300: #ff9ba6;
+    --color-coral-400: #ff7e8c;
+    --color-coral-500: #ff6475;
+    --color-coral-600: #e8505f;
+    --color-coral-700: #b93548;
+    --color-coral-800: #8f2738;
+    --color-coral-900: #5e1a26;
+
+    --color-accent: var(--color-ink);
+    --color-accent-content: var(--color-ink);
+    --color-accent-foreground: var(--color-white);
+}
+
+@layer theme {
+    .dark {
+        --color-accent: var(--color-coral-500);
+        --color-accent-content: var(--color-coral-400);
+        --color-accent-foreground: var(--color-ink);
+    }
+}
+
+/*
+ * Chart series colors, validated for colorblind separation against each surface. Activity also splits
+ * the requests that passed by their clients' traits (spoofed, outdated), stacked suspicious, spoofed,
+ * outdated, clean: all four pass the dataviz checks in that order, normal-vision ΔE ≥ 17.1 light (#fff)
+ * and 16.4 dark (#18181b), every mark ≥ 3:1. Spoofed leans magenta so it stays apart from suspicious.
+ */
+:root {
+    --chart-human: #2a73b8;
+    --chart-suspicious: #e8505f;
+    --chart-spoofed: #ad44a8;
+    --chart-outdated: #c08800;
+}
+
+.dark {
+    --chart-human: #4f97dc;
+    --chart-suspicious: #ec5868;
+    --chart-spoofed: #b960c4;
+    --chart-outdated: #c08800;
+}
+
+/*
+ * Flow (Sankey) origins, in fixed categorical order. Validated with the dataviz palette checks:
+ * adjacent CVD ΔE ≥ 9.1 light (surface #fff) / 8.4 dark (#18181b). Slots 3–5 are under 3:1 on
+ * light, so flow charts always carry direct labels and a table view.
+ */
+:root {
+    --flow-1: #2a78d6;
+    --flow-2: #eb6834;
+    --flow-3: #1baf7a;
+    --flow-4: #eda100;
+    --flow-5: #e87ba4;
+    --flow-6: #008300;
+    --flow-7: #4a3aa7;
+    --flow-other: #a1a1aa;
+    --flow-node: #52525b;
+}
+
+.dark {
+    --flow-1: #3987e5;
+    --flow-2: #d95926;
+    --flow-3: #199e70;
+    --flow-4: #c98500;
+    --flow-5: #d55181;
+    --flow-6: #008300;
+    --flow-7: #9085e9;
+    --flow-other: #71717a;
+    --flow-node: #a1a1aa;
+}
+
+[data-flux-sidebar-item][data-current] {
+    background-color: var(--color-coral-50);
+    border-color: transparent;
+    color: var(--color-coral-700);
+}
+
+.dark [data-flux-sidebar-item][data-current] {
+    background-color: color-mix(in oklab, var(--color-coral-500) 14%, transparent);
+    color: var(--color-coral-300);
+}
+
+/* The art is navy ink on white: on dark pages it's flipped to white ink, coral kept (hue-rotate brings it back). */
+.art {
+    mix-blend-mode: multiply;
+}
+
+.dark .art {
+    filter: invert(1) hue-rotate(180deg);
+    mix-blend-mode: lighten;
+}
+
+@layer base {
+
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: var(--color-gray-200, currentColor);
+    }
+}
+
+[data-flux-field]:not(ui-radio, ui-checkbox) {
+    @apply grid gap-2;
+}
+
+[data-flux-label] {
+    @apply  !mb-0 !leading-tight;
+}
+
+input:focus[data-flux-control],
+textarea:focus[data-flux-control],
+select:focus[data-flux-control] {
+    @apply outline-hidden ring-2 ring-accent ring-offset-2 ring-offset-accent-foreground;
+}
+
+/* \[:where(&)\]:size-4 {
+    @apply size-4;
+} */
+
+/* Flow (Sankey) ribbons: translucent so crossings stay readable, stronger on hover. */
+.sankey-ribbon {
+    fill-opacity: 0.42;
+    transition: fill-opacity 150ms ease, opacity 150ms ease;
+}
+
+.sankey-ribbon:hover {
+    fill-opacity: 0.78;
+}
+
+.sankey-faded {
+    opacity: 0.08;
+}
+
+/* A surface-colored halo keeps flow labels legible where they cross ribbons. */
+.sankey-label {
+    paint-order: stroke;
+    stroke: #ffffff;
+    stroke-width: 3px;
+    stroke-linejoin: round;
+}
+
+.dark .sankey-label {
+    stroke: #18181b;
+}
+
+/*
+ * Live traffic map: each request is colored by its path family (page, asset, probe), its kind by icon.
+ * Pings mark where it came from, trails and badges fly to the edge, and the edge's halo pulses on landing.
+ */
+.tm-page {
+    --tm-family: var(--chart-human);
+}
+
+.tm-asset {
+    --tm-family: var(--flow-other);
+}
+
+.tm-probe {
+    --tm-family: var(--chart-suspicious);
+}
+
+.tm-edge {
+    --tm-family: var(--flow-7);
+}
+
+.tm-ping {
+    fill: var(--tm-family);
+    fill-opacity: 0.25;
+    stroke: var(--tm-family);
+    stroke-width: 1.5;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: tm-ping 1.6s ease-out forwards;
+}
+
+@keyframes tm-ping {
+    from {
+        transform: scale(0.4);
+        opacity: 1;
+    }
+
+    to {
+        transform: scale(3);
+        opacity: 0;
+    }
+}
+
+.tm-trail {
+    fill: none;
+    stroke: var(--tm-family);
+    stroke-width: 1.2;
+    stroke-linecap: round;
+    stroke-opacity: 0.55;
+    animation: tm-trail 30s linear forwards;
+}
+
+/* Routes linger for 30 seconds: bright at first, then a slow, even fade. */
+@keyframes tm-trail {
+    from {
+        stroke-opacity: 0.55;
+    }
+
+    15% {
+        stroke-opacity: 0.4;
+    }
+
+    to {
+        stroke-opacity: 0;
+    }
+}
+
+.tm-badge {
+    fill: var(--tm-family);
+    stroke: #ffffff;
+    stroke-width: 1.5;
+}
+
+.dark .tm-badge {
+    stroke: #18181b;
+}
+
+.tm-bar {
+    fill: var(--chart-human);
+    fill-opacity: 0.7;
+}
+
+.tm-edge-halo {
+    fill: none;
+    stroke: var(--color-coral-500);
+    stroke-width: 2;
+    opacity: 0;
+    transform-box: fill-box;
+    transform-origin: center;
+}
+
+.tm-edge-halo.tm-hit {
+    animation: tm-hit 0.7s ease-out;
+}
+
+@keyframes tm-hit {
+    from {
+        transform: scale(0.8);
+        opacity: 0.9;
+    }
+
+    to {
+        transform: scale(1.5);
+        opacity: 0;
+    }
+}
+
+/* The Activity chart's skeleton while its counts load: bars rising and falling out of step, like a
+   meter, and the whole chart dimming for a beat between swells. */
+.chart-skeleton {
+    animation: chart-skeleton-dim 2.8s ease-in-out infinite;
+}
+
+.chart-skeleton-bar {
+    transform-origin: bottom;
+    animation: chart-skeleton-bar 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes chart-skeleton-bar {
+    from {
+        transform: scaleY(0.2);
+    }
+
+    to {
+        transform: scaleY(1);
+    }
+}
+
+@keyframes chart-skeleton-dim {
+    0%,
+    42%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.4;
+    }
+
+    58% {
+        opacity: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tm-ping,
+    .tm-edge-halo.tm-hit {
+        animation-duration: 0.01s;
+    }
+
+    .chart-skeleton,
+    .chart-skeleton-bar {
+        animation: none;
+    }
+}

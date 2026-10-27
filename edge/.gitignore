@@ -1,0 +1,6 @@
+# Secrets live on the node in /etc/caddy/nicetry.env, never here.
+*.env
+!*.env.example
+
+# Build output
+caddy/caddy-nicetry

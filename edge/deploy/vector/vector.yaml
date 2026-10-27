@@ -1,0 +1,134 @@
+# NiceTryBot self-host: Caddy's access log → redaction and DB-IP → the app. This file is the shared part;
+# entrypoint.sh loads it with the sinks for the log mode: direct.yaml (no bucket, every line to the app's
+# caddy/ingest) or bucket.yaml (EDGE_LOGS_BUCKET set: the bucket, plus live-tail lines to the app).
+# Every line gets an event_id, so the app stores a line that arrives both ways only once.
+# Redaction happens here, before anything leaves the node: query strings dropped, smart-link PINs masked,
+# and only the fields edge_requests needs are kept (no cookies, auth or other headers).
+# Keep the remap in step with vector/vector.yaml (production).
+#
+# The file checkpoints live in data_dir, so keep it on a volume: event ids are new each time a line is
+# read, and a Vector that forgets where it was would send the whole log again as new requests.
+data_dir: /var/lib/vector
+
+# Vector doesn't interpolate environment variables in its config (and turning that on would break the
+# "$1" replacements below), so the settings come through this exec backend (secret.sh), which reads them
+# from the environment entrypoint.sh sets up.
+secret:
+  nicetry:
+    type: exec
+    command: [/etc/vector/nicetry/secret.sh]
+
+# DB-IP Lite (CC BY 4.0, https://db-ip.com), fetched monthly by the edge container into the shared
+# /opt/dbip. entrypoint.sh links these to the edge's files, or to an empty database until they exist,
+# and has Vector reload them when they change.
+enrichment_tables:
+  dbip_city:
+    type: mmdb
+    path: /run/nicetry/dbip/dbip-city-lite.mmdb
+  dbip_asn:
+    type: mmdb
+    path: /run/nicetry/dbip/dbip-asn-lite.mmdb
+
+sources:
+  caddy_access:
+    type: file
+    include:
+      - /var/log/caddy/access.log
+    read_from: beginning
+
+transforms:
+  edge_requests:
+    type: remap
+    inputs: [caddy_access]
+    drop_on_error: true
+    source: |
+      log = object!(parse_json!(string!(.message)))
+      req = object!(log.request)
+
+      path = string(req.uri) ?? "/"
+      path = string(split(path, "?", limit: 2)[0]) ?? "/"
+      # Smart-claim links: /{claimId}/{pin}[/...] and /{tag}/{claimId}/{pin}
+      path = replace(path, r'^((?:/[^/]+)?/(?:[0-9]+)?[a-zA-Z]+[0-9]+(?:[a-zA-Z]+)?)/[0-9]{4,8}(/|$)', "$1/:pin$2")
+
+      host = downcase(string(req.host) ?? "")
+      host = string(split(host, ":", limit: 2)[0]) ?? host
+
+      occurred = from_unix_timestamp!(to_int(float!(log.ts) * 1000), unit: "milliseconds")
+
+      # Behind Cloudflare the connection is Cloudflare's: Caddy's nicetry_client logs the visitor it
+      # vouched for (CF-Connecting-IP, believed only from Cloudflare's ranges). Use that for the IP and
+      # geolocation. The TLS fingerprints the edge saw are Cloudflare's, so use the visitor's only when
+      # the zone passes them on (Bot Management: X-Client-JA3/-JA4 in a transform rule, or the
+      # Cf-Ja3-Hash/Cf-Ja4 managed headers), and only when they're well-formed.
+      via_cloudflare = log.via == "cloudflare"
+      ip = string(req.client_ip) ?? ""
+      if via_cloudflare { ip = string(log.visitor_ip) ?? ip }
+      client_ip = if ip != "" { ip } else { null }
+      ja3 = log.ja3
+      ja4 = log.ja4
+      if via_cloudflare {
+        cf_ja3 = downcase(string(get(req, ["headers", "X-Client-Ja3", 0]) ?? null) ?? string(get(req, ["headers", "Cf-Ja3-Hash", 0]) ?? null) ?? "")
+        cf_ja4 = downcase(string(get(req, ["headers", "X-Client-Ja4", 0]) ?? null) ?? string(get(req, ["headers", "Cf-Ja4", 0]) ?? null) ?? "")
+        ja3 = if match(cf_ja3, r'^[0-9a-f]{32}$') { cf_ja3 } else { null }
+        ja4 = if match(cf_ja4, r'^[tqd][0-9a-z]{9}_[0-9a-f]{12}_[0-9a-f]{12}$') { cf_ja4 } else { null }
+      }
+      geo = {}
+      net = {}
+      if ip != "" {
+        geo = get_enrichment_table_record("dbip_city", {"ip": ip}) ?? {}
+        net = get_enrichment_table_record("dbip_asn", {"ip": ip}) ?? {}
+      }
+
+      . = {
+        "event_id": uuid_v7(occurred),
+        "timestamp": occurred,
+        "occurred_at": format_timestamp!(occurred, format: "%Y-%m-%dT%H:%M:%S%.3fZ", timezone: "UTC"),
+        "host": host,
+        "client_ip": client_ip,
+        "method": req.method,
+        "path": path,
+        "status": log.status,
+        "duration_ms": round(float(log.duration) ?? 0.0, precision: 3) * 1000,
+        "user_agent": get(req, ["headers", "User-Agent", 0]) ?? null,
+        "action": log.action,
+        "bot_tag": log.bot_tag,
+        "ja3": ja3,
+        "ja4": ja4,
+        "country_code": geo.country.iso_code,
+        "region": geo.subdivisions[0].names.en,
+        "city": geo.city.names.en,
+        "latitude": geo.location.latitude,
+        "longitude": geo.location.longitude,
+        "asn": net.autonomous_system_number,
+        "as_org": net.autonomous_system_organization
+      }
+
+      # What the headers say beyond the user agent (nicetry_ja4h): a JA4H-style fingerprint, the
+      # Chromium client hints and Accept-Language. Only when present, so other lines stay small.
+      if log.ja4h != null && !via_cloudflare { .ja4h = log.ja4h }
+      if via_cloudflare { .via = "cloudflare" }
+      if log.ch_ua != null { .ch_ua = log.ch_ua }
+      if log.ch_platform != null { .ch_platform = log.ch_platform }
+      if log.lang != null { .lang = log.lang }
+
+      # The Livewire v3 component a request called, read by nicetry_capture only on routes a capture
+      # or a threat monitor names a component for (every v3 component posts to /livewire/update).
+      if log.livewire_component != null { .livewire_component = log.livewire_component }
+
+      # Only on routes a team captures; the body was redacted by Caddy's nicetry_capture handler.
+      if log.capture_id != null {
+        .capture_id = log.capture_id
+        .response_type = log.response_type
+        .response_body = log.response_body
+        .response_bytes = log.response_bytes
+        # What was sent, when the capture records requests: also redacted on the edge. signals holds
+        # only the email domain, the password's length and the watchword ids it hit, never the values.
+        if log.request_type != null { .request_type = log.request_type }
+        if log.request_body != null { .request_body = log.request_body }
+        if log.request_bytes != null { .request_bytes = log.request_bytes }
+        if log.signals != null { .signals = log.signals }
+      }
+
+      # Someone is watching this host live (nicetry_tail); in bucket mode this routes the line to the
+      # app too.
+      if log.tail == true { .tail = true }

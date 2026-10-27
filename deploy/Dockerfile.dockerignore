@@ -1,0 +1,55 @@
+# What the build context leaves out for deploy/Dockerfile (docker build -f deploy/Dockerfile .).
+# BuildKit reads <Dockerfile>.dockerignore before a root .dockerignore, and keeping it here means
+# no other build of the repo (Vapor's, production.Dockerfile) is affected. The image installs its
+# own vendor/ and node_modules/ and builds public/build, so none of the local copies go in, and
+# nothing local-only (secrets, caches, logs, worktrees, tests, docs) does either.
+
+.git
+.github
+.claude
+.codex
+.idea
+.vscode
+.fleet
+.zed
+.agents
+.cursor
+.junie
+.phpunit.cache
+.phpunit.result.cache
+
+node_modules
+vendor
+public/build
+public/hot
+public/storage
+public/fonts-manifest.dev.json
+
+# The image makes its own storage tree; storage/app is a volume at run time.
+storage
+bootstrap/cache/*.php
+
+.env
+.env.*
+!.env.example
+auth.json
+*.log
+*-credentials.txt
+
+# The edge's source, when it sits in edge/ beside the app (edge/Dockerfile builds it, with edge/ as the context).
+edge
+
+tests
+packages/*/tests
+packages/captchas/captchas/*/*/tests
+docs
+TODO.md
+phpunit.xml
+phpstan.neon
+
+# Vapor's build and the self-host files themselves (the Dockerfile is sent separately).
+.vapor
+vapor.yml
+production.Dockerfile
+staging.Dockerfile
+deploy

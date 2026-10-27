@@ -1,0 +1,2 @@
+# NICETRY_BLOCK_MULTIPART=off (the default): only bodies naming the upload progress field are refused.
+nicetry_php_guard

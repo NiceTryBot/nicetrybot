@@ -1,0 +1,21 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+    - vendor/nesbot/carbon/extension.neon
+    # Errors that were already there when CI started checking (2026-10-26). New code mustn't add any;
+    # fixing one means regenerating it: vendor/bin/phpstan analyse --generate-baseline phpstan-baseline.neon
+    - phpstan-baseline.neon
+
+parameters:
+    # The baseline is shared with the public release, which lacks the paid add-ons, so an entry that
+    # doesn't occur there isn't an error.
+    reportUnmatchedIgnoredErrors: false
+
+    paths:
+        - app/
+        - bootstrap/app.php
+        - config/
+        - database/
+        - gym/
+        - routes/
+
+    level: 7

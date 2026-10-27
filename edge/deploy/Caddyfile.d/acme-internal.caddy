@@ -1,0 +1,5 @@
+# NICETRY_ACME=internal: every certificate from Caddy's own CA, for local runs and tests. Browsers
+# don't trust it (curl -k); its root is in /data/caddy/pki/authorities/local/root.crt.
+local_certs
+# The container has no trust store worth installing the root into.
+skip_install_trust

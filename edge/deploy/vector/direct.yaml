@@ -1,0 +1,31 @@
+# Direct mode (EDGE_LOGS_BUCKET empty, the default): every line goes to the app's caddy/ingest, about
+# every 2s, and the app is the only copy. So nothing is dropped: a failed batch is retried until the app
+# takes it (Vector's default is no retry limit), one batch at a time keeps them in order, and a backlog
+# waits in the disk buffer, then holds the file source back (Caddy's rolled logs keep the rest).
+sinks:
+  app_ingest:
+    type: http
+    inputs: [edge_requests]
+    uri: SECRET[nicetry.app_url]/caddy/ingest
+    method: post
+    auth:
+      strategy: bearer
+      token: SECRET[nicetry.edge_token]
+    encoding:
+      codec: json
+      except_fields: [timestamp, tail]
+    framing:
+      method: newline_delimited
+    batch:
+      timeout_secs: 2
+      max_bytes: 1000000
+    request:
+      concurrency: 1
+      timeout_secs: 30
+      retry_max_duration_secs: 30
+    healthcheck:
+      enabled: false
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block

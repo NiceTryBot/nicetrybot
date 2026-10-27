@@ -1,0 +1,721 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Parameter \#1 \$answer of method App\\Actions\\Ai\\TranslateRule\:\:translated\(\) expects array\{name\: string, source\: string, routine_id\: int, routine_name\: string, note\: string\|null\}, array\<mixed, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Ai/TranslateRule.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<string\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: app/Actions/Ai/TranslateRule.php
+
+		-
+			message: '#^Parameter \#1 \$answer of method App\\Actions\\Ai\\TranslateSearch\:\:translated\(\) expects array\{search\: string, period\: string, client\: string, view\: string, note\: string\|null\}, array\<mixed, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Ai/TranslateSearch.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<string\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: app/Actions/Ai/TranslateSearch.php
+
+		-
+			message: '#^Method App\\Actions\\Analytics\\BuildTrafficFlow\:\:identityPaths\(\) should return list\<array\{nodes\: list\<App\\Data\\FlowNode\>, value\: int\}\> but returns array\<int, array\{nodes\: array\{App\\Data\\FlowNode, App\\Data\\FlowNode, App\\Data\\FlowNode\}, value\: int\}\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Analytics/BuildTrafficFlow.php
+
+		-
+			message: '#^Method App\\Actions\\Analytics\\BuildTrafficFlow\:\:journeyPaths\(\) should return list\<array\{nodes\: list\<App\\Data\\FlowNode\>, value\: int\}\> but returns array\<int, array\{nodes\: non\-empty\-list\<App\\Data\\FlowNode\>, value\: int\}\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Analytics/BuildTrafficFlow.php
+
+		-
+			message: '#^Method App\\Actions\\Analytics\\BuildTrafficFlow\:\:originPaths\(\) should return list\<array\{nodes\: list\<App\\Data\\FlowNode\>, value\: int\}\> but returns array\<int, array\{nodes\: array\{App\\Data\\FlowNode, App\\Data\\FlowNode, App\\Data\\FlowNode\}, value\: int\}\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Analytics/BuildTrafficFlow.php
+
+		-
+			message: '#^Method App\\Actions\\Analytics\\BuildTrafficFlow\:\:requestPaths\(\) should return list\<array\{nodes\: list\<App\\Data\\FlowNode\>, value\: int\}\> but returns array\<int, array\{nodes\: array\{App\\Data\\FlowNode, App\\Data\\FlowNode, App\\Data\\FlowNode\}, value\: int\}\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Analytics/BuildTrafficFlow.php
+
+		-
+			message: '#^Offset string on array\{\} on left side of \?\? does not exist\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: app/Actions/Analytics/BuildTrafficFlow.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between array\{\} and array\{\} will always evaluate to false\.$#'
+			identifier: notIdentical.alwaysFalse
+			count: 1
+			path: app/Actions/Analytics/BuildTrafficFlow.php
+
+		-
+			message: '#^Parameter \#1 \$expression of method Illuminate\\Database\\Query\\Builder\:\:selectRaw\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: app/Actions/Analytics/CountTrafficSearch.php
+
+		-
+			message: '#^Parameter \#1 \$expression of method Illuminate\\Database\\Query\\Builder\:\:selectRaw\(\) expects literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Analytics/CountTrafficSearch.php
+
+		-
+			message: '#^Parameter \#1 \$sql of method Illuminate\\Database\\Query\\Builder\:\:groupByRaw\(\) expects literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Analytics/CountTrafficSearch.php
+
+		-
+			message: '#^Parameter \#1 \$value of static method Illuminate\\Database\\Connection\:\:raw\(\) expects float\|int\|literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Analytics/CountTrafficSearch.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$label\.$#'
+			identifier: property.notFound
+			count: 3
+			path: app/Actions/Analytics/SummarizeBreakdown.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$related\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Actions/Analytics/SummarizeBreakdown.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$requests\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Actions/Analytics/SummarizeBreakdown.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$row_key\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Actions/Analytics/SummarizeBreakdown.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$suspicious\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Actions/Analytics/SummarizeBreakdown.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$unique_ips\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Actions/Analytics/SummarizeBreakdown.php
+
+		-
+			message: '#^Parameter \$rows of class App\\Data\\BreakdownSummary constructor expects list\<App\\Data\\BreakdownRow\>, array\<int, App\\Data\\BreakdownRow\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Analytics/SummarizeBreakdown.php
+
+		-
+			message: '#^Parameter \#1 \$expression of method Illuminate\\Database\\Query\\Builder\:\:selectRaw\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: app/Actions/Analytics/SummarizeRequestRate.php
+
+		-
+			message: '#^Method App\\Actions\\Analytics\\SummarizeTraffic\:\:buckets\(\) should return array\<int, array\{key\: string, label\: string, start\: int, end\: int, humans\: int, suspicious\: int, notFound\: int\}\> but returns array\<int, array\<string, int\|string\>\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Analytics/SummarizeTraffic.php
+
+		-
+			message: '#^Parameter \#1 \$expression of method Illuminate\\Database\\Query\\Builder\:\:selectRaw\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Analytics/SummarizeTraffic.php
+
+		-
+			message: '#^Parameter \#1 \$expression of method Illuminate\\Database\\Query\\Builder\:\:selectRaw\(\) expects literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Analytics/SummarizeTraffic.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>\(Expression\)" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Actions/Analytics/SummarizeTraffic.php
+
+		-
+			message: '#^Method App\\Actions\\Clients\\FindCurrentFirefoxReleases\:\:handle\(\) should return array\{current\: int\|null, esr\: list\<int\>\} but returns array\<mixed\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Clients/FindCurrentFirefoxReleases.php
+
+		-
+			message: '#^Method App\\Actions\\Clients\\FindCurrentFirefoxReleases\:\:refresh\(\) should return array\{current\: int\|null, esr\: list\<int\>\} but returns array\{current\: int\|null, esr\: array\<int, int\<min, \-1\>\|int\<1, max\>\>\}\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Clients/FindCurrentFirefoxReleases.php
+
+		-
+			message: '#^Unable to resolve the template type TKey in call to function collect$#'
+			identifier: argument.templateType
+			count: 1
+			path: app/Actions/Clients/FindCurrentFirefoxReleases.php
+
+		-
+			message: '#^Unable to resolve the template type TValue in call to function collect$#'
+			identifier: argument.templateType
+			count: 1
+			path: app/Actions/Clients/FindCurrentFirefoxReleases.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$host\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Actions/Clients/MeasureIpNeighborhoods.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$network\.$#'
+			identifier: property.notFound
+			count: 4
+			path: app/Actions/Clients/MeasureIpNeighborhoods.php
+
+		-
+			message: '#^Parameter \#2 \$uniqueBy of method Illuminate\\Database\\Query\\Builder\:\:upsert\(\) expects non\-empty\-array\<int, non\-empty\-string\>\|non\-empty\-string, array\{string\} given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Clients/RecordClientProfiles.php
+
+		-
+			message: '#^Method App\\Actions\\Domains\\LookUpDnsRecords\:\:resolve\(\) should return list\<string\> but returns array\<int, mixed\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Domains/LookUpDnsRecords.php
+
+		-
+			message: '#^Parameter \#1 \$requests of method App\\Actions\\Gym\\FillGymClientHints\:\:handle\(\) expects list\<array\{domain_id\: int, client_ip\: string\|null, occurred_at\: string, action\: int, client_hints_id\: int\|null\}\>, list\<array\<string, mixed\>\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Edge/StoreEdgeLogLines.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$occurred_at\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Match expression does not handle remaining value\: mixed$#'
+			identifier: match.unhandled
+			count: 1
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Match expression does not handle remaining value\: string$#'
+			identifier: match.unhandled
+			count: 1
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Method App\\Actions\\Rules\\BacktestRule\:\:groupedSubjects\(\) should return Illuminate\\Support\\Collection\<int, object\{subject_ip\: string\|null, subject_ja4\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}\> but returns Illuminate\\Support\\Collection\<int, object\{subject_ip\: mixed, subject_ja4\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}&stdClass\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Method App\\Actions\\Rules\\BacktestRule\:\:replayedSubjects\(\) should return Illuminate\\Support\\Collection\<int, object\{subject_ip\: string\|null, subject_ja4\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}\> but returns Illuminate\\Support\\Collection\<int, object\{subject_ip\: mixed, subject_ja4\: int\|null, requests\: int\<0, max\>, hosts\: int\<0, max\>, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}&stdClass\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Parameter \#1 \$expression of method Illuminate\\Database\\Query\\Builder\:\:selectRaw\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Parameter \#1 \$field of method App\\Actions\\Rules\\BacktestRule\:\:alias\(\) expects string, int\|string given\.$#'
+			identifier: argument.type
+			count: 2
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Parameter \#2 \$requests of method App\\Actions\\Rules\\BacktestRule\:\:anyWindowMatches\(\) expects Illuminate\\Support\\Collection\<int, object\>, Illuminate\\Support\\Collection\<int, stdClass\> given\.$#'
+			identifier: argument.type
+			count: 2
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Parameter \$subjects of class App\\Data\\RuleBacktest constructor expects list\<array\{client_ip\: string\|null, ja4\: string\|null, network\: string\|null, is_hosting\: bool, country\: string\|null, requests\: int, hosts\: int, first_seen\: string, \.\.\.\}\>, array\<int, array\{client_ip\: string\|null, ja4\: mixed, network\: mixed, is_hosting\: bool, country\: mixed, requests\: int, hosts\: int, first_seen\: string, \.\.\.\}\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Rules/BacktestRule.php
+
+		-
+			message: '#^Match expression does not handle remaining value\: mixed$#'
+			identifier: match.unhandled
+			count: 1
+			path: app/Actions/Rules/BuildRuleQuery.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<mixed\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: app/Actions/Rules/BuildRuleQuery.php
+
+		-
+			message: '#^Parameter \#1 \$query of static method App\\Support\\WhereCondition\:\:of\(\) expects Illuminate\\Database\\Eloquent\\Builder\<\*\>\|Illuminate\\Database\\Query\\Builder, Illuminate\\Database\\Eloquent\\Builder\|Illuminate\\Database\\Eloquent\\Relations\\Relation given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Rules/BuildRuleQuery.php
+
+		-
+			message: '#^Parameter \#1 \$sql of method Illuminate\\Database\\Query\\Builder\:\:havingRaw\(\) expects literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Rules/BuildRuleQuery.php
+
+		-
+			message: '#^Parameter \#1 \$sql of method Illuminate\\Database\\Query\\Builder\:\:orWhereRaw\(\) expects literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Rules/BuildRuleQuery.php
+
+		-
+			message: '#^Parameter \#1 \$sql of method Illuminate\\Database\\Query\\Builder\:\:whereRaw\(\) expects Illuminate\\Contracts\\Database\\Query\\Expression\|literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 4
+			path: app/Actions/Rules/BuildRuleQuery.php
+
+		-
+			message: '#^Parameter \#1 \$value of static method Illuminate\\Database\\Connection\:\:raw\(\) expects float\|int\|literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 5
+			path: app/Actions/Rules/BuildRuleQuery.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$client_ip\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Actions/Rules/EvaluateRule.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$first_matched_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Actions/Rules/EvaluateRule.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$ja4_id\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Actions/Rules/EvaluateRule.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$last_matched_at\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Actions/Rules/EvaluateRule.php
+
+		-
+			message: '#^Access to an undefined property object\:\:\$matched\.$#'
+			identifier: property.notFound
+			count: 3
+			path: app/Actions/Rules/EvaluateRule.php
+
+		-
+			message: '#^Parameter \#1 \$sql of method Illuminate\\Database\\Query\\Builder\:\:havingRaw\(\) expects literal\-string, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Actions/Rules/EvaluateRule.php
+
+		-
+			message: '#^Method App\\Actions\\VisitorData\\ForgetVisitor\:\:normalizeIp\(\) should return string\|null but returns string\|false\|null\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Actions/VisitorData/ForgetVisitor.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>name" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Addons/Licences.php
+
+		-
+			message: '#^Trait App\\Concerns\\SearchesDomains is used zero times and is not analysed\.$#'
+			identifier: trait.unused
+			count: 1
+			path: app/Concerns/SearchesDomains.php
+
+		-
+			message: '#^Method App\\Console\\Commands\\RefreshCrawlerRanges\:\:download\(\) should return list\<string\> but returns array\<int, string\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Console/Commands/RefreshCrawlerRanges.php
+
+		-
+			message: '#^Parameter \$asn of class App\\Data\\LiveRequest constructor expects int\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$city of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$countryCode of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$ip of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$ja4 of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$language of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$network of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$region of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$tag of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Parameter \$userAgent of class App\\Data\\LiveRequest constructor expects string\|null, int\|string\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Console/Commands/WriteEdgeRulesFixture.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Support\\Carbon\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Data/ClientProfile.php
+
+		-
+			message: '#^Method App\\Data\\CrawlerDirectory\:\:ranges\(\) should return array\<string, list\<string\>\> but returns array\<array\<mixed\>\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Data/CrawlerDirectory.php
+
+		-
+			message: '#^Property App\\Data\\CrawlerDirectory\:\:\$ranges \(array\<string, list\<string\>\>\|null\) does not accept array\<array\<mixed\>\>\.$#'
+			identifier: assign.propertyType
+			count: 1
+			path: app/Data/CrawlerDirectory.php
+
+		-
+			message: '#^Parameter \#1 \$conditions of class App\\Data\\GymEntry constructor expects list\<App\\Data\\GymCondition\>, non\-empty\-array\<int\<0, max\>, App\\Data\\GymCondition\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Data/GymEntry.php
+
+		-
+			message: '#^Method App\\Data\\IpNeighborhood\:\:toArray\(\) should return array\{ip\: string, count8\: int, count16\: int, count24\: int, count32\: int, distinctHosts24\: int\} but returns array\<mixed\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Data/IpNeighborhood.php
+
+		-
+			message: '#^Method App\\Data\\Ja4Fingerprint\:\:prefix\(\) should return string but returns string\|false\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Data/Ja4Fingerprint.php
+
+		-
+			message: '#^Match expression does not handle remaining value\: string$#'
+			identifier: match.unhandled
+			count: 1
+			path: app/Data/LiveRequest.php
+
+		-
+			message: '#^Match expression does not handle remaining value\: mixed$#'
+			identifier: match.unhandled
+			count: 3
+			path: app/Data/RuleScript.php
+
+		-
+			message: '#^If condition is always false\.$#'
+			identifier: if.alwaysFalse
+			count: 1
+			path: app/Data/RuleScriptParser.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:constrain\(\) has parameter \$query with generic class Illuminate\\Database\\Eloquent\\Builder but does not specify its types\: TModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:constrain\(\) has parameter \$query with generic class Illuminate\\Database\\Eloquent\\Relations\\Relation but does not specify its types\: TRelatedModel, TDeclaringModel, TResult$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:constrain\(\) return type with generic class Illuminate\\Database\\Eloquent\\Builder does not specify its types\: TModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:constrain\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\Relation does not specify its types\: TRelatedModel, TDeclaringModel, TResult$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:constrainAny\(\) has parameter \$query with generic class Illuminate\\Database\\Eloquent\\Builder but does not specify its types\: TModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:constrainAny\(\) has parameter \$query with generic class Illuminate\\Database\\Eloquent\\Relations\\Relation but does not specify its types\: TRelatedModel, TDeclaringModel, TResult$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:constrainAny\(\) return type with generic class Illuminate\\Database\\Eloquent\\Builder does not specify its types\: TModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:constrainAny\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\Relation does not specify its types\: TRelatedModel, TDeclaringModel, TResult$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:outsideInspectingProxies\(\) has parameter \$query with generic class Illuminate\\Database\\Eloquent\\Builder but does not specify its types\: TModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:outsideInspectingProxies\(\) has parameter \$query with generic class Illuminate\\Database\\Eloquent\\Relations\\Relation but does not specify its types\: TRelatedModel, TDeclaringModel, TResult$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:outsideInspectingProxies\(\) return type with generic class Illuminate\\Database\\Eloquent\\Builder does not specify its types\: TModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:outsideInspectingProxies\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\Relation does not specify its types\: TRelatedModel, TDeclaringModel, TResult$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:withoutHintsHeard\(\) has parameter \$query with generic class Illuminate\\Database\\Eloquent\\Builder but does not specify its types\: TModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:withoutHintsHeard\(\) has parameter \$query with generic class Illuminate\\Database\\Eloquent\\Relations\\Relation but does not specify its types\: TRelatedModel, TDeclaringModel, TResult$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:withoutHintsHeard\(\) return type with generic class Illuminate\\Database\\Eloquent\\Builder does not specify its types\: TModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Enums\\ClientTrait\:\:withoutHintsHeard\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\Relation does not specify its types\: TRelatedModel, TDeclaringModel, TResult$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Enums/ClientTrait.php
+
+		-
+			message: '#^Method App\\Gym\\RoutineTemplates\:\:forRule\(\) should return array\{name\: string, match_all\: bool, conditions\: list\<array\{field\: string, operator\: string, values\: list\<string\>\}\>, obstacles\: list\<array\{id\: string, type\: string, config\: array\<string, mixed\>, escalate\: string\|null\}\>, exit_action\: App\\Enums\\GymExit, pass_seconds\: int\} but returns non\-empty\-array\<mixed\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Gym/RoutineTemplates.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>ja4" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Http/Controllers/Edge/GymCheckController.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>ja4" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Http/Controllers/Edge/GymReportController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Edge\\ListGymTriggersController\:\:liveRules\(\) should return Illuminate\\Support\\Collection\<int, Illuminate\\Support\\Collection\<int, array\<string, mixed\>\>\> but returns Illuminate\\Support\\Collection\<\(int\|string\), Illuminate\\Support\\Collection\<int, non\-empty\-array\<string, mixed\>\>\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Http/Controllers/Edge/ListGymTriggersController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Edge\\ListGymTriggersController\:\:routineRules\(\) should return list\<array\{id\: int, expr\: array\<string, mixed\>\}\> but returns array\<int, array\{id\: int, expr\: array\<string, mixed\>\}\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Http/Controllers/Edge/ListGymTriggersController.php
+
+		-
+			message: '#^Parameter \#1 \$teamIds of method App\\Http\\Controllers\\Edge\\ListGymTriggersController\:\:liveRules\(\) expects list\<int\>, array\<int, \(int\|string\)\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Http/Controllers/Edge/ListGymTriggersController.php
+
+		-
+			message: '#^Parameter \#1 \$boolean of function abort_unless expects bool, App\\Models\\Domain\|null given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Http/Controllers/Edge/ResolveOriginController.php
+
+		-
+			message: '#^Method App\\Models\\EdgeRequest\:\:botTag\(\) return type with generic class Illuminate\\Database\\Eloquent\\Casts\\Attribute does not specify its types\: TGet, TSet$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/EdgeRequest.php
+
+		-
+			message: '#^Method App\\Models\\EdgeRequest\:\:clientHints\(\) return type with generic class Illuminate\\Database\\Eloquent\\Casts\\Attribute does not specify its types\: TGet, TSet$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/EdgeRequest.php
+
+		-
+			message: '#^Method App\\Models\\EdgeRequest\:\:countryCode\(\) return type with generic class Illuminate\\Database\\Eloquent\\Casts\\Attribute does not specify its types\: TGet, TSet$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/EdgeRequest.php
+
+		-
+			message: '#^Method App\\Models\\EdgeRequest\:\:ja3\(\) return type with generic class Illuminate\\Database\\Eloquent\\Casts\\Attribute does not specify its types\: TGet, TSet$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/EdgeRequest.php
+
+		-
+			message: '#^Method App\\Models\\EdgeRequest\:\:ja4\(\) return type with generic class Illuminate\\Database\\Eloquent\\Casts\\Attribute does not specify its types\: TGet, TSet$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/EdgeRequest.php
+
+		-
+			message: '#^Method App\\Models\\EdgeRequest\:\:ja4h\(\) return type with generic class Illuminate\\Database\\Eloquent\\Casts\\Attribute does not specify its types\: TGet, TSet$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/EdgeRequest.php
+
+		-
+			message: '#^Method App\\Models\\EdgeRequest\:\:path\(\) return type with generic class Illuminate\\Database\\Eloquent\\Casts\\Attribute does not specify its types\: TGet, TSet$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/EdgeRequest.php
+
+		-
+			message: '#^Method App\\Models\\EdgeRequest\:\:userAgent\(\) return type with generic class Illuminate\\Database\\Eloquent\\Casts\\Attribute does not specify its types\: TGet, TSet$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/EdgeRequest.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Carbon\\CarbonImmutable\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Models/GymSession.php
+
+		-
+			message: '#^Anonymous function should return string\|null but returns array\|string\|null\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Providers/AppServiceProvider.php
+
+		-
+			message: '#^Parameter \#2 \$meta of class App\\Support\\BitmapFont constructor expects array\{size\: int, ascent\: int, descent\: int, pad\: int, glyphs\: array\<string, array\{int, int, int, int, int, float\}\>\}, array\<mixed, mixed\> given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Support/BitmapFont.php
+
+		-
+			message: '#^Unable to resolve the template type TKey in call to function collect$#'
+			identifier: argument.templateType
+			count: 1
+			path: app/Support/AnthropicClient.php
+
+		-
+			message: '#^Unable to resolve the template type TValue in call to function collect$#'
+			identifier: argument.templateType
+			count: 1
+			path: app/Support/AnthropicClient.php
+
+		-
+			message: '#^Parameter \#1 \$sql of method Illuminate\\Database\\Query\\Builder\:\:whereRaw\(\) expects Illuminate\\Contracts\\Database\\Query\\Expression\|literal\-string, non\-falsy\-string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Support/IpRange.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<array\{team\: int, hosts\: list\<string\>, allow\: list\<string\>, secret\: string, html\: string, retry_after\: int\}\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: app/Support/LockdownFeed.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<mixed\>\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: app/Support/WhereCondition.php
+
+		-
+			message: '#^Call to an undefined method Faker\\Generator\:\:state\(\)\.$#'
+			identifier: method.notFound
+			count: 1
+			path: database/factories/LocationFactory.php

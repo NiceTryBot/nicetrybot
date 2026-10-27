@@ -1,0 +1,65 @@
+#!/bin/sh
+# Fetch the DB-IP Lite City and ASN databases (CC BY 4.0, https://db-ip.com) into /opt/dbip when they're
+# missing or older than 35 days. DB-IP publishes on the 1st of each month; same sources as
+# dbip/dbip-refresh. The edge's gym rules read them, and Vector reads them from the shared volume.
+# --force fetches anyway. Exits 1 when a file couldn't be fetched; whatever was there is kept.
+set -eu
+
+dir=/opt/dbip
+base=${NICETRY_DBIP_URL:-https://download.db-ip.com/free}
+max_age=${NICETRY_DBIP_MAX_AGE:-35}
+force=0
+[ "${1:-}" = --force ] && force=1
+
+say() { echo "dbip-fetch: $*" >&2; }
+
+# This month's file, else last month's (early on the 1st the new one may not be out yet).
+this=$(date -u +%Y-%m)
+year=${this%-*}
+month=${this#*-}
+month=${month#0}
+if [ "$month" -eq 1 ]; then last="$((year - 1))-12"; else last=$(printf '%s-%02d' "$year" $((month - 1))); fi
+
+tmp=
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' INT TERM
+mkdir -p "$dir"
+status=0
+
+for kind in city asn; do
+  file=$dir/dbip-$kind-lite.mmdb
+  if [ "$force" = 0 ] && [ -s "$file" ] && [ -z "$(find "$file" -mtime +"$max_age")" ]; then
+    continue
+  fi
+
+  say "fetching the $kind database from $base"
+  # Fetched next to the file, so the swap is one rename and readers never see half a database.
+  tmp=$(mktemp -d "$dir/.fetch.XXXXXX")
+  got=
+  for want in "$this" "$last"; do
+    if curl -fsSL --retry 2 --retry-connrefused --connect-timeout 20 --max-time 600 -o "$tmp/db.gz" "$base/dbip-$kind-lite-$want.mmdb.gz" \
+      && gunzip -t "$tmp/db.gz" 2>/dev/null; then
+      got=$want
+      break
+    fi
+  done
+
+  if [ -n "$got" ] && gunzip -c "$tmp/db.gz" > "$tmp/db.mmdb" && grep -aqF "MaxMind.com" "$tmp/db.mmdb"; then
+    if cmp -s "$tmp/db.mmdb" "$file"; then
+      # Still the latest: look again in max_age days.
+      touch "$file"
+      say "$kind database is current ($got)"
+    else
+      chmod 0644 "$tmp/db.mmdb"
+      mv -f "$tmp/db.mmdb" "$file"
+      say "updated $kind database ($got)"
+    fi
+  else
+    say "could not fetch the $kind database from $base"
+    status=1
+  fi
+  rm -rf "$tmp"
+  tmp=
+done
+
+exit "$status"

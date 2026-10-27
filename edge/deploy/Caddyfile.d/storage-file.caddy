@@ -1,0 +1,2 @@
+# NICETRY_CERT_STORAGE=file (the default): certificates in /data (the edge-data volume), for one edge.
+storage file_system /data/caddy

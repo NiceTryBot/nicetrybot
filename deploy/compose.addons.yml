@@ -1,0 +1,78 @@
+# Add-ons from the marketplace, built into the app's image on this server. Used with compose.yml
+# when NICETRY_ADDONS in .env lists any (install.sh adds it to COMPOSE_FILE then):
+#
+#   COMPOSE_FILE=compose.yml:compose.addons.yml
+#
+# The app, worker and scheduler then run nicetrybot-app-addons, built here from the release's image:
+# `php artisan addons:install` requires the add-ons with Composer from the marketplace's repository,
+# using NICETRY_COMPOSER_TOKEN, and the front end is built again with their styles. The token is a
+# build secret: it never lands in a layer, the image's history or its files.
+#
+# It builds when the image is missing (a first start, or a new NICETRY_VERSION) and on
+# `docker compose up -d --build`, from scratch each time, so a build always gets the newest versions
+# the token may have. After pulling a newer release image, build again:
+#
+#   docker pull ghcr.io/nicetrybot/app:latest    (or NICETRY_APP_IMAGE)
+#   docker compose up -d --build
+#
+# Needs Docker Compose 2.24.4 or newer (!override and !reset).
+
+x-addons-image: &addons-image
+  image: nicetrybot-app-addons:${NICETRY_VERSION:-latest}
+  # Only ever built here: never looked for in a registry.
+  pull_policy: never
+  # Only the build needs the token; the running containers don't get it from .env.
+  environment:
+    NICETRY_COMPOSER_TOKEN: ""
+
+services:
+  app:
+    <<: *addons-image
+    build: !override
+      context: .
+      no_cache: true
+      args:
+        NICETRY_BASE_IMAGE: ${NICETRY_APP_IMAGE:-ghcr.io/nicetrybot/app:${NICETRY_VERSION:-latest}}
+        NICETRY_ADDONS: ${NICETRY_ADDONS:-}
+        NICETRY_COMPOSER_URL: ${NICETRY_COMPOSER_URL:-}
+        NICETRY_MARKETPLACE_URL: ${NICETRY_MARKETPLACE_URL:-https://nicetrybot.com}
+      secrets:
+        - nicetry_composer_token
+      # $$ is a $ for Docker; a single $ would be filled in by Compose.
+      dockerfile_inline: |
+        ARG NICETRY_BASE_IMAGE
+        ARG NODE_IMAGE=node:22-bookworm-slim
+
+        # The add-ons, with Composer, as the image's own user (www-data).
+        FROM $${NICETRY_BASE_IMAGE} AS addons
+        ARG NICETRY_ADDONS
+        ARG NICETRY_COMPOSER_URL
+        ARG NICETRY_MARKETPLACE_URL
+        RUN --mount=type=secret,id=nicetry_composer_token,mode=0444 \
+            php artisan addons:install --token-file=/run/secrets/nicetry_composer_token \
+            && composer check-platform-reqs --no-dev \
+            && rm -rf /composer/cache
+
+        # The front end again: Tailwind reads the add-ons' views in vendor/nicetry.
+        FROM $${NODE_IMAGE} AS assets
+        WORKDIR /app
+        COPY --from=addons /var/www/html/package.json /var/www/html/package-lock.json /var/www/html/.npmrc ./
+        RUN npm ci --no-audit --no-fund
+        COPY --from=addons /var/www/html ./
+        RUN npm run build
+
+        FROM addons
+        COPY --chown=www-data:www-data --from=assets /app/public/build ./public/build
+
+  # The same image; only the app builds it.
+  worker:
+    <<: *addons-image
+    build: !reset null
+
+  scheduler:
+    <<: *addons-image
+    build: !reset null
+
+secrets:
+  nicetry_composer_token:
+    environment: NICETRY_COMPOSER_TOKEN

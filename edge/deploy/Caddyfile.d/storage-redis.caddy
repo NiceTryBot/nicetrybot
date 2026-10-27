@@ -1,0 +1,14 @@
+# NICETRY_CERT_STORAGE=redis: certificates in Redis/Valkey, shared by every edge node behind one balancer
+# (storage locks keep two nodes from renewing the same certificate at once). The entrypoint reads the
+# connection from NICETRY_CERT_REDIS_URL or the app's REDIS_URL / REDIS_HOST... (TLS for rediss://) and
+# sets the NICETRY_CERT_REDIS_* values below; {env.*} is read when Caddy starts, so the password never
+# shows in the adapted config.
+storage redis {
+	address {env.NICETRY_CERT_REDIS_ADDRESS}
+	username {env.NICETRY_CERT_REDIS_USERNAME}
+	password {env.NICETRY_CERT_REDIS_PASSWORD}
+	db {env.NICETRY_CERT_REDIS_DB}
+	key_prefix caddy
+	tls_enabled {$NICETRY_CERT_REDIS_TLS:false}
+	tls_server_certs_path {env.NICETRY_CERT_REDIS_CA}
+}

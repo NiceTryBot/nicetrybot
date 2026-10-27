@@ -1,0 +1,4 @@
+# NICETRY_BLOCK_MULTIPART=on: every multipart upload is refused as well (the emergency switch).
+nicetry_php_guard {
+	block_multipart
+}

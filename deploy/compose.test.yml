@@ -1,0 +1,17 @@
+# For trying the stack locally, on top of compose.yml:
+#
+#   docker compose -f compose.yml -f compose.test.yml up --build -d
+#
+# Adds a test origin (whoami, which echoes each request back) to add as a domain in the panel with
+# the origin URL http://whoami, and publishes the app's own port on 127.0.0.1 so its health route
+# can be checked without the edge. Never use this on a server: the app must only be reachable
+# through the edge.
+
+services:
+  whoami:
+    image: traefik/whoami:v1.11
+    restart: unless-stopped
+
+  app:
+    ports:
+      - 127.0.0.1:${NICETRY_APP_TEST_PORT:-8080}:8080

@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/privacy-mode",
+    "description": "Privacy mode for screen sharing: a toggle (or ⌘/) that swaps every real domain and origin host on the page for a made-up stand-in, and hides the words you list in Settings → Privacy.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\PrivacyMode\\": "src/",
+            "NiceTry\\PrivacyMode\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Privacy mode",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\PrivacyMode\\PrivacyModeServiceProvider"
+            ]
+        }
+    }
+}

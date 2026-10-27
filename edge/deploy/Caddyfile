@@ -1,0 +1,323 @@
+# NiceTryBot edge, self-hosted. The same handlers as caddy/Caddyfile (production), with every setting
+# from the environment ({$VAR}, see deploy/README.md) and no site of its own: the control panel is one
+# block, every other hostname comes from the app.
+{
+	# Our capture handler wraps everything else in a site, so it sees the final response.
+	order nicetry_capture first
+	# Header fingerprint and client hints go in the access log for every request, gym included.
+	order nicetry_ja4h after nicetry_capture
+	# Marks requests to hostnames someone is watching live, so Vector sends them to the app right away.
+	order nicetry_tail after nicetry_ja4h
+	# The gym check runs after logging and tagging are set up, before any site handles the request.
+	order nicetry_gym before handle
+	# Who the visitor really is behind Cloudflare (CF-Connecting-IP, only from Cloudflare's own ranges).
+	order nicetry_client before nicetry_gym
+	# PHP's session upload progress field is refused before anything reaches an origin (or the gym).
+	order nicetry_php_guard after nicetry_client
+	# A locked-down team's hostnames get the maintenance page before anything else (gym, origin) hears of it.
+	order nicetry_lockdown after nicetry_php_guard
+	# Where each domain's traffic goes (set in NiceTryBot), handed to reverse_proxy as vars.
+	order nicetry_origins after nicetry_gym
+	# Each domain's chosen Server header wraps the default disguise, so it wins.
+	order nicetry_headers before header
+
+	# HTTP->HTTPS redirects come from the http:// block below, dressed as nginx, not Caddy's own.
+	auto_https disable_redirects
+
+	# HTTP/1.1 and HTTP/2 only, like a stock nginx: no QUIC and no Alt-Svc header. HTTP/3 would also need
+	# UDP 443 open through anything in front of the edge, and a balancer that forwards TCP only leaves
+	# browsers waiting on QUIC before they fall back.
+	servers {
+		protocols h1 h2
+	}
+
+	# Certificates on demand only for hostnames the app says are verified Domains.
+	on_demand_tls {
+		ask {$NICETRY_APP_URL}/caddy/ask
+	}
+
+	# Who issues certificates (NICETRY_ACME) and where they're kept (NICETRY_CERT_STORAGE).
+	import Caddyfile.d/acme-{$NICETRY_ACME:letsencrypt}.caddy
+	import Caddyfile.d/storage-{$NICETRY_CERT_STORAGE:file}.caddy
+}
+
+# Each domain's chosen Server header, polled from NiceTryBot.
+(site_headers) {
+	nicetry_headers {
+		endpoint {$NICETRY_APP_URL}/caddy/site-headers
+		token {$NICETRY_EDGE_TOKEN}
+		interval 30s
+	}
+}
+
+# Shared by every site, the panel included: TLS fingerprinting, tagging, the gym, access log, disguise.
+(edge_handlers) {
+	# Opt-in response capture: records a redacted excerpt only for routes a team chose in NiceTryBot.
+	nicetry_capture {
+		endpoint {$NICETRY_APP_URL}/caddy/response-captures
+		token {$NICETRY_EDGE_TOKEN}
+		max_bytes 4096
+		interval 30s
+	}
+
+	ja3_ja4
+	nicetry_ja4h
+
+	# Behind Cloudflare every connection comes from Cloudflare; this finds the visitor (logged as
+	# visitor_ip with via=cloudflare) for NiceTryBot's own use. What the origin receives is unchanged.
+	nicetry_client
+
+	# CVE-2026-109618 / CVE-2026-109619: PHP parses a multipart field named PHP_SESSION_UPLOAD_PROGRESS
+	# before the site's code runs, on any PHP URL. Bodies naming it get nginx's 403 (logged as blocked,
+	# bot_tag php_upload_progress); one buried deep in a long upload is cut off before the origin sees it.
+	# NICETRY_BLOCK_MULTIPART=on is the emergency switch: every multipart upload is refused too, with the
+	# same 403 (bot_tag php_multipart), so PHP's upload parser never runs.
+	import Caddyfile.d/multipart-{$NICETRY_BLOCK_MULTIPART:off}.caddy
+
+	# Lockdown: the emergency switch a team flips in NiceTryBot. Every request to a locked hostname, any
+	# method, gets a plain "Scheduled Maintenance" page as a 503 from the edge's memory (logged as blocked,
+	# bot_tag lockdown); nothing reaches the origin or the gym. Admins get through with a signed pass from
+	# the app (/_q/pass swaps it for a cookie the origin never sees) or from an allowlisted IP. The last
+	# list is kept on disk, so a restart while the app is unreachable keeps sites locked.
+	nicetry_lockdown {
+		endpoint {$NICETRY_APP_URL}/caddy/lockdowns
+		token {$NICETRY_EDGE_TOKEN}
+		interval 10s
+		state /data/nicetry/lockdown.json
+	}
+
+	# Live tail: requests to hostnames someone is watching on Activity get `tail: true` in the access
+	# log. With a log bucket, Vector posts those lines to the app every 2s (without one it posts every line).
+	nicetry_tail {
+		endpoint {$NICETRY_APP_URL}/caddy/live-tail
+		token {$NICETRY_EDGE_TOKEN}
+		interval 10s
+	}
+
+	# Bot gym: requests on a trigger (host + path from NiceTryBot routines on enforcing domains) ask
+	# NiceTryBot first. The gym is served in place of the page; a pass lets the visitor through.
+	nicetry_gym {
+		triggers {$NICETRY_APP_URL}/caddy/gym-triggers
+		check {$NICETRY_APP_URL}/caddy/gym-check
+		report {$NICETRY_APP_URL}/caddy/gym-report
+		token {$NICETRY_EDGE_TOKEN}
+		interval 30s
+		timeout 3s
+		# Where a visitor comes from, for rules judged at the edge: the DB-IP files the entrypoint keeps.
+		geo /opt/dbip
+	}
+
+	# The gym's attempts (and preview pages), answered by NiceTryBot on the site's own domain. Not
+	# logged: it's NiceTryBot's traffic, recorded on the gym session instead. The site's own cookies
+	# are stripped, and the edge vouches for the visitor's IP and fingerprint with its token
+	# (overwriting anything the visitor sent in those headers). The app sees its own host, and the site's
+	# in X-Forwarded-Host (Caddy's default).
+	handle /_q/* {
+		log_skip
+		reverse_proxy {$NICETRY_APP_URL} {
+			header_up Host {$NICETRY_PANEL_HOST}
+			header_up -Cookie
+			header_up -X-Origin-Verify
+			header_up -X-Vapor-Source-Ip
+			header_up Authorization "Bearer {$NICETRY_EDGE_TOKEN}"
+			header_up X-NiceTry-Client-Ip {http.vars.nicetry_client_ip}
+			header_up X-NiceTry-JA4 {tls.ja4}
+			transport http {
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	# Scanner probes; mirrors App\Enums\NotFoundCategory::PROBE_PATTERNS in the NiceTryBot app.
+	@probe path_regexp probe (?i)(/\.(env|git|aws|ssh|vscode)|/\.DS_Store|/wp-(admin|login|content|includes)|/xmlrpc\.php|/_ignition/|/phpmyadmin|/pma/|/vendor/phpunit/|/cgi-bin/|/server-status|/actuator/|/boaform/|/HNAP1|\.(php|aspx?|jsp|cgi)$)
+	vars @probe bot_tag probe
+
+	# Read by Vector (deploy/vector), which sends the lines to the app. Rolled at 100 MiB, ten kept.
+	log {
+		output file /var/log/caddy/access.log {
+			mode 0640
+			roll_size 100MiB
+			roll_keep 10
+		}
+		# Caddy logs every request header. Keep secrets a site's own CDN adds for its origin out of the
+		# log; they still reach the origin.
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Origin-Verify delete
+			}
+		}
+	}
+	log_append ja3 {tls.ja3}
+	log_append ja4 {tls.ja4}
+	log_append bot_tag {vars.bot_tag}
+
+	# No attribution: nothing a visitor sees should name NiceTryBot or the server software.
+	# Look like nginx, the most common server, rather than Caddy (deferred, so it wins over the origin's).
+	# A domain can choose its own in NiceTryBot (e.g. old Apache for a honeypot); nicetry_headers applies it.
+	header >Server nginx
+	import site_headers
+	header -Via
+
+	# Errors (an origin that's down, refuses, or is too slow) get nginx's stock error page, not Caddy's
+	# empty one with "Server: Caddy".
+	handle_errors {
+		import site_headers
+		header Server nginx
+		header Content-Type text/html
+		respond <<HTML
+			<html>
+			<head><title>{err.status_code} {err.status_text}</title></head>
+			<body>
+			<center><h1>{err.status_code} {err.status_text}</h1></center>
+			<hr><center>nginx</center>
+			</body>
+			</html>
+			HTML {err.status_code}
+	}
+}
+
+# The control panel, proxied to the app with Caddy's usual X-Forwarded-* headers. X-Vapor-Source-Ip
+# only means something on the hosted service, so a visitor's copy never reaches a self-hosted panel.
+(panel) {
+	encode gzip
+	reverse_proxy {$NICETRY_APP_URL} {
+		header_up -X-Vapor-Source-Ip
+		transport http {
+			response_header_timeout 60s
+		}
+	}
+}
+
+# The control panel: a site like any other, with the same handlers in front, but its certificate is
+# obtained when the edge starts rather than on demand.
+{$NICETRY_PANEL_HOST} {
+	import edge_handlers
+
+	# Diagnostic: shows what the edge sees for this connection.
+	handle /__nicetry/fingerprint {
+		log_append action passed
+		header Content-Type application/json
+		header Cache-Control no-store
+		respond `{"host":"{host}","client_ip":"{client_ip}","tls_version":"{http.request.tls.version}","alpn":"{http.request.tls.proto}","resumed":"{http.request.tls.resumed}","ja3":"{tls.ja3}","ja4":"{tls.ja4}"}` 200
+	}
+
+	# The app's edge endpoints are for the edge and Vector, which reach it inside the network; from
+	# outside they get nginx's 404 (/caddy/ask has no token at all).
+	handle /caddy/* {
+		error 404
+	}
+
+	handle @probe {
+		log_append action observed
+		import panel
+	}
+	handle {
+		log_append action passed
+		import panel
+	}
+}
+
+# Any domain's origin, from the vars nicetry_origins sets: Host as the domain chose, the site's host
+# in X-Forwarded-Host and its chosen header, the origin secret and the TLS fingerprints. The site is the
+# visitor's host, except on a preview hostname, where the origin is told the visitor asked for the
+# domain itself.
+(origin_dynamic_headers) {
+	header_up Host {http.vars.nicetry_origin_host}
+	header_up X-Forwarded-Host {http.vars.nicetry_origin_site}
+	header_up {http.vars.nicetry_origin_fwd} {http.vars.nicetry_origin_site}
+	# Some origins built for another proxy read the port from here.
+	header_up X-Forwarded-Port {http.request.local.port}
+	header_up X-NiceTry-Origin-Secret {http.vars.nicetry_origin_secret}
+	header_up X-NiceTry-JA3 {tls.ja3}
+	header_up X-NiceTry-JA4 {tls.ja4}
+}
+
+# What the domain chose in NiceTryBot for its responses: HSTS, and browser caching for /img, /css and
+# /js. Compressed too; a response the origin already compressed is left alone. The matchers live in the
+# https:// block.
+(origin_dynamic_response) {
+	header @hsts >Strict-Transport-Security {http.vars.nicetry_origin_hsts}
+	header @cache_img >Cache-Control "public, max-age=86400"
+	header @cache_static >Cache-Control "public, max-age=604800"
+	encode gzip
+}
+
+(origin_dynamic) {
+	handle @origin_https {
+		import origin_dynamic_response
+		reverse_proxy {http.vars.nicetry_origin_upstream} {
+			import origin_dynamic_headers
+			transport http {
+				tls
+				tls_server_name {http.vars.nicetry_origin_sni}
+			}
+		}
+	}
+	handle @origin_http {
+		import origin_dynamic_response
+		reverse_proxy {http.vars.nicetry_origin_upstream} {
+			import origin_dynamic_headers
+		}
+	}
+	# Verified, but no origin the edge can use yet.
+	handle {
+		respond "Service Unavailable" 503
+	}
+}
+
+# Every verified Domain: a certificate on demand (the app's ask endpoint decides), proxied to the origin
+# set in NiceTryBot, polled every 30s, so a new domain (or a changed origin) goes live without touching
+# this file. A host the poll hasn't listed yet (a site an Origin vouched for a moment ago) is resolved on
+# its first request.
+https:// {
+	tls {
+		on_demand
+	}
+	import edge_handlers
+
+	nicetry_origins {
+		endpoint {$NICETRY_APP_URL}/caddy/origins
+		resolve {$NICETRY_APP_URL}/caddy/resolve-origin
+		token {$NICETRY_EDGE_TOKEN}
+		interval 30s
+	}
+	@origin_https vars {http.vars.nicetry_origin_scheme} https
+	@origin_http vars {http.vars.nicetry_origin_scheme} http
+	@hsts vars_regexp hsts {http.vars.nicetry_origin_hsts} .
+	@cache_img {
+		vars {http.vars.nicetry_origin_cache_assets} 1
+		path /img/*
+	}
+	@cache_static {
+		vars {http.vars.nicetry_origin_cache_assets} 1
+		path /css/* /js/*
+	}
+
+	handle @probe {
+		log_append action observed
+		import origin_dynamic
+	}
+	handle {
+		log_append action passed
+		import origin_dynamic
+	}
+}
+
+# Plain HTTP: redirect to HTTPS the way a stock nginx does (301 with its default page), not Caddy's
+# 308. ACME HTTP challenges are still answered before this.
+http:// {
+	import site_headers
+	header Server nginx
+	header Location https://{host}{uri}
+	header Content-Type text/html
+	respond <<HTML
+		<html>
+		<head><title>301 Moved Permanently</title></head>
+		<body>
+		<center><h1>301 Moved Permanently</h1></center>
+		<hr><center>nginx</center>
+		</body>
+		</html>
+		HTML 301
+}

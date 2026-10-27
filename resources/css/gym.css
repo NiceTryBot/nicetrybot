@@ -1,0 +1,44 @@
+/*
+ * The gym's visitor pages. They answer on customers' domains, so they stay small and neutral: no
+ * Flux, no web font, only the classes the gym views use. Dark mode follows the visitor's system.
+ */
+@import 'tailwindcss' source(none);
+
+@source '../views/gym';
+@source '../../gym/obstacles';
+/* Add-ons' obstacles, which live in packages/<slug>/gym/obstacles as the core's do. */
+@source '../../packages/*/gym/obstacles/**';
+/* And the marketplace's (php artisan addons:install), which Composer puts in vendor/. */
+@source '../../vendor/nicetry/*/gym/obstacles/**';
+@source '../views/layouts/gym.blade.php';
+
+@theme {
+    --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+
+    --color-ink: #071c27;
+    --color-canvas: #f6f8fa;
+    --color-line: #e2e8eb;
+
+    --color-coral-300: #ff9ba6;
+    --color-coral-400: #ff7e8c;
+    --color-coral-500: #ff6475;
+    --color-coral-600: #e8505f;
+    --color-coral-700: #b93548;
+}
+
+@keyframes gym-breathe {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+}
+
+.gym-breathe {
+    animation: gym-breathe 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .gym-breathe,
+    .animate-spin {
+        animation: none;
+    }
+}

@@ -1,0 +1,145 @@
+<?php
+
+use App\Actions\Domains\LookUpDnsRecords;
+use App\Enums\ApiAbility;
+use App\Enums\DomainStatus;
+use App\Enums\ProtectionMode;
+use App\Mcp\Tools\Domains\AddDomain;
+use App\Mcp\Tools\Domains\CheckDomain;
+use App\Mcp\Tools\Domains\GetOriginSecret;
+use App\Mcp\Tools\Domains\ListDomains;
+use App\Mcp\Tools\Domains\SetProtectionMode;
+use App\Mcp\Tools\Domains\VerifyDomain;
+use App\Models\Domain;
+use App\Models\Team;
+use Illuminate\Http\Client\Request as HttpRequest;
+use Illuminate\Support\Facades\Http;
+
+/**
+ * Answer DNS lookups with these addresses, for every host.
+ *
+ * @param  list<string>  $ipv4
+ */
+function resolveEverythingTo(array $ipv4): void
+{
+    test()->mock(LookUpDnsRecords::class, fn ($mock) => $mock->shouldReceive('handle')->andReturn(['ipv4' => $ipv4, 'ipv6' => []]));
+}
+
+test('list-domains shows the team\'s domains and nobody else\'s', function () {
+    [$token] = apiToken();
+    Domain::factory()->for($token->team)->create(['hostname' => 'www.mine.test']);
+    Domain::factory()->for(Team::factory())->create(['hostname' => 'www.theirs.test']);
+
+    mcpAs($token)->tool(ListDomains::class)
+        ->assertOk()
+        ->assertSee('www.mine.test')
+        ->assertDontSee('www.theirs.test');
+});
+
+test('add-domain puts a domain behind the edge, unverified and observing, and hands over what the origin needs', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+
+    mcpAs($token)->tool(AddDomain::class, ['hostname' => 'https://WWW.Example.test/', 'origin_url' => 'https://www-origin.example.test'])
+        ->assertOk()
+        ->assertSee(['www.example.test', '_nicetrybot.www.example.test', Domain::ORIGIN_SECRET_HEADER, Domain::edgeHostname()]);
+
+    $domain = Domain::sole();
+
+    expect($domain)
+        ->team_id->toBe($token->team_id)
+        ->hostname->toBe('www.example.test')
+        ->origin_url->toBe('https://www-origin.example.test')
+        ->status->toBe(DomainStatus::PendingVerification)
+        ->protection_mode->toBe(ProtectionMode::Observe);
+});
+
+test('add-domain refuses an origin on the same host, and a domain that\'s already protected', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+    Domain::factory()->for(Team::factory())->create(['hostname' => 'taken.example.test']);
+
+    mcpAs($token)->tool(AddDomain::class, ['hostname' => 'loop.example.test', 'origin_url' => 'https://loop.example.test'])
+        ->assertHasErrors(['loop back to the edge']);
+
+    mcpAs($token)->tool(AddDomain::class, ['hostname' => 'taken.example.test', 'origin_url' => 'https://origin.example.test'])
+        ->assertHasErrors(['already protected']);
+
+    expect(Domain::count())->toBe(1);
+});
+
+test('add-domain needs the team permission as well as the token ability', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+    $team = Team::factory()->create();
+    $team->members()->attach($token->user, ['role' => 'member']);
+    $token->update(['team_id' => $team->id]);
+
+    mcpAs($token->fresh())->tools()->assertNotRegistered(AddDomain::class);
+});
+
+test('check-domain finds a locked origin: it refuses a request without the secret and serves one with it', function () {
+    [$token] = apiToken();
+    $domain = Domain::factory()->for($token->team)->create(['hostname' => 'www.locked.test', 'origin_url' => 'https://origin.locked.test']);
+    resolveEverythingTo(['203.0.113.10']);
+    Http::fake(fn (HttpRequest $request) => $request->header(Domain::ORIGIN_SECRET_HEADER) === [$domain->origin_secret]
+        ? Http::response('hello', 200)
+        : Http::response('go away', 403));
+
+    mcpAs($token)->tool(CheckDomain::class, ['hostname' => 'www.locked.test'])
+        ->assertOk()
+        ->assertSee(['"locked":true', 'locked to the edge']);
+
+    Http::assertSent(fn (HttpRequest $request) => $request->url() === 'https://origin.locked.test/'
+        && $request->header('Host') === ['www.locked.test']);
+});
+
+test('check-domain says when the origin still serves requests that go around the edge', function () {
+    [$token] = apiToken();
+    Domain::factory()->for($token->team)->create(['hostname' => 'www.open.test', 'origin_url' => 'https://origin.open.test']);
+    resolveEverythingTo(['203.0.113.10']);
+    Http::fake(fn () => Http::response('hello', 200));
+
+    mcpAs($token)->tool(CheckDomain::class, ['hostname' => 'www.open.test'])
+        ->assertOk()
+        ->assertSee(['"locked":false', 'anyone can go around the edge']);
+});
+
+test('check-domain never calls an origin on a private address', function (string $address) {
+    [$token] = apiToken();
+    Domain::factory()->for($token->team)->create(['hostname' => 'www.inside.test', 'origin_url' => 'http://origin.inside.test']);
+    resolveEverythingTo([$address]);
+    Http::fake();
+
+    mcpAs($token)->tool(CheckDomain::class, ['hostname' => 'www.inside.test'])
+        ->assertOk()
+        ->assertSee('doesn\'t resolve to a public address');
+
+    Http::assertNothingSent();
+})->with(['127.0.0.1', '10.0.0.5', '169.254.169.254', '192.168.1.1']);
+
+test('verify-domain verifies one of the team\'s domains', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+    $domain = Domain::factory()->for($token->team)->create(['status' => DomainStatus::PendingVerification, 'verified_at' => null]);
+
+    mcpAs($token)->tool(VerifyDomain::class, ['hostname' => $domain->hostname])->assertOk()->assertSee('"verified":true');
+
+    expect($domain->fresh()->verified_at)->not->toBeNull();
+});
+
+test('get-origin-secret and set-protection-mode only reach the token\'s own team', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+    $theirs = Domain::factory()->for(Team::factory())->create(['hostname' => 'www.theirs.test']);
+
+    mcpAs($token)->tool(GetOriginSecret::class, ['hostname' => 'www.theirs.test'])->assertHasErrors(['No domain called www.theirs.test']);
+    mcpAs($token)->tool(SetProtectionMode::class, ['hostname' => 'www.theirs.test', 'mode' => 'enforce'])->assertHasErrors(['No domain called www.theirs.test']);
+
+    expect($theirs->fresh()->protection_mode)->toBe(ProtectionMode::Observe);
+});
+
+test('set-protection-mode changes the mode, and get-origin-secret hands over the header', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+    $domain = Domain::factory()->for($token->team)->create();
+
+    mcpAs($token)->tool(SetProtectionMode::class, ['hostname' => $domain->hostname, 'mode' => 'enforce'])->assertOk();
+    mcpAs($token)->tool(GetOriginSecret::class, ['hostname' => $domain->hostname])->assertOk()->assertSee($domain->origin_secret);
+
+    expect($domain->fresh()->protection_mode)->toBe(ProtectionMode::Enforce);
+});

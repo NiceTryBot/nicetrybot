@@ -1,0 +1,3 @@
+# NICETRY_ACME=letsencrypt (the default): Let's Encrypt, and ZeroSSL when Let's Encrypt refuses (rate
+# limits). Caddy falls back to ZeroSSL only with an email set, so NICETRY_ACME_EMAIL is required.
+email {$NICETRY_ACME_EMAIL}

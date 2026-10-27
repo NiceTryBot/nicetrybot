@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/rule-packs",
+    "description": "Rule packs: curated, versioned sets of rules and gym routines for AI crawlers, scanners, exploit attempts, spoofed browsers and scripts on forms, installed in one go from the Rules page. Installed rules only tag, and their routines start switched off.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\RulePacks\\": "src/",
+            "NiceTry\\RulePacks\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Rule packs",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\RulePacks\\RulePacksServiceProvider"
+            ]
+        }
+    }
+}

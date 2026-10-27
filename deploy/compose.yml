@@ -1,0 +1,218 @@
+# NiceTryBot, self-hosted: the edge in front of your sites, and the control panel behind it.
+#
+#   docker compose up -d              published images (what install.sh runs, in /opt/nicetrybot)
+#   docker compose up --build -d      from a checkout: the app from .., the edge and Vector from
+#                                     ../edge
+#
+# Every setting is in .env next to this file (start from .env.example; README.md explains them).
+# Only the edge is reachable from outside: ports 80 and 443. Postgres and Valkey run here unless
+# COMPOSE_PROFILES in .env leaves them out, for a managed database or cache instead.
+
+name: nicetrybot
+
+x-app-env: &app-env
+  APP_NAME: ${APP_NAME:-NiceTryBot}
+  APP_ENV: ${APP_ENV:-production}
+  APP_DEBUG: ${APP_DEBUG:-false}
+  APP_KEY: ${APP_KEY:?APP_KEY is empty in .env (install.sh makes one; see README.md)}
+  APP_URL: ${APP_URL:-https://${NICETRY_PANEL_HOST}}
+  LOG_CHANNEL: ${LOG_CHANNEL:-stderr}
+  # A stranger's panel: sign-up by invitation only (see .env.example).
+  NICETRY_REGISTRATION: ${NICETRY_REGISTRATION:-invitations}
+  # Database: Postgres, bundled or managed.
+  DB_CONNECTION: pgsql
+  DB_HOST: ${DB_HOST:-postgres}
+  DB_PORT: ${DB_PORT:-5432}
+  DB_DATABASE: ${DB_DATABASE:-nicetrybot}
+  DB_USERNAME: ${DB_USERNAME:-nicetrybot}
+  DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is empty in .env (install.sh makes one; see README.md)}
+  DB_SSLMODE: ${DB_SSLMODE:-prefer}
+  # Cache, queue, sessions and locks: Valkey/Redis, or Laravel's database drivers.
+  CACHE_STORE: ${CACHE_STORE:-redis}
+  QUEUE_CONNECTION: ${QUEUE_CONNECTION:-redis}
+  SESSION_DRIVER: ${SESSION_DRIVER:-redis}
+  SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-true}
+  REDIS_CLIENT: ${REDIS_CLIENT:-phpredis}
+  REDIS_HOST: ${REDIS_HOST:-valkey}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  FILESYSTEM_DISK: ${FILESYSTEM_DISK:-local}
+  MAIL_MAILER: ${MAIL_MAILER:-log}
+  # The edge: its token, what the Domains page tells people to point DNS at, and its logs.
+  NICETRY_PANEL_HOST: ${NICETRY_PANEL_HOST:?NICETRY_PANEL_HOST is empty in .env (the panel's hostname, like panel.example.com)}
+  NICETRY_EDGE_TOKEN: ${NICETRY_EDGE_TOKEN:?NICETRY_EDGE_TOKEN is empty in .env (install.sh makes one; see README.md)}
+  NICETRY_EDGE_HOSTNAME: ${NICETRY_EDGE_HOSTNAME:-${NICETRY_PANEL_HOST}}
+  NICETRY_EDGE_ADDRESSES: ${NICETRY_EDGE_ADDRESSES:-}
+  NICETRY_PREVIEW_ZONE: ${NICETRY_PREVIEW_ZONE:-}
+  EDGE_LOGS_BUCKET: ${EDGE_LOGS_BUCKET:-}
+  # Only the stack's own containers can reach the app (nothing publishes its port), and the edge
+  # is the one in front of it, so the private ranges a compose network lives in are its proxies
+  # (fc00::/7 for the network's own IPv6 addresses).
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7}
+
+x-app: &app
+  image: ${NICETRY_APP_IMAGE:-ghcr.io/nicetrybot/app:${NICETRY_VERSION:-latest}}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  restart: unless-stopped
+  # Every Laravel setting in .env reaches the app; the keys above get the stack's defaults.
+  env_file: .env
+  environment: *app-env
+  volumes:
+    - app-storage:/var/www/html/storage/app
+
+services:
+  # Caddy with the NiceTryBot modules: TLS, fingerprints, rules, the gym, and the access log Vector
+  # ships. Serves the panel at https://NICETRY_PANEL_HOST and every verified domain on demand.
+  edge:
+    image: ${NICETRY_EDGE_IMAGE:-ghcr.io/nicetrybot/edge:${NICETRY_VERSION:-latest}}
+    build:
+      context: ${NICETRY_EDGE_SRC:-../edge}
+      target: edge
+    restart: unless-stopped
+    ports:
+      # Let's Encrypt needs 80 and 443; other ports are only for trying the stack locally.
+      - ${NICETRY_HTTP_PORT:-80}:80
+      - ${NICETRY_HTTPS_PORT:-443}:443
+    environment:
+      NICETRY_PANEL_HOST: ${NICETRY_PANEL_HOST:?NICETRY_PANEL_HOST is empty in .env}
+      NICETRY_APP_URL: http://app:8080
+      NICETRY_EDGE_TOKEN: ${NICETRY_EDGE_TOKEN:?NICETRY_EDGE_TOKEN is empty in .env}
+      NICETRY_ACME: ${NICETRY_ACME:-letsencrypt}
+      NICETRY_ACME_EMAIL: ${NICETRY_ACME_EMAIL:-}
+      NICETRY_BLOCK_MULTIPART: ${NICETRY_BLOCK_MULTIPART:-off}
+      # Certificates: file (the edge-data volume) or redis (shared by several edge nodes). Redis
+      # means the app's REDIS_* below, or a store of its own in NICETRY_CERT_REDIS_URL.
+      NICETRY_CERT_STORAGE: ${NICETRY_CERT_STORAGE:-file}
+      NICETRY_CERT_REDIS_URL: ${NICETRY_CERT_REDIS_URL:-}
+      NICETRY_CERT_REDIS_CA: ${NICETRY_CERT_REDIS_CA:-}
+      REDIS_URL: ${REDIS_URL:-}
+      REDIS_HOST: ${REDIS_HOST:-valkey}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_USERNAME: ${REDIS_USERNAME:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+    volumes:
+      - edge-data:/data
+      - edge-logs:/var/log/caddy
+      - edge-dbip:/opt/dbip
+    depends_on:
+      app:
+        condition: service_started
+      valkey:
+        condition: service_healthy
+        required: false
+
+  # Tails the edge's access log, adds DB-IP places, and sends every line to the app (or, with
+  # EDGE_LOGS_BUCKET set, to the bucket, with live-tail lines to the app).
+  vector:
+    image: ${NICETRY_VECTOR_IMAGE:-ghcr.io/nicetrybot/vector:${NICETRY_VERSION:-latest}}
+    build:
+      context: ${NICETRY_EDGE_SRC:-../edge}
+      target: vector
+    restart: unless-stopped
+    environment:
+      NICETRY_APP_URL: http://app:8080
+      NICETRY_EDGE_TOKEN: ${NICETRY_EDGE_TOKEN:?NICETRY_EDGE_TOKEN is empty in .env}
+      EDGE_LOGS_BUCKET: ${EDGE_LOGS_BUCKET:-}
+      EDGE_LOGS_REGION: ${EDGE_LOGS_REGION:-}
+      EDGE_LOGS_ENDPOINT: ${EDGE_LOGS_ENDPOINT:-}
+      EDGE_LOGS_KEY: ${EDGE_LOGS_KEY:-}
+      EDGE_LOGS_SECRET: ${EDGE_LOGS_SECRET:-}
+      EDGE_LOGS_PATH_STYLE: ${EDGE_LOGS_PATH_STYLE:-}
+    volumes:
+      - edge-logs:/var/log/caddy:ro
+      - edge-dbip:/opt/dbip:ro
+      # Checkpoints and the disk buffer: losing them re-reads the log and stores lines twice.
+      - vector-data:/var/lib/vector
+    depends_on:
+      edge:
+        condition: service_healthy
+
+  # The control panel and the edge's API: PHP-FPM + nginx on 8080, inside the network only. Runs
+  # the migrations on start, then caches config, routes, views and events.
+  app:
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      valkey:
+        condition: service_healthy
+        required: false
+
+  worker:
+    <<: *app
+    command: [php, /var/www/html/artisan, queue:work, --sleep=1, --tries=3, --max-time=3600]
+    environment:
+      <<: *app-env
+      AUTORUN_LARAVEL_MIGRATION: "false"
+    stop_signal: SIGTERM
+    stop_grace_period: 60s
+    healthcheck:
+      test: [CMD, healthcheck-queue]
+      start_period: 30s
+    depends_on:
+      app:
+        condition: service_healthy
+
+  scheduler:
+    <<: *app
+    command: [php, /var/www/html/artisan, schedule:work]
+    environment:
+      <<: *app-env
+      AUTORUN_LARAVEL_MIGRATION: "false"
+    stop_signal: SIGTERM
+    healthcheck:
+      test: [CMD, healthcheck-schedule]
+      start_period: 30s
+    depends_on:
+      app:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17
+    profiles: [postgres]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-nicetrybot}
+      POSTGRES_USER: ${DB_USERNAME:-nicetrybot}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is empty in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:8
+    profiles: [valkey]
+    restart: unless-stopped
+    # Append-only, so queued jobs and sessions survive a restart.
+    command: [valkey-server, --appendonly, "yes"]
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: [CMD, valkey-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  edge-data:
+  edge-logs:
+  edge-dbip:
+  vector-data:
+  postgres-data:
+  valkey-data:
+  app-storage:
+
+networks:
+  # IPv6 on the stack's own network, so Docker forwards an IPv6 visitor to the edge with their own
+  # address. Without it, docker-proxy carries IPv6 over IPv4 and every IPv6 visitor arrives as the
+  # network's gateway. Docker Engine 27 or newer picks the subnet itself; a server without IPv6
+  # still works, over IPv4 only.
+  default:
+    enable_ipv6: true

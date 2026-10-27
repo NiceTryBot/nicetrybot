@@ -1,0 +1,71 @@
+# Bucket mode (EDGE_LOGS_BUCKET set): production's shape. Every line goes to the bucket as gzipped NDJSON,
+# imported by the app's `php artisan edge:import-logs` every minute, and lines Caddy marks for a live tail
+# (tail: true) also go straight to the app's caddy/ingest every 2s. Any S3-compatible store works: AWS S3,
+# DigitalOcean Spaces, MinIO, Cloudflare R2 (EDGE_LOGS_ENDPOINT for one that isn't AWS). Keys come from
+# EDGE_LOGS_KEY/EDGE_LOGS_SECRET, or from the instance's role when those are empty.
+transforms:
+  live_tail:
+    type: filter
+    inputs: [edge_requests]
+    condition: .tail == true
+
+sinks:
+  s3_raw:
+    type: aws_s3
+    inputs: [edge_requests]
+    bucket: SECRET[nicetry.logs_bucket]
+    region: SECRET[nicetry.logs_region]
+    endpoint: SECRET[nicetry.logs_endpoint]
+    force_path_style: SECRET[nicetry.logs_path_style]
+    # A key limited to PutObject under raw/ can't answer the default healthcheck (HeadBucket).
+    healthcheck:
+      enabled: false
+    key_prefix: "raw/dt=%Y-%m-%d/hh=%H/caddy-nicetry-"
+    filename_time_format: "%s"
+    filename_append_uuid: true
+    filename_extension: ndjson.gz
+    compression: gzip
+    content_type: application/x-ndjson
+    encoding:
+      codec: json
+      except_fields: [timestamp, tail]
+    framing:
+      method: newline_delimited
+    batch:
+      timeout_secs: 60
+      max_bytes: 10000000
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block
+
+  # Live tail: only lines for hostnames someone is watching on Activity, posted every 2s. One batch at a
+  # time keeps them in order. A batch that keeps failing is retried a few times and then dropped, and a
+  # backlog drops new lines rather than stalling the file source (and so the bucket): the minute import
+  # fills any gap.
+  app_ingest:
+    type: http
+    inputs: [live_tail]
+    uri: SECRET[nicetry.app_url]/caddy/ingest
+    method: post
+    auth:
+      strategy: bearer
+      token: SECRET[nicetry.edge_token]
+    encoding:
+      codec: json
+      except_fields: [timestamp, tail]
+    framing:
+      method: newline_delimited
+    batch:
+      timeout_secs: 2
+      max_bytes: 1000000
+    request:
+      concurrency: 1
+      timeout_secs: 15
+      retry_attempts: 5
+    healthcheck:
+      enabled: false
+    buffer:
+      type: memory
+      max_events: 5000
+      when_full: drop_newest

@@ -1,0 +1,10 @@
+# The images need caddy/nicetry-capture and deploy/ only.
+.git
+*.env
+caddy/caddy-nicetry
+caddy/Caddyfile
+dbip/
+systemd/
+vector/
+deploy/smoke/
+deploy/*.md
