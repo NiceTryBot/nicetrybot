@@ -96,11 +96,35 @@ fi
 
 # --- Helpers ------------------------------------------------------------------------------------
 
+# The name, with "Bot" in coral as in the logo (plain when the output isn't a terminal).
+banner() {
+  local line bold='' coral='' reset=''
+  local lines=(
+    ' _   _ _          _____           ____        _   '
+    '| \ | (_) ___ ___|_   _| __ _   _| __ )  ___ | |_ '
+    "|  \\| | |/ __/ _ \\ | || '__| | | |  _ \\ / _ \\| __|"
+    '| |\  | | (_|  __/ | || |  | |_| | |_) | (_) | |_ '
+    '|_| \_|_|\___\___| |_||_|   \__, |____/ \___/ \__|'
+    '                            |___/                 '
+  )
+  if [[ -t 1 ]]; then
+    bold=$'\033[1m' coral=$'\033[38;5;203m' reset=$'\033[0m'
+  fi
+  echo
+  for line in "${lines[@]}"; do
+    printf '  %s%s%s%s%s\n' "$bold" "${line:0:33}" "$coral" "${line:33}" "$reset"
+  done
+  echo
+  echo "  Self-hosted bot defence: the edge, the control panel, Postgres and Valkey, on this server."
+  echo
+}
+
 # Ask on the terminal even when this script arrives on stdin (curl | bash).
 ask() {
   local prompt=$1 answer
   [[ -r /dev/tty ]] || fail "Can't ask \"$prompt\" without a terminal; pass the options instead (see --help)."
-  read -r -p "$prompt " answer </dev/tty
+  # A closed terminal is an end, not an empty answer: never ask again forever.
+  read -r -p "$prompt " answer </dev/tty || fail "No answer to \"$prompt\" (the terminal closed); pass the options instead (see --help)."
   printf '%s' "$answer"
 }
 
@@ -261,23 +285,22 @@ setup_addons() {
   esac
   [[ ${addons,,} == all ]] && say "Add-ons: every one your Composer token may install" || say "Add-ons: $addons"
   say "The app's image is built here with them"
-  ensure_build_memory
 }
 
-# Building the add-ons' image runs Composer and the front end's build, which want about 2 GB. A smaller
-# server (a 1 GB droplet, say) gets a 2 GB swap file, so the build finishes, slowly, instead of being
-# killed for want of memory. Kept across reboots in /etc/fstab.
-ensure_build_memory() {
+# The whole stack wants about 2 GB of memory, and building add-ons into the image about as much again
+# for a moment. A smaller server (a 1 GB droplet, say) gets a 2 GB swap file, so nothing is killed for
+# want of memory; it runs, slower. Kept across reboots in /etc/fstab.
+ensure_memory() {
   [[ -r /proc/meminfo ]] || return 0
   local mem swap
   mem=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
   swap=$(awk '/^SwapTotal:/ {print int($2 / 1024)}' /proc/meminfo)
   ((mem + swap >= 1900)) && return 0
   if [[ -e /swapfile ]]; then
-    warn "This server has ${mem} MB of memory and ${swap} MB of swap, and building the add-ons wants about 2 GB. /swapfile exists but isn't on: swapon /swapfile, then run this again."
+    warn "This server has ${mem} MB of memory and ${swap} MB of swap, and NiceTryBot wants about 2 GB. /swapfile exists but isn't on: swapon /swapfile, then run this again."
     return 0
   fi
-  say "This server has ${mem} MB of memory; building the add-ons wants about 2 GB, so adding a 2 GB swap file (/swapfile)"
+  say "This server has ${mem} MB of memory and NiceTryBot wants about 2 GB, so adding a 2 GB swap file (/swapfile). 2 GB of memory or more is better."
   fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
   chmod 600 /swapfile
   mkswap /swapfile >/dev/null
@@ -305,6 +328,55 @@ check_ports() {
 }
 
 # --- The settings -------------------------------------------------------------------------------
+
+# On a new server, everything the installer needs is asked before anything is installed, so the rest
+# (Docker, the images, the first start) runs on its own and nobody misses a question in the scroll.
+# The panel's hostname defaults to this server's sslip.io name, which works before any DNS exists.
+asked_up_front=false
+ask_settings() {
+  [[ $unattended == false && -r /dev/tty ]] || return 0
+  [[ -n $panel_host && -n $acme_email && -n $admin_email ]] && return 0
+
+  local address suggestion=''
+  address=$(detect_public_ipv4 || true)
+  [[ -n $address ]] && suggestion=panel.${address//./-}.sslip.io
+
+  echo "  A few questions first. After them it runs on its own for a few minutes."
+  if [[ -z $panel_host ]]; then
+    echo
+    echo "  1. The control panel's hostname. Its DNS must point at this server${address:+ ($address)}."
+    if [[ -n $suggestion ]]; then
+      echo "     Press Enter for $suggestion: it works right away, no DNS to set up."
+      panel_host=$(ask "     Hostname [$suggestion]:")
+      panel_host=${panel_host:-$suggestion}
+    else
+      panel_host=$(ask "     Hostname, e.g. panel.example.com:")
+    fi
+    until valid_hostname "$panel_host"; do
+      panel_host=$(ask "     \"$panel_host\" isn't a hostname like panel.example.com. Hostname:")
+    done
+  fi
+  if [[ -z $acme_email ]]; then
+    echo
+    echo "  2. An email for Let's Encrypt's certificate notices."
+    acme_email=$(ask "     Email:")
+    until valid_email "$acme_email"; do
+      acme_email=$(ask "     That isn't an email address. Email:")
+    done
+  fi
+  if [[ -z $admin_email ]]; then
+    echo
+    echo "  3. Your login for the panel: you'll be its first administrator."
+    admin_email=$(ask "     Email [$acme_email]:")
+    admin_email=${admin_email:-$acme_email}
+    until valid_email "$admin_email"; do
+      admin_email=$(ask "     That isn't an email address. Email:")
+    done
+  fi
+  asked_up_front=true
+  echo
+  say "That's everything. Installing now, with no more questions: your panel's address and password come at the end."
+}
 
 # A fresh .env from .env.example: the secrets, the panel's hostname, the ACME email, the release and
 # this server's address. Everything else keeps the bundled defaults.
@@ -364,8 +436,12 @@ done
 
 command -v curl >/dev/null 2>&1 || fail "curl is needed (apt-get install -y curl)"
 
+banner
+
 if [[ $compose_only == false ]]; then
   check_server
+  [[ -f $dir/.env ]] || ask_settings
+  ensure_memory
   install_docker
 fi
 
@@ -449,7 +525,8 @@ install_args=(php artisan nicetry:install)
 [[ -n $admin_email ]] && install_args+=("--email=$admin_email")
 [[ -n $admin_password ]] && install_args+=("--password=$admin_password")
 
-if [[ $unattended == true ]]; then
+if [[ $unattended == true || $asked_up_front == true ]]; then
+  # Everything was asked up front: a random password, shown once below.
   docker compose exec -T app "${install_args[@]}" --no-interaction
 elif [[ -r /dev/tty ]]; then
   docker compose exec app "${install_args[@]}" </dev/tty
@@ -459,6 +536,8 @@ fi
 
 panel_host=$(env_get "$dir/.env" NICETRY_PANEL_HOST)
 echo
+# A bell, for whoever walked away while it ran.
+[[ -t 1 ]] && printf '\a'
 say "NiceTryBot is running in $dir"
 echo "    The panel answers at https://$panel_host once its DNS points here (the certificate follows on its own)."
 echo "    Settings: $dir/.env (then: cd $dir && docker compose up -d)"
