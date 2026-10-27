@@ -5,6 +5,14 @@ on:
     branches:
       - main
   pull_request:
+  # The release workflow runs these on the tag it's releasing before it builds anything.
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit, branch or tag to test (empty for the one that triggered the run)
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -17,6 +25,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Setup PHP

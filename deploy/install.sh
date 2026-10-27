@@ -12,7 +12,7 @@
 #
 # Options:
 #   --dir=PATH             where the stack lives (default /opt/nicetrybot)
-#   --version=TAG          the release to run, e.g. v1.2.0 (default: the latest release)
+#   --version=VERSION      the release to run, e.g. v1.2.0 or 1.2.0 (default: the latest release)
 #   --compose-only         only write ./nicetrybot/compose.yml and ./nicetrybot/.env, then stop
 #   --unattended           ask nothing; needs --panel-host and --acme-email
 #   --panel-host=HOST      the control panel's hostname, e.g. panel.example.com
@@ -33,10 +33,12 @@
 
 set -euo pipefail
 
-# Where each release's compose.yml and .env.example are published, as GitHub release assets:
-# <base>/latest/download/<file> and <base>/download/<tag>/<file>. This repository doesn't exist yet;
-# set NICETRY_RELEASE_BASE in the environment to install from somewhere else.
-NICETRY_RELEASE_BASE="${NICETRY_RELEASE_BASE:-https://github.com/nicetrybot/nicetrybot/releases}"
+# Where each release's compose.yml, compose.addons.yml and env.example (saved here as .env.example:
+# GitHub renames assets that start with a dot) are published, as GitHub release assets:
+# <base>/latest/download/<file> and <base>/download/v<version>/<file>. The release workflow
+# (.github/workflows/release.yml) attaches them. Set NICETRY_RELEASE_BASE in the environment to
+# install from somewhere else.
+NICETRY_RELEASE_BASE="${NICETRY_RELEASE_BASE:-https://github.com/NiceTryBot/nicetrybot/releases}"
 
 dir=/opt/nicetrybot
 dir_given=false
@@ -151,18 +153,23 @@ detect_public_ipv4() {
   fi
 }
 
+# $version is bare (1.2.0), as NICETRY_VERSION and the image tags are; the release's tag is v1.2.0.
+release_name() {
+  if [[ -z $version || $version == latest ]]; then printf 'latest'; else printf 'v%s' "$version"; fi
+}
+
 release_url() {
   if [[ -z $version || $version == latest ]]; then
     printf '%s/latest/download/%s' "$NICETRY_RELEASE_BASE" "$1"
   else
-    printf '%s/download/%s/%s' "$NICETRY_RELEASE_BASE" "$version" "$1"
+    printf '%s/download/v%s/%s' "$NICETRY_RELEASE_BASE" "$version" "$1"
   fi
 }
 
 fetch() {
   local name=$1 target=$2
   curl -fsSL --retry 3 -o "$target.download" "$(release_url "$name")" ||
-    fail "Couldn't download $name for release ${version:-latest} from $(release_url "$name")"
+    fail "Couldn't download $name for release $(release_name) from $(release_url "$name")"
   mv -f "$target.download" "$target"
 }
 
@@ -308,8 +315,12 @@ write_env() {
 
 # --- Main ---------------------------------------------------------------------------------------
 
-if [[ -n $version && ! $version =~ ^[A-Za-z0-9._-]+$ ]]; then
-  fail "--version must be a release tag like v1.2.0 (got $version)"
+# A release is v1.2.0 (or v1.2.0-beta.1): kept bare (1.2.0), which is what NICETRY_VERSION and the
+# images' tags hold. "latest" follows the newest release.
+if [[ -n $version && $version != latest ]]; then
+  [[ $version =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] ||
+    fail "--version must be a release like v1.2.0 (got $version)"
+  version=${version#v}
 fi
 if [[ -n $panel_host ]] && ! valid_hostname "$panel_host"; then
   fail "\"$panel_host\" isn't a hostname like panel.example.com"
@@ -331,13 +342,13 @@ mkdir -p "$dir"
 installed=false
 [[ -f $dir/.env ]] && installed=true
 
-say "Downloading compose.yml, compose.addons.yml and .env.example for release ${version:-latest}"
+say "Downloading compose.yml, compose.addons.yml and .env.example for release $(release_name)"
 if [[ -f $dir/compose.yml ]]; then
   cp -f "$dir/compose.yml" "$dir/compose.yml.previous"
 fi
 fetch compose.yml "$dir/compose.yml"
 fetch compose.addons.yml "$dir/compose.addons.yml"
-fetch .env.example "$dir/.env.example"
+fetch env.example "$dir/.env.example"
 
 if [[ $installed == true ]]; then
   say "Keeping $dir/.env"

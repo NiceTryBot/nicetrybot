@@ -1,0 +1,215 @@
+name: release
+
+# Publishes a release of NiceTryBot when a version tag is pushed here:
+#
+#   git tag -a v1.2.0 -m "What changed" && git push origin v1.2.0
+#
+# It runs the tests and the edge's Go tests on the tag, then builds the app, edge and Vector images
+# for amd64 and arm64 and pushes them to ghcr.io/nicetrybot/{app,edge,vector} as 1.2.0 (and latest,
+# unless the tag is a pre-release like v1.2.0-beta.1), then creates the GitHub release with what the
+# installer downloads: compose.yml, compose.addons.yml, env.example (deploy/.env.example; GitHub
+# renames assets that start with a dot) and install.sh. The tag's message becomes the release notes;
+# a lightweight tag gets notes generated from the pull requests since the last release.
+#
+# To build and publish a tag again (a failed run, a fixed workflow): Run workflow, with the tag.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to build and release again, like v1.2.0
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Work out the version
+        id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::\"$TAG\" isn't a release tag like v1.2.0 or v1.2.0-beta.1."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent || { echo "::error::There's no tag $TAG."; exit 1; }
+          version=${TAG#v}
+          prerelease=false
+          [[ $version == *-* ]] && prerelease=true
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG as $version (pre-release: $prerelease)."
+
+  tests:
+    needs: version
+    uses: ./.github/workflows/tests.yml
+    with:
+      ref: refs/tags/${{ needs.version.outputs.tag }}
+
+  edge-tests:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.version.outputs.tag }}
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: edge/caddy/nicetry-capture/go.mod
+          cache-dependency-path: edge/caddy/nicetry-capture/go.sum
+
+      - name: The edge's Go tests
+        working-directory: edge/caddy/nicetry-capture
+        run: |
+          go vet ./...
+          go test ./...
+
+  images:
+    needs: [version, tests, edge-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - image: app
+            context: .
+            file: deploy/Dockerfile
+            target: app
+            description: NiceTryBot's control panel, worker and scheduler.
+          - image: edge
+            context: edge
+            file: edge/Dockerfile
+            target: edge
+            description: NiceTryBot's edge, Caddy with the capture module.
+          - image: vector
+            context: edge
+            file: edge/Dockerfile
+            target: vector
+            description: Vector, shipping NiceTryBot's edge logs to the app or a bucket.
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.version.outputs.tag }}
+          persist-credentials: false
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Tags
+        id: tags
+        env:
+          IMAGE: ghcr.io/nicetrybot/${{ matrix.image }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "$IMAGE:$VERSION"
+            [[ $PRERELEASE == true ]] || echo "$IMAGE:latest"
+            echo "EOF"
+            echo "created=$(git log -1 --format=%cI)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=nicetrybot-${{ matrix.image }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://nicetrybot.com
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.tags.outputs.created }}
+            org.opencontainers.image.licenses=Elastic-2.0
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  release:
+    needs: [version, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.version.outputs.tag }}
+          persist-credentials: false
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          # A shallow checkout can leave the tag lightweight; fetch it whole for its message.
+          git fetch --quiet --force origin "+refs/tags/$TAG:refs/tags/$TAG"
+
+          assets=$RUNNER_TEMP/assets
+          mkdir -p "$assets"
+          cp deploy/compose.yml deploy/compose.addons.yml deploy/install.sh "$assets/"
+          cp deploy/.env.example "$assets/env.example"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$assets"/* --clobber
+            echo "Updated the files on release $TAG."
+            exit 0
+          fi
+
+          notes=(--generate-notes)
+          if [[ $(git cat-file -t "refs/tags/$TAG") == tag ]]; then
+            git tag -l --format='%(contents)' "$TAG" > "$RUNNER_TEMP/notes.md"
+            [[ -s $RUNNER_TEMP/notes.md ]] && notes=(--notes-file "$RUNNER_TEMP/notes.md")
+          fi
+
+          kind=(--latest)
+          [[ $PRERELEASE == true ]] && kind=(--prerelease --latest=false)
+
+          gh release create "$TAG" "$assets"/* --verify-tag --title "NiceTryBot $VERSION" "${notes[@]}" "${kind[@]}"
+          echo "Released $TAG."

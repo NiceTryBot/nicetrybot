@@ -49,6 +49,22 @@ self-hosted panel needs. If you run the app another way, set `NICETRY_EDGE_HOSTN
 `NICETRY_PREVIEW_ZONE`, `NICETRY_REGISTRATION` and the `EDGE_LOGS_*` keys yourself; unset, they're safe but
 bare (no A record target, no previews, sign-up by invitation). See [Without Docker](deploy/README.md#without-docker).
 
+## Releases
+
+Each release is a `vX.Y.Z` tag here, with its notes and the installer's files on the
+[releases page](https://github.com/NiceTryBot/nicetrybot/releases). Its images are
+`ghcr.io/nicetrybot/app`, `ghcr.io/nicetrybot/edge` and `ghcr.io/nicetrybot/vector`, tagged `X.Y.Z` (and
+`latest`), for amd64 and arm64. `NICETRY_VERSION` in `.env` picks one (`1.2.0`, or `latest`); running the
+installer again updates to it. Maintainers cut a release by pushing an annotated tag, whose message becomes
+the release notes:
+
+```sh
+git tag -a v1.2.0 -m "What changed" && git push origin v1.2.0
+```
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) runs the tests on the tag, builds and pushes
+the images, then creates the release. A tag like `v1.2.0-beta.1` makes a pre-release, which `latest` skips.
+
 ## What's in this repository
 
 | Path | What it is |

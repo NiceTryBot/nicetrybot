@@ -15,9 +15,11 @@ Change a name on one side only together with the other.
 `NICETRY_APP_IMAGE`, `NICETRY_EDGE_IMAGE` and `NICETRY_VECTOR_IMAGE` replace an image outright.
 `NICETRY_EDGE_SRC` is the edge's source path for local builds (default `../edge` from `deploy/`,
 i.e. the repository's `edge/` folder). A release publishes all three images under the same tag (and
-`latest`), and attaches `compose.yml`, `compose.addons.yml` and `.env.example` from this folder to the GitHub release
-`nicetrybot/nicetrybot` (`install.sh` fetches `<NICETRY_RELEASE_BASE>/latest/download/<file>` or
-`<NICETRY_RELEASE_BASE>/download/<tag>/<file>`; that repository doesn't exist yet).
+`latest`, unless it's a pre-release), and attaches `compose.yml`, `compose.addons.yml`, `install.sh` and
+`.env.example` from this folder to the GitHub release of NiceTryBot/nicetrybot; `.env.example` goes up as
+`env.example`, since GitHub renames assets that start with a dot. The release is tag `v1.2.0`; the image
+tag and `NICETRY_VERSION` are bare, `1.2.0`. `install.sh` fetches `<NICETRY_RELEASE_BASE>/latest/download/<file>`
+or `<NICETRY_RELEASE_BASE>/download/v<version>/<file>` (`.github/workflows/release.yml` in the public repository).
 
 ## Network and ports
 

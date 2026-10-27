@@ -109,7 +109,7 @@ Everything is in `.env` next to `compose.yml`; `.env.example` explains each key.
 | `EDGE_LOGS_BUCKET` and `EDGE_LOGS_*` | Empty: every log line goes straight to the app. Set: an S3-compatible bucket, imported every minute. |
 | `COMPOSE_PROFILES` | Which data stores run here: `postgres,valkey` by default. |
 | `APP_KEY`, `DB_*`, `REDIS_*`, `CACHE_STORE`, `QUEUE_CONNECTION`, `SESSION_DRIVER`, `FILESYSTEM_DISK`, `AWS_*`, `MAIL_*` | The usual Laravel settings. Any other Laravel or `PHP_*` setting can be added too. |
-| `NICETRY_VERSION` | The release (image tag) to run. |
+| `NICETRY_VERSION` | The release to run, without the v (`1.2.0` for v1.2.0; also the images' tag), or `latest`. |
 | `NICETRY_ADDONS`, `NICETRY_COMPOSER_TOKEN` | Add-ons from the marketplace, built into the app's image here (see [Add-ons](#add-ons)). |
 
 After editing `.env`, apply it with `docker compose up -d`.
@@ -221,4 +221,6 @@ docker compose up -d --remove-orphans
 With add-ons, also pull the release's app image and build again: `docker pull ghcr.io/nicetrybot/app:latest`,
 then `docker compose up -d --build --remove-orphans`.
 
-`NICETRY_VERSION` in `.env` picks the release; `latest` follows the newest.
+`NICETRY_VERSION` in `.env` picks the release (`1.2.0`, or `latest` to follow the newest); `--version=v1.2.0`
+on the installer sets it. Releases, their notes and their files are at
+[github.com/NiceTryBot/nicetrybot/releases](https://github.com/NiceTryBot/nicetrybot/releases).
