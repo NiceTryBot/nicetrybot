@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# nicetrybot-setup: finishes setting up a NiceTryBot Droplet. It asks for the control panel's hostname,
+# an email for Let's Encrypt and, if you have one, a Composer token for marketplace add-ons, then runs
+# NiceTryBot's installer (https://nicetrybot.com/install.sh). It starts on its own at the first root
+# login, until the stack is set up, and you can run it by hand: nicetrybot-setup.
+#
+# Without questions (DigitalOcean user data, scripts), give the answers in the environment:
+#   NICETRY_PANEL_HOST=panel.example.com   default: panel.<ip-with-dashes>.sslip.io, which resolves now
+#   NICETRY_ACME_EMAIL=you@example.com     required: Let's Encrypt's notices; also the first admin's login
+#   NICETRY_COMPOSER_TOKEN=ntbc_...        optional: builds in every add-on the token may install
+#   NICETRY_ADMIN_EMAIL, NICETRY_ADMIN_PASSWORD   optional: the first administrator (default: the
+#                                          email above, and a random password shown at the end)
+#   NICETRY_VERSION=0.1.0                  optional: a release (default: the latest)
+# and run: nicetrybot-setup --unattended
+#
+#   --unattended   ask nothing; take the answers from the environment
+#   --dry-run      show the installer command it would run (the token hidden), and stop
+#   -h, --help     show this
+set -euo pipefail
+
+dir=/opt/nicetrybot
+installer=${NICETRY_INSTALLER_URL:-https://nicetrybot.com/install.sh}
+unattended=false
+dry_run=false
+
+for arg in "$@"; do
+  case $arg in
+    --unattended) unattended=true ;;
+    --dry-run) dry_run=true ;;
+    -h | --help)
+      sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p;}' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $arg (try --help)" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -t 1 ]]; then
+  bold=$'\e[1m' dim=$'\e[2m' coral=$'\e[38;5;209m' reset=$'\e[0m'
+else
+  bold='' dim='' coral='' reset=''
+fi
+fail() {
+  printf '%sError:%s %s\n' "$coral" "$reset" "$*" >&2
+  exit 1
+}
+
+[[ $EUID -eq 0 ]] || fail "Run it as root: sudo nicetrybot-setup"
+
+if [[ -f $dir/.env && $dry_run == false ]]; then
+  echo "NiceTryBot is already set up in $dir."
+  echo "Change its settings in $dir/.env, then run the installer again to apply them and update:"
+  echo "  curl -fsSL $installer | sudo bash"
+  exit 0
+fi
+
+# This Droplet's public IPv4 address, from DigitalOcean's metadata service (or the first address).
+ip=$(curl -fsS --max-time 2 http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address 2>/dev/null || true)
+[[ -n $ip ]] || ip=$(hostname -I | awk '{print $1}')
+default_host="panel.${ip//./-}.sslip.io"
+
+valid_host() { [[ $1 =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; }
+valid_email() { [[ $1 =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; }
+
+host=${NICETRY_PANEL_HOST:-}
+email=${NICETRY_ACME_EMAIL:-}
+token=${NICETRY_COMPOSER_TOKEN:-}
+
+if [[ $unattended == false ]]; then
+  [[ -r /dev/tty ]] || fail "No terminal to ask on. Give the answers in the environment and use --unattended (see --help)."
+  cat <<WELCOME
+
+${bold}Welcome to NiceTryBot.${reset}
+
+This Droplet has Docker and NiceTryBot's images ready. Answer three questions and the installer starts
+the stack, in about two minutes: the edge in front of your sites (ports 80 and 443), the control panel,
+Postgres and Valkey. Your traffic, and everything NiceTryBot learns from it, stays on this Droplet.
+
+WELCOME
+
+  echo "${bold}1. The control panel's hostname.${reset}"
+  echo "   To use your own name, like panel.example.com, first add this DNS record at your DNS host:"
+  echo "       ${bold}A   panel.example.com   ${ip}${reset}"
+  echo "   Or press Enter for ${bold}${default_host}${reset}, which works right now (sslip.io turns the"
+  echo "   name into this Droplet's address) and can be changed later."
+  while :; do
+    read -r -p "   Hostname [${default_host}]: " answer </dev/tty
+    answer=$(tr '[:upper:]' '[:lower:]' <<<"${answer:-${host:-$default_host}}")
+    valid_host "$answer" && break
+    echo "   That isn't a hostname, like panel.example.com."
+  done
+  host=$answer
+
+  echo
+  echo "${bold}2. Your email.${reset} Let's Encrypt sends certificate notices to it, and it's the first"
+  echo "   administrator's login."
+  while :; do
+    read -r -p "   Email${email:+ [$email]}: " answer </dev/tty
+    answer=${answer:-$email}
+    valid_email "$answer" && break
+    echo "   That isn't an email address."
+  done
+  email=$answer
+
+  echo
+  echo "${bold}3. Optional: a Composer token${reset} from https://nicetrybot.com/account, to build in the"
+  echo "   marketplace add-ons you own. Press Enter to skip; you can add them later."
+  read -r -s -p "   Token (hidden): " answer </dev/tty
+  echo
+  token=${answer:-$token}
+
+  echo
+  echo "   Panel:    https://${host}"
+  echo "   Email:    ${email}"
+  echo "   Add-ons:  $([[ -n $token ]] && echo "every one the token may install" || echo "none for now")"
+  read -r -p "   Install now? [Y/n] " answer </dev/tty
+  [[ ${answer:-y} =~ ^[Yy] ]] || {
+    echo "Nothing changed. Run nicetrybot-setup when you're ready."
+    exit 0
+  }
+else
+  host=$(tr '[:upper:]' '[:lower:]' <<<"${host:-$default_host}")
+  valid_host "$host" || fail "NICETRY_PANEL_HOST isn't a hostname: $host"
+  valid_email "$email" || fail "NICETRY_ACME_EMAIL needs an email address."
+fi
+
+args=(--unattended "--panel-host=$host" "--acme-email=$email")
+[[ -n ${NICETRY_ADMIN_EMAIL:-} ]] && args+=("--admin-email=$NICETRY_ADMIN_EMAIL")
+[[ -n ${NICETRY_ADMIN_PASSWORD:-} ]] && args+=("--admin-password=$NICETRY_ADMIN_PASSWORD")
+[[ -n ${NICETRY_VERSION:-} ]] && args+=("--version=$NICETRY_VERSION")
+[[ -n $token ]] && args+=(--addons=all "--composer-token=$token")
+
+if [[ $dry_run == true ]]; then
+  shown=()
+  for arg in "${args[@]}"; do
+    case $arg in
+      --composer-token=*) shown+=("--composer-token=(hidden)") ;;
+      --admin-password=*) shown+=("--admin-password=(hidden)") ;;
+      *) shown+=("$(printf '%q' "$arg")") ;;
+    esac
+  done
+  echo "curl -fsSL $installer | bash -s -- ${shown[*]}"
+  exit 0
+fi
+
+echo
+echo "${bold}Installing NiceTryBot${reset} ${dim}(the log is kept in /root/nicetrybot-install.log)${reset}"
+log=$(mktemp /root/.nicetrybot-install.XXXXXX)
+chmod 600 "$log"
+set +e
+curl -fsSL "$installer" | bash -s -- "${args[@]}" 2>&1 | tee "$log"
+statuses=("${PIPESTATUS[@]}")
+set -e
+
+# The administrator's password is shown once, here, and not kept in the log.
+password=$(sed -e 's/\x1b\[[0-9;]*m//g' "$log" | sed -n 's/.*Their password is \(.*\)$/\1/p' | tail -n 1)
+sed -e 's/Their password is .*/Their password is (shown once, on screen)/' "$log" >/root/nicetrybot-install.log
+chmod 600 /root/nicetrybot-install.log
+rm -f "$log"
+
+if [[ ${statuses[0]} -ne 0 ]]; then
+  fail "Couldn't download the installer from $installer. Check this Droplet's internet access, then run nicetrybot-setup again."
+fi
+if [[ ${statuses[1]} -ne 0 || ! -f $dir/.env ]]; then
+  fail "The installer stopped (see above, and /root/nicetrybot-install.log). Fix that, then run nicetrybot-setup again."
+fi
+
+# Set up: the first-login line in root's .bashrc goes.
+sed -i '/nicetrybot-setup/d;/NiceTryBot: finish setting up/d' /root/.bashrc
+
+cat <<DONE
+
+${bold}NiceTryBot is running.${reset}
+
+   Control panel:  ${bold}https://${host}${reset}
+   Log in as:      ${NICETRY_ADMIN_EMAIL:-$email}
+   Password:       ${password:-the one you chose}
+
+DONE
+if [[ $host != *.sslip.io ]]; then
+  echo "   If you haven't yet, point ${host} at this Droplet (A record: ${ip}); its certificate follows."
+fi
+[[ -n $password ]] && echo "   Keep the password somewhere safe: it isn't shown again or kept on this Droplet."
+echo "   Settings: $dir/.env    Updates: curl -fsSL $installer | sudo bash"
+echo

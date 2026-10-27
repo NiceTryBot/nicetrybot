@@ -1,0 +1,18 @@
+#!/bin/sh
+# The login message on a NiceTryBot Droplet: where the panel is once it's set up, how to finish if not.
+
+env=/opt/nicetrybot/.env
+
+echo
+if [ -f "$env" ]; then
+  host=$(sed -n 's/^NICETRY_PANEL_HOST=//p' "$env" | tail -n 1 | tr -d "\"'")
+  echo "  NiceTryBot is running. The control panel: https://${host}"
+  echo "  The stack:  cd /opt/nicetrybot && docker compose ps"
+  echo "  Settings:   /opt/nicetrybot/.env, then: curl -fsSL https://nicetrybot.com/install.sh | sudo bash"
+  echo "  Updates:    curl -fsSL https://nicetrybot.com/install.sh | sudo bash"
+else
+  echo "  NiceTryBot isn't set up yet. Run: nicetrybot-setup"
+  echo "  (it starts on its own when you log in as root)"
+fi
+echo "  Docs: https://nicetrybot.com/deploy    Code: https://github.com/NiceTryBot/nicetrybot"
+echo
