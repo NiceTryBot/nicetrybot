@@ -25,6 +25,16 @@ enum ViewSlot: string
     case WelcomeSections = 'welcome-sections';
 
     /**
+     * The login page, under the form: other ways in, as buttons or links.
+     */
+    case LoginActions = 'login-actions';
+
+    /**
+     * The top of the signed-in pages, above the page itself: notices across the page.
+     */
+    case AppBanner = 'app-banner';
+
+    /**
      * The top right of the app's pages, before the cog: small buttons.
      */
     case TopbarActions = 'topbar-actions';

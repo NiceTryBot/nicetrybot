@@ -64,6 +64,9 @@
             </flux:button>
         </form>
 
+        {{-- Add-ons' other ways in, from App\Support\ViewSlots. --}}
+        {{ app(\App\Support\ViewSlots::class)->render(\App\Enums\ViewSlot::LoginActions) }}
+
         {{-- Sign-up is offered when it's open, or on an invitations-only panel when an invitation brought them here. --}}
         @if (Route::has('register') && (config('nicetry.registration') === 'open' || $teamInvitation))
             <p class="border-t border-line pt-6 text-sm text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
