@@ -431,11 +431,35 @@ addon_package() {
   printf '%s' "$name"
 }
 
+# Before minutes of building: does the add-ons' Composer repository take the token?
+token_error=
+check_composer_token() {
+  local repository status
+  repository=$(env_get .env NICETRY_COMPOSER_URL)
+  repository=${repository:-$(env_get .env NICETRY_MARKETPLACE_URL)}
+  repository=${repository:-https://nicetrybot.com}
+  [[ $repository == */composer ]] || repository=${repository%/}/composer
+  status=$(curl -s -o /dev/null -m 15 -w '%{http_code}' -H "Authorization: Bearer $(saved_token)" "$repository/packages.json" || true)
+  case $status in
+    200) return 0 ;;
+    401 | 403)
+      token_error="$repository didn't take the Composer token in $dir/.env (revoked, or mistyped). Make a new one at $account_url, then add --token=ntbc_…"
+      return 1
+      ;;
+    *) warn "Couldn't ask $repository about the token (HTTP ${status:-none}); building anyway." ;;
+  esac
+}
+
 rebuild_addons() {
   local before=$1 list
   SECONDS=0
   apply_addons_file
   list=$(addons_list)
+  if [[ -n $list ]] && ! check_composer_token; then
+    env_set .env NICETRY_ADDONS "\"$before\""
+    apply_addons_file
+    fail "$token_error Nothing was changed."
+  fi
   if ! start_stack || ! wait_healthy; then
     show_log_tail
     env_set .env NICETRY_ADDONS "\"$before\""
@@ -449,6 +473,25 @@ rebuild_addons() {
     ask_licence_keys
   else
     done_ "No add-ons now; the app runs the release's own image ($(elapsed))."
+  fi
+}
+
+account_url="${NICETRY_MARKETPLACE_URL:-https://nicetrybot.com}/account#composer"
+
+saved_token() { env_get .env NICETRY_COMPOSER_TOKEN | tr -d "\"'"; }
+
+# What's wrong with a Composer token (printed, and true), or nothing (false). A licence key (ntb1.…)
+# looks like one, and was pasted in its place.
+composer_token_problem() {
+  local value=$1
+  if [[ -z $value ]]; then
+    echo "No Composer token yet."
+  elif [[ $value == ntb1.* ]]; then
+    echo "That's a licence key (ntb1.…), not a Composer token. Make a token at $account_url; it starts with ntbc_."
+  elif [[ $value != ntbc_* ]]; then
+    echo "A Composer token starts with ntbc_. Make one at $account_url."
+  else
+    return 1
   fi
 }
 
@@ -514,13 +557,20 @@ cmd_addons() {
       return 0
       ;;
     add)
-      [[ -n $token ]] && env_set .env NICETRY_COMPOSER_TOKEN "$token"
-      if [[ -z $(env_get .env NICETRY_COMPOSER_TOKEN) ]]; then
-        [[ -r /dev/tty ]] || fail "Add-ons need the Composer token from your account on nicetrybot.com: --token=TOKEN"
-        echo "Add-ons need the Composer token from your account on nicetrybot.com (it starts with ntbc_)."
-        read -r -s -p "Token: " token </dev/tty || fail "No token given."
-        echo
-        [[ -n $token ]] || fail "No token given."
+      if [[ -n $token ]]; then
+        composer_token_problem "$token" && fail "--token: $(composer_token_problem "$token")"
+        env_set .env NICETRY_COMPOSER_TOKEN "$token"
+      fi
+      if composer_token_problem "$(saved_token)" >/dev/null; then
+        [[ -r /dev/tty ]] || fail "Add-ons need a Composer token from $account_url: --token=ntbc_…"
+        echo "Add-ons need a Composer token: make one at $account_url (it starts with ntbc_; it isn't a licence key)."
+        while :; do
+          read -r -s -p "Composer token: " token </dev/tty || fail "No token given."
+          echo
+          token=$(printf '%s' "$token" | tr -d '[:space:]')
+          composer_token_problem "$token" || break
+          echo "  $(composer_token_problem "$token")"
+        done
         env_set .env NICETRY_COMPOSER_TOKEN "$token"
       fi
       list=$before
