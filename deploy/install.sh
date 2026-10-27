@@ -19,6 +19,9 @@
 #   --acme-email=EMAIL     where Let's Encrypt sends certificate notices
 #   --admin-email=EMAIL    the first administrator (default: the ACME email when unattended)
 #   --admin-password=PASS  their password (default: a random one, shown once)
+#   --addons=LIST          marketplace add-ons to build in (NICETRY_ADDONS): "nicetry/captchas
+#                          nicetry/threats", or "all" for every one the Composer token may install
+#   --composer-token=TOKEN the Composer token from your account on nicetrybot.com (NICETRY_COMPOSER_TOKEN)
 #   -h, --help             show this
 #
 # Running it again on an installed server updates it: the newest compose.yml for the release, then
@@ -49,6 +52,9 @@ panel_host=
 acme_email=
 admin_email=
 admin_password=
+addons_given=false
+addons_arg=
+composer_token=
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mWarning:\033[0m %s\n' "$*" >&2; }
@@ -74,6 +80,8 @@ for arg in "$@"; do
     --acme-email=*) acme_email=${arg#*=} ;;
     --admin-email=*) admin_email=${arg#*=} ;;
     --admin-password=*) admin_password=${arg#*=} ;;
+    --addons=*) addons_arg=${arg#*=} addons_given=true ;;
+    --composer-token=*) composer_token=${arg#*=} ;;
     -h | --help)
       usage
       exit 0
@@ -251,7 +259,30 @@ setup_addons() {
     *compose.addons.yml*) ;;
     *) warn "COMPOSE_FILE in $env is $compose_file; add :compose.addons.yml to it, or the add-ons won't be built in." ;;
   esac
-  say "Add-ons: $addons (the app's image is built here with them)"
+  [[ ${addons,,} == all ]] && say "Add-ons: every one your Composer token may install" || say "Add-ons: $addons"
+  say "The app's image is built here with them"
+  ensure_build_memory
+}
+
+# Building the add-ons' image runs Composer and the front end's build, which want about 2 GB. A smaller
+# server (a 1 GB droplet, say) gets a 2 GB swap file, so the build finishes, slowly, instead of being
+# killed for want of memory. Kept across reboots in /etc/fstab.
+ensure_build_memory() {
+  [[ -r /proc/meminfo ]] || return 0
+  local mem swap
+  mem=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+  swap=$(awk '/^SwapTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+  ((mem + swap >= 1900)) && return 0
+  if [[ -e /swapfile ]]; then
+    warn "This server has ${mem} MB of memory and ${swap} MB of swap, and building the add-ons wants about 2 GB. /swapfile exists but isn't on: swapon /swapfile, then run this again."
+    return 0
+  fi
+  say "This server has ${mem} MB of memory; building the add-ons wants about 2 GB, so adding a 2 GB swap file (/swapfile)"
+  fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
+  swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
 }
 
 # The release's app image, which the add-ons' image is built on.
@@ -358,6 +389,17 @@ if [[ $installed == true ]]; then
   fi
 else
   write_env
+fi
+
+# Add-ons given on the command line (a cloud image's first login, or user data) go into .env, on a new
+# install or a running one. The token is never echoed.
+if [[ $addons_given == true ]]; then
+  env_set "$dir/.env" NICETRY_ADDONS "\"$addons_arg\""
+  say "Add-ons set in .env: ${addons_arg:-none}"
+fi
+if [[ -n $composer_token ]]; then
+  env_set "$dir/.env" NICETRY_COMPOSER_TOKEN "$composer_token"
+  say "Composer token set in .env"
 fi
 
 if [[ $compose_only == true ]]; then

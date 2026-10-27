@@ -126,6 +126,10 @@ NICETRY_ADDONS="nicetry/captchas nicetry/threats"
 NICETRY_COMPOSER_TOKEN=ntbc_…
 ```
 
+Or `NICETRY_ADDONS=all`: every add-on the token may install, as the marketplace's repository lists them,
+so a later purchase comes in on the next run and a refunded one goes. Building the image wants about 2 GB
+of memory; on a smaller server the installer adds a 2 GB swap file first.
+
 With any listed, the installer sets `COMPOSE_FILE=compose.yml:compose.addons.yml` and the app's image is
 built on this server, on top of the release's: `php artisan addons:install` requires the add-ons, and
 the front end is built again with their styles. The app, worker and scheduler run that image

@@ -5,6 +5,8 @@ namespace App\Console\Commands;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Process;
 use JsonException;
 
@@ -136,7 +138,13 @@ class InstallAddons extends Command
     private function wanted(): ?array
     {
         $wanted = [];
-        $entries = preg_split('/[\s,]+/', strtolower(trim((string) config('addons.install.packages'))), flags: PREG_SPLIT_NO_EMPTY) ?: [];
+        $list = strtolower(trim((string) config('addons.install.packages')));
+
+        if ($list === 'all') {
+            return $this->everythingTheTokenMayHave();
+        }
+
+        $entries = preg_split('/[\s,]+/', $list, flags: PREG_SPLIT_NO_EMPTY) ?: [];
 
         foreach ($entries as $entry) {
             if (! preg_match(self::PACKAGE, $entry, $match)) {
@@ -149,6 +157,49 @@ class InstallAddons extends Command
         }
 
         return $wanted;
+    }
+
+    /**
+     * NICETRY_ADDONS=all: every marketplace add-on the token may install, as the repository's
+     * packages.json lists them (what Composer itself reads), less the ones that come with NiceTryBot.
+     * A purchase made later comes in on the next run; a refunded one goes.
+     *
+     * @return array<string, null>|null
+     */
+    private function everythingTheTokenMayHave(): ?array
+    {
+        $repository = rtrim((string) config('addons.install.repository'), '/');
+        $token = $this->token();
+
+        if ($token === '') {
+            $this->error('NICETRY_ADDONS=all needs NICETRY_COMPOSER_TOKEN: it decides which add-ons are yours.');
+
+            return null;
+        }
+
+        try {
+            $response = Http::withToken($token)->acceptJson()->timeout(30)->get("{$repository}/packages.json");
+        } catch (ConnectionException $e) {
+            $this->error("Couldn't reach {$repository} to see which add-ons are yours: {$e->getMessage()}");
+
+            return null;
+        }
+
+        if (! $response->ok()) {
+            $this->error("{$repository} answered {$response->status()} when asked which add-ons are yours. Check NICETRY_COMPOSER_TOKEN.");
+
+            return null;
+        }
+
+        $bundled = $this->bundled();
+        $names = array_values(array_filter(
+            array_map(fn ($name) => strtolower((string) $name), (array) $response->json('available-packages', [])),
+            fn (string $name) => str_starts_with($name, self::VENDOR) && preg_match(self::PACKAGE, $name) && ! in_array($name, $bundled, true),
+        ));
+
+        $this->line('NICETRY_ADDONS=all: '.($names === [] ? 'no add-ons of yours to install yet.' : implode(', ', $names).'.'));
+
+        return array_fill_keys($names, null);
     }
 
     /**

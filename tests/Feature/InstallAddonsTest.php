@@ -2,6 +2,7 @@
 
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Process;
 
 /**
@@ -173,6 +174,45 @@ it('stops at the first Composer command that fails', function () {
         ->assertFailed();
 
     Process::assertDidntRun(fn (PendingProcess $process) => ($process->command[1] ?? null) === 'dump-autoload');
+});
+
+it('installs every add-on the token may have for NICETRY_ADDONS=all, and drops one it no longer may', function () {
+    config(['addons.install.packages' => ' ALL ']);
+    Http::fake(['nicetrybot.com/composer/packages.json' => Http::response([
+        'packages' => [],
+        'available-packages' => ['nicetry/captchas', 'nicetry/lockdown', 'nicetry/origins', 'someone/else'],
+    ])]);
+
+    $this->artisan('addons:install', ['--working-dir' => addonsApp(['nicetry/threats'])])
+        ->expectsOutputToContain('NICETRY_ADDONS=all: nicetry/captchas, nicetry/origins.')
+        ->expectsOutputToContain('Removed nicetry/threats.')
+        ->doesntExpectOutputToContain('comes with NiceTryBot')
+        ->doesntExpectOutputToContain('ntbc_secret-token')
+        ->assertSuccessful();
+
+    expect($this->runs)->toContain(
+        ['remove', '--no-scripts', '--no-progress', '--update-no-dev', 'nicetry/threats', '--no-interaction'],
+        ['require', '--no-scripts', '--no-progress', '--prefer-dist', '--update-no-dev', 'nicetry/captchas', 'nicetry/origins', '--no-interaction'],
+    );
+    Http::assertSent(fn ($request) => $request->url() === 'https://nicetrybot.com/composer/packages.json'
+        && $request->hasHeader('Authorization', 'Bearer ntbc_secret-token'));
+});
+
+it('needs a token, and an answer from the marketplace, for NICETRY_ADDONS=all', function () {
+    config(['addons.install.packages' => 'all', 'addons.install.token' => '']);
+
+    $this->artisan('addons:install', ['--working-dir' => addonsApp()])
+        ->expectsOutputToContain('NICETRY_ADDONS=all needs NICETRY_COMPOSER_TOKEN')
+        ->assertFailed();
+
+    config(['addons.install.token' => 'ntbc_revoked']);
+    Http::fake(['*' => Http::response(['message' => 'A NiceTryBot Composer token is required.'], 401)]);
+
+    $this->artisan('addons:install', ['--working-dir' => addonsApp()])
+        ->expectsOutputToContain('answered 401 when asked which add-ons are yours')
+        ->assertFailed();
+
+    Process::assertNothingRan();
 });
 
 it('needs composer install first', function () {
