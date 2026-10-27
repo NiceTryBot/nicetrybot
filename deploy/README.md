@@ -236,6 +236,10 @@ Running the installer again on a running server does the same as `nicetrybot upd
 `.env` by hand, `nicetrybot apply` starts the stack again with it. Administrators see a notice in Admin when
 a newer release is out (`NICETRY_UPDATE_CHECK=false` turns the daily check off).
 
+`nicetrybot doctor` checks the server (CPU, memory, swap, memory pressure, disk, and whether the last boot
+ended out of memory), each container, the panel through the edge (response time, certificate) and the app
+itself (database, cache, queue, failed jobs, edge log imports), with what to do about anything it finds.
+
 The rest of `nicetrybot`: `status`, `version`, `logs [service]`, and `artisan …` for an Artisan command in
 the app (`nicetrybot artisan admin:grant you@example.com`). `nicetrybot help` lists them.
 

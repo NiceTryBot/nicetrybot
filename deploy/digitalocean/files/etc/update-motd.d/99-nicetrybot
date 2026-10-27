@@ -7,7 +7,7 @@ echo
 if [ -f "$env" ]; then
   host=$(sed -n 's/^NICETRY_PANEL_HOST=//p' "$env" | tail -n 1 | tr -d "\"'")
   echo "  NiceTryBot is running. The control panel: https://${host}"
-  echo "  The stack:  nicetrybot status"
+  echo "  Health:     nicetrybot doctor"
   echo "  Settings:   /opt/nicetrybot/.env, then: nicetrybot apply"
   echo "  Updates:    nicetrybot update   (nicetrybot rollback undoes it)"
   echo "  Add-ons:    nicetrybot addons add captchas"
