@@ -7,8 +7,10 @@
 #   nicetrybot update --version=X  update (or go back) to release X, like v1.3.0
 #   nicetrybot rollback            put back the release and database from before the last update
 #   nicetrybot addons              list the marketplace add-ons built into the app
-#   nicetrybot addons add NAME…    build add-ons in, like captchas or nicetry/captchas
+#   nicetrybot addons add NAME…    build add-ons in, like captchas or nicetry/captchas; NAME=KEY also
+#                                  enters its licence key (Your licences on nicetrybot.com builds this)
 #   nicetrybot addons remove NAME… take add-ons out
+#   nicetrybot addons keys         enter the licence keys paid add-ons still need
 #   nicetrybot apply               start the stack again with what you changed in .env
 #   nicetrybot doctor              check the server, the containers, the panel and the app, with advice
 #   nicetrybot status              the release, the containers and the add-ons
@@ -160,21 +162,34 @@ base_image() {
 # Pull the release's images (and the add-ons' base), build the add-ons in if any, and start what
 # changed. Docker's output goes to the log. With "keep", an add-ons image this server already has for
 # the release is used as it is (going back), rather than built again.
+#
+# Only the app's image is ever built here (compose build app): compose.yml also says how to build the
+# edge and Vector from their source, for development, and `up --build` would try that too and fail.
+# The release's edge and Vector images are pulled instead.
+failed_step=
 start_stack() {
   local mode=${1:-build}
+  failed_step=
   {
     echo "--- $(date -u '+%F %T') up (NICETRY_VERSION=$(env_get .env NICETRY_VERSION), add-ons: $(addons_list))"
-    compose pull --quiet --ignore-buildable || true
+    compose pull --quiet --ignore-pull-failures || true
   } >>"$log" 2>&1
-  if [[ -n $(addons_list) && $mode == keep ]] && docker image inspect "nicetrybot-app-addons:$(env_get .env NICETRY_VERSION)" >/dev/null 2>&1; then
-    compose up -d --remove-orphans >>"$log" 2>&1 || return 1
-  elif [[ -n $(addons_list) ]]; then
-    docker pull --quiet "$(base_image)" >>"$log" 2>&1 || warn "Couldn't pull $(base_image); building on the copy this server has."
-    say "Building the add-ons in (a few minutes)"
-    compose up -d --build --remove-orphans >>"$log" 2>&1 || return 1
-  else
-    compose up -d --remove-orphans >>"$log" 2>&1 || return 1
+  if [[ -n $(addons_list) ]]; then
+    if [[ $mode == keep ]] && docker image inspect "nicetrybot-app-addons:$(env_get .env NICETRY_VERSION)" >/dev/null 2>&1; then
+      echo "Using the add-ons image this server already has" >>"$log"
+    else
+      docker pull --quiet "$(base_image)" >>"$log" 2>&1 || warn "Couldn't pull $(base_image); building on the copy this server has."
+      say "Building the add-ons in (a few minutes)"
+      compose build app >>"$log" 2>&1 || {
+        failed_step="Building the app's image with the add-ons"
+        return 1
+      }
+    fi
   fi
+  compose up -d --remove-orphans >>"$log" 2>&1 || {
+    failed_step="Starting the stack"
+    return 1
+  }
 }
 
 wait_healthy() {
@@ -424,14 +439,62 @@ rebuild_addons() {
   if ! start_stack || ! wait_healthy; then
     show_log_tail
     env_set .env NICETRY_ADDONS "\"$before\""
-    fail "The app didn't start healthy with the add-ons ${list:-taken out}. NICETRY_ADDONS is back to \"$before\"; run nicetrybot addons add (with nothing) to build that again. Docker's output: $log"
+    apply_addons_file
+    fail "${failed_step:-Starting the app} failed with the add-ons ${list:-taken out}, so NICETRY_ADDONS is back to \"${before:-}\" and the app runs as it did. Docker's output: $log"
   fi
   docker image prune -f >>"$log" 2>&1 || true
   if [[ -n $list ]]; then
-    done_ "Add-ons built in: $list ($(elapsed)). Paid ones need their licence key in Admin → Add-ons."
+    done_ "Add-ons built in: $list ($(elapsed))."
+    enter_given_keys
+    ask_licence_keys
   else
     done_ "No add-ons now; the app runs the release's own image ($(elapsed))."
   fi
+}
+
+# The keys given as NAME=KEY on the command line, entered once the add-ons are built in.
+declare -A given_keys=()
+enter_given_keys() {
+  local slug
+  ((${#given_keys[@]} > 0)) || return 0
+  say "Entering the licence keys"
+  for slug in "${!given_keys[@]}"; do
+    if ! compose exec -T app php artisan addons:licence "$slug" "${given_keys[$slug]}" 2>&1 | sed 's/^/    /'; then
+      warn "The key for $slug wasn't taken; check it on nicetrybot.com → Your licences, then: nicetrybot addons keys"
+    fi
+  done
+}
+
+# Each paid add-on built in without a good licence key: ask for it here (or say where it goes), one
+# key per add-on, from Your licences on nicetrybot.com. A skipped one runs on its 14-day trial.
+ask_licence_keys() {
+  local missing slug key
+  # Releases before 0.4.0 don't have --missing: then just say where the keys go.
+  if ! missing=$(compose exec -T app php artisan addons:licence --missing 2>/dev/null | tr -d '\r') ||
+    grep -qvE '^[a-z0-9-]*$' <<<"$missing"; then
+    ((${#given_keys[@]} > 0)) && return 0
+    echo "Paid add-ons need their licence keys from nicetrybot.com → Your licences: paste each in Admin → Add-ons,"
+    echo "or: nicetrybot artisan addons:licence <add-on> <key>"
+    return 0
+  fi
+  [[ -n $missing ]] || return 0
+
+  if [[ $assume_yes == true || ! -r /dev/tty ]]; then
+    echo "Paid add-ons need their licence keys from nicetrybot.com → Your licences: paste each in Admin → Add-ons, or"
+    for slug in $missing; do echo "  nicetrybot artisan addons:licence $slug <key>"; done
+    return 0
+  fi
+
+  echo
+  say "Licence keys: paste each from nicetrybot.com → Your licences (Enter skips one; it runs on a 14-day trial)"
+  for slug in $missing; do
+    read -r -p "    $slug: " key </dev/tty || break
+    key=$(printf '%s' "$key" | tr -d '[:space:]')
+    [[ -n $key ]] || continue
+    if ! compose exec -T app php artisan addons:licence "$slug" "$key" 2>&1 | sed 's/^/      /'; then
+      warn "That key wasn't taken for $slug; try again with: nicetrybot addons keys"
+    fi
+  done
 }
 
 cmd_addons() {
@@ -462,6 +525,11 @@ cmd_addons() {
       fi
       list=$before
       for name in "$@"; do
+        # captchas=ntb1.… : the add-on and its licence key.
+        if [[ $name == *=* ]]; then
+          given_keys[$(basename "$(addon_package "${name%%=*}")")]=${name#*=}
+          name=${name%%=*}
+        fi
         package=$(addon_package "$name")
         if [[ $package == all ]]; then
           list=all
@@ -474,6 +542,13 @@ cmd_addons() {
       env_set .env NICETRY_ADDONS "\"$list\""
       say "Add-ons: $list"
       rebuild_addons "$before"
+      ;;
+    keys | licences | licence)
+      ask_licence_keys
+      local still
+      still=$(compose exec -T app php artisan addons:licence --missing 2>/dev/null | tr -d '\r' | xargs || true)
+      [[ -z $still ]] && done_ "Every paid add-on has its licence key."
+      return 0
       ;;
     remove | rm)
       [[ $# -gt 0 ]] || fail "Name an add-on to take out, like: nicetrybot addons remove captchas"
@@ -491,7 +566,7 @@ cmd_addons() {
       say "Add-ons: ${list:-none}"
       rebuild_addons "$before"
       ;;
-    *) fail "nicetrybot addons [list|add NAME…|remove NAME…] (got $action)" ;;
+    *) fail "nicetrybot addons [list|add NAME…|remove NAME…|keys] (got $action)" ;;
   esac
 }
 

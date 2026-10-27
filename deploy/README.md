@@ -127,6 +127,10 @@ nicetrybot addons remove threats
 nicetrybot addons                          # what's built in
 ```
 
+Paid add-ons each need their licence key from Your licences on nicetrybot.com: `addons add` asks for each
+one after the build (Enter skips one, which then runs on a 14-day trial), and `nicetrybot addons keys` asks
+again for any still missing. Admin → Add-ons takes them too.
+
 They're kept in `.env` as `NICETRY_ADDONS="nicetry/captchas nicetry/threats"` with
 `NICETRY_COMPOSER_TOKEN=ntbc_…`. Or `NICETRY_ADDONS=all` (`nicetrybot addons add all`): every add-on the token may install, as the marketplace's repository lists them,
 so a later purchase comes in on the next run and a refunded one goes. Building the image wants about 2 GB
@@ -145,7 +149,8 @@ Without the installer, the same by hand (Docker Compose 2.24.4 or newer):
 ```sh
 echo "COMPOSE_FILE=compose.yml:compose.addons.yml" >> .env
 docker pull ghcr.io/nicetrybot/app:latest     # the release's image ($NICETRY_APP_IMAGE, if set)
-docker compose up -d --build
+docker compose build app                      # only the app: the edge and Vector come from the release
+docker compose up -d
 ```
 
 From a checkout, build the release's image first and point `NICETRY_APP_IMAGE` at it:
@@ -252,7 +257,7 @@ docker compose up -d --remove-orphans
 ```
 
 With add-ons, also pull the release's app image and build again: `docker pull ghcr.io/nicetrybot/app:latest`,
-then `docker compose up -d --build --remove-orphans`.
+then `docker compose build app && docker compose up -d --remove-orphans`.
 
 `NICETRY_VERSION` in `.env` picks the release (`1.2.0`, or `latest` to follow the newest); `nicetrybot
 update` and `--version=v1.2.0` on the installer set it. Releases, their notes and their files are at

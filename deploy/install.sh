@@ -524,8 +524,11 @@ if [[ -n $addons ]]; then
 fi
 
 if [[ -n $addons ]]; then
+  # Only the app's image: compose.yml also says how to build the edge and Vector from their source
+  # (for development), which `up --build` would try too, and fail without it.
   say "Building the app's image with the add-ons, then starting the stack"
-  docker compose up -d --build --remove-orphans
+  docker compose build app
+  docker compose up -d --remove-orphans
 else
   say "Starting the stack"
   docker compose up -d --remove-orphans

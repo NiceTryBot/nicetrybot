@@ -9,11 +9,12 @@
 # build secret: it never lands in a layer, the image's history or its files.
 #
 # It builds when the image is missing (a first start, or a new NICETRY_VERSION) and on
-# `docker compose up -d --build`, from scratch each time, so a build always gets the newest versions
-# the token may have. After pulling a newer release image, build again:
+# `docker compose build app`, from scratch each time, so a build always gets the newest versions the
+# token may have. nicetrybot addons add and nicetrybot update do this. By hand, after pulling a newer
+# release image (build only the app: `up --build` would also try the edge and Vector from source):
 #
 #   docker pull ghcr.io/nicetrybot/app:latest    (or NICETRY_APP_IMAGE)
-#   docker compose up -d --build
+#   docker compose build app && docker compose up -d
 #
 # Needs Docker Compose 2.24.4 or newer (!override and !reset).
 

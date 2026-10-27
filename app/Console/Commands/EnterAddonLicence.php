@@ -6,16 +6,34 @@ use App\Addons\Addon;
 use App\Addons\Addons;
 use App\Addons\InvalidLicenceKey;
 use App\Addons\Licences;
+use App\Addons\LicenceState;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 
-#[Signature('addons:licence {addon : The add-on’s slug, as on the Add-ons page (captchas, fingerprints, …)} {key : The licence key from your account on the marketplace}')]
-#[Description('Enter a paid add-on’s licence key, as the Add-ons page does')]
+#[Signature('addons:licence {addon? : The add-on’s slug, as on the Add-ons page (captchas, fingerprints, …)} {key? : The licence key from your account on the marketplace} {--missing : List the paid add-ons without a good key instead, one slug per line}')]
+#[Description('Enter a paid add-on’s licence key, as the Add-ons page does, or list the ones still needing one')]
 class EnterAddonLicence extends Command
 {
     public function handle(Addons $addons, Licences $licences): int
     {
+        if ($this->option('missing')) {
+            // For nicetrybot addons add, which asks for each of these keys after building them in.
+            foreach ($addons->all() as $addon) {
+                if ($addon->paid && $licences->state($addon) !== LicenceState::Licensed) {
+                    $this->line($addon->slug);
+                }
+            }
+
+            return self::SUCCESS;
+        }
+
+        if (! is_string($this->argument('addon')) || ! is_string($this->argument('key'))) {
+            $this->error('Give the add-on and its key, like: php artisan addons:licence captchas ntb1… (or --missing to list the ones without one).');
+
+            return self::FAILURE;
+        }
+
         $addon = $addons->find($this->argument('addon'));
 
         if ($addon === null) {

@@ -255,3 +255,21 @@ test('the addons:licence command enters a key', function () {
 
     expect(AddonLicence::query()->where('slug', 'fingerprints')->sole()->isValid())->toBeTrue();
 });
+
+test('addons:licence --missing lists the paid add-ons without a good key, for nicetrybot addons add to ask for', function () {
+    Http::fake(['https://marketplace.test/licences/*' => Http::response(['status' => 'valid', 'updates_until' => '2027-10-25'])]);
+    $paid = collect(app(Addons::class)->all())->filter->paid->pluck('slug');
+
+    $this->artisan('addons:licence', ['--missing' => true])
+        ->expectsOutput($paid->first())
+        ->assertSuccessful();
+
+    $this->artisan('addons:licence', ['addon' => 'fingerprints', 'key' => signedLicenceKey($this->keypair)])->assertSuccessful();
+
+    $this->artisan('addons:licence', ['--missing' => true])
+        ->doesntExpectOutput('fingerprints')
+        ->doesntExpectOutput('privacy-mode')
+        ->assertSuccessful();
+
+    $this->artisan('addons:licence')->assertFailed();
+})->skip(fn () => ! app(Addons::class)->has('fingerprints'), 'Needs the paid Fingerprints add-on (nicetry/fingerprints).');
