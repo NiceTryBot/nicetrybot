@@ -1,0 +1,586 @@
+#!/usr/bin/env bash
+#
+# nicetrybot: look after a self-hosted NiceTryBot from the command line. The installer puts it in
+# /usr/local/bin, and each update brings the release's newest copy.
+#
+#   nicetrybot update              update to the newest release (the database is backed up first)
+#   nicetrybot update --version=X  update (or go back) to release X, like v1.3.0
+#   nicetrybot rollback            put back the release and database from before the last update
+#   nicetrybot addons              list the marketplace add-ons built into the app
+#   nicetrybot addons add NAME…    build add-ons in, like captchas or nicetry/captchas
+#   nicetrybot addons remove NAME… take add-ons out
+#   nicetrybot apply               start the stack again with what you changed in .env
+#   nicetrybot status              the release, the containers and the add-ons
+#   nicetrybot version             the release running, and the newest one
+#   nicetrybot logs [SERVICE]      follow the logs (app, worker, scheduler, edge, vector, postgres, valkey)
+#   nicetrybot artisan COMMAND…    run an Artisan command in the app, like admin:grant you@example.com
+#
+# Options:
+#   --yes          don't ask before a rollback
+#   --no-backup    update without backing up the database first (then rollback can't restore it)
+#   --token=TOKEN  with addons add: the Composer token from your account on nicetrybot.com
+#
+# The stack lives in /opt/nicetrybot, or NICETRY_DIR (set in /etc/default/nicetrybot by the installer
+# when it was put somewhere else). Each update keeps what it replaced in <dir>/.updates and the
+# database's backup in <dir>/backups (the newest three), and logs Docker's output to
+# <dir>/.updates/update.log.
+
+set -euo pipefail
+
+[[ -r /etc/default/nicetrybot ]] && . /etc/default/nicetrybot
+
+dir=${NICETRY_DIR:-/opt/nicetrybot}
+NICETRY_RELEASE_BASE="${NICETRY_RELEASE_BASE:-https://github.com/NiceTryBot/nicetrybot/releases}"
+updates=$dir/.updates
+backups=$dir/backups
+log=$updates/update.log
+keep_backups=3
+
+assume_yes=false
+backup=true
+token=
+target=
+
+say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
+done_() { printf '\033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '\033[33mWarning:\033[0m %s\n' "$*" >&2; }
+fail() {
+  printf '\033[31mError:\033[0m %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  sed -n '2,/^$/{s/^# \{0,1\}//;p;}' "$0"
+}
+
+# --- Helpers ------------------------------------------------------------------------------------
+
+env_get() { sed -n "s/^$2=//p" "$1" | tail -n 1; }
+
+# Set KEY=VALUE in an env file, in place of an existing KEY= line or at the end.
+env_set() {
+  local file=$1 key=$2 value=$3
+  KEY=$key VALUE=$value awk '
+    BEGIN { key = ENVIRON["KEY"]; value = ENVIRON["VALUE"]; done = 0 }
+    index($0, key "=") == 1 { print key "=" value; done = 1; next }
+    { print }
+    END { if (!done) print key "=" value }
+  ' "$file" >"$file.tmp"
+  cat "$file.tmp" >"$file"
+  rm -f "$file.tmp"
+}
+
+compose() { docker compose "$@"; }
+
+elapsed() {
+  local s=$SECONDS
+  if ((s >= 60)); then printf '%dm %02ds' $((s / 60)) $((s % 60)); else printf '%ds' "$s"; fi
+}
+
+confirm() {
+  [[ $assume_yes == true ]] && return 0
+  [[ -r /dev/tty ]] || fail "$1 Add --yes to go ahead without a terminal."
+  local answer
+  read -r -p "$1 [y/N] " answer </dev/tty || return 1
+  [[ $answer =~ ^[Yy] ]]
+}
+
+# The stack's folder, with its .env, and a Docker this user may run.
+require_stack() {
+  [[ -f $dir/.env && -f $dir/compose.yml ]] ||
+    fail "There's no NiceTryBot in $dir. Install it: curl -fsSL https://nicetrybot.com/install.sh | sudo bash"
+  docker info >/dev/null 2>&1 || fail "Docker isn't running, or this user can't use it: run it as root (sudo nicetrybot …)."
+  cd "$dir"
+  mkdir -p "$updates"
+}
+
+bare() { printf '%s' "${1#v}"; }
+valid_version() { [[ $1 =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; }
+
+# The release the app is running, from its image's label (an add-ons image keeps its release's), or
+# NICETRY_VERSION when it isn't running.
+running_version() {
+  local app version=''
+  app=$(compose ps -q app 2>/dev/null || true)
+  if [[ -n $app ]]; then
+    version=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$app" 2>/dev/null || true)
+  fi
+  if [[ -z $version || $version == '<no value>' ]]; then
+    version=$(env_get .env NICETRY_VERSION)
+    [[ $version == latest ]] && version=''
+  fi
+  printf '%s' "$version"
+}
+
+# The newest release, from where GitHub's latest-release link points (no API, no rate limit).
+latest_version() {
+  local location
+  location=$(curl -fsS -m 10 -o /dev/null -w '%{redirect_url}' "$NICETRY_RELEASE_BASE/latest" 2>/dev/null || true)
+  location=${location##*/tag/}
+  valid_version "$location" && bare "$location"
+}
+
+notes_url() { printf '%s/tag/v%s' "$NICETRY_RELEASE_BASE" "$1"; }
+
+fetch() {
+  local version=$1 name=$2 target=$3
+  curl -fsSL --retry 3 -o "$target" "$NICETRY_RELEASE_BASE/download/v$version/$name" ||
+    fail "Couldn't download $name for v$version from $NICETRY_RELEASE_BASE/download/v$version/$name"
+}
+
+addons_list() { env_get .env NICETRY_ADDONS | tr -d '"'"'" | xargs; }
+
+# Bring compose.addons.yml in when NICETRY_ADDONS lists any (the app's image is built here with them),
+# and take it out when it doesn't, as the installer does.
+apply_addons_file() {
+  local compose_file
+  compose_file=$(env_get .env COMPOSE_FILE)
+  if [[ -z $(addons_list) ]]; then
+    [[ $compose_file == compose.yml:compose.addons.yml ]] && env_set .env COMPOSE_FILE compose.yml
+    return 0
+  fi
+  [[ -n $(env_get .env NICETRY_COMPOSER_TOKEN) ]] ||
+    fail "NICETRY_ADDONS lists add-ons, but NICETRY_COMPOSER_TOKEN in $dir/.env is empty. Make a Composer token on your account at nicetrybot.com, then: nicetrybot addons add --token=TOKEN"
+  case $compose_file in
+    '' | compose.yml) env_set .env COMPOSE_FILE compose.yml:compose.addons.yml ;;
+    *compose.addons.yml*) ;;
+    *) warn "COMPOSE_FILE in $dir/.env is $compose_file; add :compose.addons.yml to it, or the add-ons won't be built in." ;;
+  esac
+}
+
+# The release's app image, which the add-ons' image is built on.
+base_image() {
+  local image version
+  image=$(env_get .env NICETRY_APP_IMAGE)
+  version=$(env_get .env NICETRY_VERSION)
+  printf '%s' "${image:-ghcr.io/nicetrybot/app:${version:-latest}}"
+}
+
+# Pull the release's images (and the add-ons' base), build the add-ons in if any, and start what
+# changed. Docker's output goes to the log. With "keep", an add-ons image this server already has for
+# the release is used as it is (going back), rather than built again.
+start_stack() {
+  local mode=${1:-build}
+  {
+    echo "--- $(date -u '+%F %T') up (NICETRY_VERSION=$(env_get .env NICETRY_VERSION), add-ons: $(addons_list))"
+    compose pull --quiet --ignore-buildable || true
+  } >>"$log" 2>&1
+  if [[ -n $(addons_list) && $mode == keep ]] && docker image inspect "nicetrybot-app-addons:$(env_get .env NICETRY_VERSION)" >/dev/null 2>&1; then
+    compose up -d --remove-orphans >>"$log" 2>&1 || return 1
+  elif [[ -n $(addons_list) ]]; then
+    docker pull --quiet "$(base_image)" >>"$log" 2>&1 || warn "Couldn't pull $(base_image); building on the copy this server has."
+    say "Building the add-ons in (a few minutes)"
+    compose up -d --build --remove-orphans >>"$log" 2>&1 || return 1
+  else
+    compose up -d --remove-orphans >>"$log" 2>&1 || return 1
+  fi
+}
+
+wait_healthy() {
+  local app status
+  for _ in $(seq 1 120); do
+    app=$(compose ps -q app 2>/dev/null || true)
+    status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$app" 2>/dev/null || true)
+    [[ $status == healthy ]] && return 0
+    sleep 5
+  done
+  return 1
+}
+
+show_log_tail() {
+  echo >&2
+  tail -n 30 "$log" >&2 || true
+  compose logs --tail 30 app >&2 2>/dev/null || true
+}
+
+# --- The database ---------------------------------------------------------------------------------
+
+# Only the bundled Postgres is backed up and restored here; a managed one has its own backups.
+bundled_postgres() { [[ -n $(compose ps -q postgres 2>/dev/null || true) ]]; }
+
+psql_() { compose exec -T postgres sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' psql "$@"; }
+
+migration_count() {
+  bundled_postgres || return 0
+  psql_ -tAc 'select count(*) from migrations' 2>/dev/null | tr -d '[:space:]' || true
+}
+
+# Back the database up to backups/<when>-v<release>.sql.gz, keeping the newest few; prints the path.
+backup_database() {
+  local version=$1 file
+  mkdir -p "$backups"
+  chmod 700 "$backups"
+  file=$backups/$(date -u +%Y%m%d-%H%M%S)-v${version:-unknown}.sql.gz
+  compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner' | gzip >"$file.partial" ||
+    {
+      rm -f "$file.partial"
+      return 1
+    }
+  mv -f "$file.partial" "$file"
+  chmod 600 "$file"
+  ls -1t "$backups"/*.sql.gz 2>/dev/null | tail -n +$((keep_backups + 1)) | xargs -r rm -f
+  printf '%s' "$file"
+}
+
+# Put the database back as the backup has it: the schema is emptied first, so tables a newer
+# release made go too.
+restore_database() {
+  local file=$1
+  psql_ -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' >>"$log" 2>&1
+  gunzip -c "$file" | psql_ >>"$log" 2>&1
+}
+
+# --- Updating -----------------------------------------------------------------------------------
+
+# What an update replaced, for nicetrybot rollback: the stack's files, the release, the add-ons, the
+# backup and how many migrations had run.
+save_previous() {
+  local version=$1 backup_file=$2 migrations=$3
+  rm -rf "$updates/previous"
+  mkdir -p "$updates/previous"
+  cp -f compose.yml "$updates/previous/"
+  [[ -f compose.addons.yml ]] && cp -f compose.addons.yml "$updates/previous/"
+  {
+    printf 'version=%s\n' "$version"
+    printf 'compose_file=%s\n' "$(env_get .env COMPOSE_FILE)"
+    printf 'addons=%s\n' "$(env_get .env NICETRY_ADDONS)"
+    printf 'backup=%s\n' "$backup_file"
+    printf 'migrations=%s\n' "$migrations"
+    printf 'at=%s\n' "$(date -u '+%F %H:%M UTC')"
+  } >"$updates/previous/state"
+}
+
+state_get() { env_get "$updates/previous/state" "$1"; }
+
+# The images this server runs as :latest are kept under their release's tag too, so going back to
+# that release needs no download (the add-ons' image, built here, couldn't be downloaded at all).
+keep_current_images() {
+  local version=$1 image
+  [[ -n $version ]] || return 0
+  for image in nicetrybot-app-addons ghcr.io/nicetrybot/app ghcr.io/nicetrybot/edge ghcr.io/nicetrybot/vector; do
+    if docker image inspect "$image:latest" >/dev/null 2>&1 && ! docker image inspect "$image:$version" >/dev/null 2>&1; then
+      docker tag "$image:latest" "$image:$version" >>"$log" 2>&1 || true
+    fi
+  done
+}
+
+# Put the release, files and add-ons from before the last update back, and the database when
+# restore_db is true.
+put_back() {
+  local restore_db=$1 version backup_file
+  version=$(state_get version)
+  backup_file=$(state_get backup)
+
+  cp -f "$updates/previous/compose.yml" compose.yml
+  [[ -f $updates/previous/compose.addons.yml ]] && cp -f "$updates/previous/compose.addons.yml" compose.addons.yml
+  env_set .env NICETRY_VERSION "$version"
+  env_set .env COMPOSE_FILE "$(state_get compose_file)"
+  env_set .env NICETRY_ADDONS "$(state_get addons)"
+
+  if [[ $restore_db == true ]]; then
+    if [[ -n $backup_file && -f $backup_file ]] && bundled_postgres; then
+      say "Restoring the database from $(basename "$backup_file")"
+      compose stop app worker scheduler >>"$log" 2>&1 || true
+      restore_database "$backup_file" || fail "Restoring the database failed; see $log. The backup is $backup_file."
+    else
+      warn "No database backup to restore from; the database stays as it is."
+    fi
+  fi
+
+  say "Starting v$version"
+  start_stack keep || {
+    show_log_tail
+    fail "Couldn't start v$version again; see $log"
+  }
+  wait_healthy || {
+    show_log_tail
+    fail "v$version didn't become healthy either; see $log and: nicetrybot logs app"
+  }
+  [[ $restore_db == true ]] && compose exec -T app php artisan cache:clear >>"$log" 2>&1 || true
+  mv -f "$updates/previous" "$updates/rolled-back-$(date -u +%Y%m%d-%H%M%S)"
+}
+
+cmd_update() {
+  require_stack
+  SECONDS=0
+  local current addons backup_file='' migrations_before migrations_after next=$updates/next
+
+  current=$(running_version)
+  if [[ -n $target ]]; then
+    valid_version "$target" || fail "--version must be a release like v1.3.0 (got $target)"
+    target=$(bare "$target")
+  else
+    target=$(latest_version) || fail "Couldn't find the newest release at $NICETRY_RELEASE_BASE/latest"
+  fi
+  addons=$(addons_list)
+
+  if [[ $current == "$target" && -z $addons && $(env_get .env COMPOSE_FILE) != *compose.addons.yml* ]]; then
+    done_ "Already on v$target, the newest release. Nothing to update."
+    return 0
+  fi
+
+  if [[ $current == "$target" ]]; then
+    say "Already on v$target; building the add-ons in again for their newest versions"
+  else
+    say "v${current:-?} → v$target   ($(notes_url "$target"))"
+  fi
+
+  rm -rf "$next"
+  mkdir -p "$next"
+  fetch "$target" compose.yml "$next/compose.yml"
+  fetch "$target" compose.addons.yml "$next/compose.addons.yml"
+  fetch "$target" env.example "$next/.env.example"
+  # Releases before this command came in don't have it: this copy stays then.
+  curl -fsSL --retry 3 -o "$next/nicetrybot" "$NICETRY_RELEASE_BASE/download/v$target/nicetrybot" 2>/dev/null || rm -f "$next/nicetrybot"
+
+  migrations_before=$(migration_count)
+  if [[ $backup == true ]]; then
+    if bundled_postgres; then
+      say "Backing up the database"
+      backup_file=$(backup_database "$current") || fail "The database backup failed, so nothing was changed. (--no-backup skips it.)"
+      echo "    $backup_file ($(du -h "$backup_file" | cut -f1))"
+    elif [[ ,$(env_get .env COMPOSE_PROFILES), == *,postgres,* ]]; then
+      warn "Postgres isn't running, so there's nothing to back up."
+    else
+      warn "The database isn't the bundled Postgres, so it isn't backed up here: make sure your provider's backups are on."
+    fi
+  fi
+
+  keep_current_images "$current"
+  save_previous "${current:-$(env_get .env NICETRY_VERSION)}" "$backup_file" "$migrations_before"
+
+  mv -f "$next/compose.yml" compose.yml
+  mv -f "$next/compose.addons.yml" compose.addons.yml
+  mv -f "$next/.env.example" .env.example
+  env_set .env NICETRY_VERSION "$target"
+  apply_addons_file
+
+  say "Pulling v$target and restarting"
+  if ! start_stack || ! wait_healthy; then
+    show_log_tail
+    warn "v$target didn't start healthy. Going back to v${current:-the previous release}."
+    migrations_after=$(migration_count)
+    put_back "$([[ $migrations_after != "$migrations_before" ]] && echo true || echo false)"
+    fail "The update to v$target failed and v${current:-the previous release} is running again. Docker's output: $log"
+  fi
+
+  migrations_after=$(migration_count)
+  if [[ -n $migrations_before && -n $migrations_after ]] && ((migrations_after > migrations_before)); then
+    echo "    $((migrations_after - migrations_before)) database migration(s) ran"
+  fi
+
+  # A new inode, so a copy of this script that's running carries on reading the old one.
+  if [[ -s $next/nicetrybot ]]; then
+    install -m 755 "$next/nicetrybot" /usr/local/bin/nicetrybot.new && mv -f /usr/local/bin/nicetrybot.new /usr/local/bin/nicetrybot || true
+  fi
+  rm -rf "$next"
+  docker image prune -f >>"$log" 2>&1 || true
+
+  if [[ $current == "$target" ]]; then
+    done_ "Add-ons built in again on v$target in $(elapsed)."
+  else
+    done_ "Updated to v$target in $(elapsed).   Undo: nicetrybot rollback"
+  fi
+}
+
+cmd_rollback() {
+  require_stack
+  SECONDS=0
+  [[ -f $updates/previous/state ]] || fail "There's no update to roll back."
+  local version current backup_file
+  version=$(state_get version)
+  current=$(running_version)
+  backup_file=$(state_get backup)
+
+  if [[ -n $backup_file && -f $backup_file ]]; then
+    confirm "Go back to v$version (from v${current:-?}), with the database as it was at $(state_get at)? What changed in the panel since then is lost." ||
+      fail "Nothing was changed."
+    put_back true
+  else
+    confirm "Go back to v$version (from v${current:-?})? There's no database backup from the update, so the database stays as it is." ||
+      fail "Nothing was changed."
+    put_back false
+  fi
+  done_ "Back on v$version in $(elapsed)."
+}
+
+# --- Add-ons ------------------------------------------------------------------------------------
+
+# captchas → nicetry/captchas; nicetry/captchas:^1.2 stays as it is.
+addon_package() {
+  local name=${1,,}
+  [[ $name == all || $name == */* ]] || name=nicetry/$name
+  [[ $name == all || $name =~ ^[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*(:[^[:space:]]+)?$ ]] ||
+    fail "\"$1\" isn't an add-on like captchas or nicetry/captchas"
+  printf '%s' "$name"
+}
+
+rebuild_addons() {
+  local before=$1 list
+  SECONDS=0
+  apply_addons_file
+  list=$(addons_list)
+  if ! start_stack || ! wait_healthy; then
+    show_log_tail
+    env_set .env NICETRY_ADDONS "\"$before\""
+    fail "The app didn't start healthy with the add-ons ${list:-taken out}. NICETRY_ADDONS is back to \"$before\"; run nicetrybot addons add (with nothing) to build that again. Docker's output: $log"
+  fi
+  docker image prune -f >>"$log" 2>&1 || true
+  if [[ -n $list ]]; then
+    done_ "Add-ons built in: $list ($(elapsed)). Paid ones need their licence key in Admin → Add-ons."
+  else
+    done_ "No add-ons now; the app runs the release's own image ($(elapsed))."
+  fi
+}
+
+cmd_addons() {
+  require_stack
+  local action=${1:-list} before list name package
+  [[ $# -gt 0 ]] && shift
+  before=$(addons_list)
+
+  case $action in
+    list | ls)
+      if [[ -z $before ]]; then
+        echo "No marketplace add-ons are built in. Browse them at https://nicetrybot.com/marketplace, then: nicetrybot addons add NAME"
+      else
+        echo "Built in from NICETRY_ADDONS: $before"
+      fi
+      echo "Lockdown, Privacy mode and Rule packs come with NiceTryBot. Switch any add-on on or off in Admin → Add-ons."
+      return 0
+      ;;
+    add)
+      [[ -n $token ]] && env_set .env NICETRY_COMPOSER_TOKEN "$token"
+      if [[ -z $(env_get .env NICETRY_COMPOSER_TOKEN) ]]; then
+        [[ -r /dev/tty ]] || fail "Add-ons need the Composer token from your account on nicetrybot.com: --token=TOKEN"
+        echo "Add-ons need the Composer token from your account on nicetrybot.com (it starts with ntbc_)."
+        read -r -s -p "Token: " token </dev/tty || fail "No token given."
+        echo
+        [[ -n $token ]] || fail "No token given."
+        env_set .env NICETRY_COMPOSER_TOKEN "$token"
+      fi
+      list=$before
+      for name in "$@"; do
+        package=$(addon_package "$name")
+        if [[ $package == all ]]; then
+          list=all
+        elif [[ $list != all && " $list " != *" ${package%%:*} "* && " $list " != *" ${package%%:*}:"* ]]; then
+          list="${list:+$list }$package"
+        fi
+      done
+      [[ $list == "$before" && $# -gt 0 ]] && echo "Already listed: $before. Building them in again, for their newest versions."
+      [[ -n $list ]] || fail "Name an add-on to add, like: nicetrybot addons add captchas"
+      env_set .env NICETRY_ADDONS "\"$list\""
+      say "Add-ons: $list"
+      rebuild_addons "$before"
+      ;;
+    remove | rm)
+      [[ $# -gt 0 ]] || fail "Name an add-on to take out, like: nicetrybot addons remove captchas"
+      [[ $before == all ]] && fail "NICETRY_ADDONS is \"all\": list the ones to keep instead, like: nicetrybot addons add captchas threats (after setting NICETRY_ADDONS= in $dir/.env)"
+      list=" $before "
+      for name in "$@"; do
+        package=$(addon_package "$name")
+        package=${package%%:*}
+        [[ $list == *" $package "* || $list == *" $package:"* ]] || fail "$package isn't built in (NICETRY_ADDONS: ${before:-empty})"
+        list=$(printf '%s' "$list" | tr ' ' '\n' | grep -v -e "^$package\$" -e "^$package:" | xargs || true)
+        list=" $list "
+      done
+      list=$(printf '%s' "$list" | xargs)
+      env_set .env NICETRY_ADDONS "\"$list\""
+      say "Add-ons: ${list:-none}"
+      rebuild_addons "$before"
+      ;;
+    *) fail "nicetrybot addons [list|add NAME…|remove NAME…] (got $action)" ;;
+  esac
+}
+
+# Settings changed by hand in .env: compose starts again what they change.
+cmd_apply() {
+  require_stack
+  SECONDS=0
+  apply_addons_file
+  say "Starting the stack with $dir/.env"
+  if ! start_stack keep || ! wait_healthy; then
+    show_log_tail
+    fail "The app didn't start healthy with these settings. Docker's output: $log"
+  fi
+  done_ "Applied ($(elapsed))."
+}
+
+# --- Looking around -----------------------------------------------------------------------------
+
+cmd_version() {
+  require_stack
+  local current latest
+  current=$(running_version)
+  latest=$(latest_version || true)
+  echo "NiceTryBot v${current:-?} (NICETRY_VERSION=$(env_get .env NICETRY_VERSION))"
+  if [[ -z $latest ]]; then
+    echo "Couldn't reach $NICETRY_RELEASE_BASE to find the newest release."
+  elif [[ $latest == "$current" ]]; then
+    echo "That's the newest release."
+  else
+    echo "v$latest is out: $(notes_url "$latest")   Update: nicetrybot update"
+  fi
+}
+
+cmd_status() {
+  cmd_version
+  echo
+  compose ps --format 'table {{.Service}}\t{{.Status}}'
+  echo
+  echo "Panel:    https://$(env_get .env NICETRY_PANEL_HOST)"
+  local addons
+  addons=$(addons_list || true)
+  echo "Add-ons:  ${addons:-none from the marketplace}"
+  local newest
+  newest=$(ls -1t "$backups"/*.sql.gz 2>/dev/null | head -n 1 || true)
+  echo "Backup:   ${newest:-none yet (one is made before each update)}"
+  [[ -f $updates/previous/state ]] && echo "Rollback: back to v$(state_get version) (updated $(state_get at))"
+  return 0
+}
+
+cmd_logs() {
+  require_stack
+  compose logs -f --tail 100 "$@"
+}
+
+cmd_artisan() {
+  require_stack
+  [[ $# -gt 0 ]] || set -- list
+  if [[ -t 0 && -t 1 ]]; then
+    compose exec app php artisan "$@"
+  else
+    compose exec -T app php artisan "$@"
+  fi
+}
+
+# --- Main ---------------------------------------------------------------------------------------
+
+command=${1:-help}
+[[ $# -gt 0 ]] && shift
+
+args=()
+for arg in "$@"; do
+  case $arg in
+    --yes | -y) assume_yes=true ;;
+    --no-backup) backup=false ;;
+    --version=*) target=${arg#*=} ;;
+    --token=*) token=${arg#*=} ;;
+    *) args+=("$arg") ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
+
+case $command in
+  update | upgrade) cmd_update ;;
+  rollback) cmd_rollback ;;
+  apply | restart) cmd_apply ;;
+  addons | addon) cmd_addons "$@" ;;
+  status) cmd_status ;;
+  version | --version | -v) cmd_version ;;
+  logs | log) cmd_logs "$@" ;;
+  artisan) cmd_artisan "$@" ;;
+  help | --help | -h) usage ;;
+  *) fail "Unknown command: $command (try: nicetrybot help)" ;;
+esac

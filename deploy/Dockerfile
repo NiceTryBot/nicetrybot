@@ -74,6 +74,9 @@ RUN npm run build
 ############################################################################
 FROM base AS app
 
+# The release this image is (bare, like 1.2.0); the release workflow passes it with --build-arg.
+ARG NICETRY_RELEASE=
+
 WORKDIR /var/www/html
 
 ENV COMPOSER_MIRROR_PATH_REPOS=1 \
@@ -88,7 +91,11 @@ ENV COMPOSER_MIRROR_PATH_REPOS=1 \
     # decides what to believe, so nginx passes the connection's address through untouched.
     TRUSTED_PROXY=off \
     SHOW_WELCOME_MESSAGE=false \
-    LOG_CHANNEL=stderr
+    LOG_CHANNEL=stderr \
+    # Add-ons come in through NICETRY_ADDONS and the installer here, which the Add-ons page explains.
+    NICETRY_INSTALL=docker \
+    # Which release this is, for the Admin section's update notice (empty in a local build).
+    NICETRY_RELEASE=${NICETRY_RELEASE}
 
 COPY --chown=www-data:www-data . .
 COPY --chown=www-data:www-data --from=vendor /var/www/html/vendor ./vendor

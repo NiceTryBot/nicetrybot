@@ -54,8 +54,8 @@ bare (no A record target, no previews, sign-up by invitation). See [Without Dock
 Each release is a `vX.Y.Z` tag here, with its notes and the installer's files on the
 [releases page](https://github.com/NiceTryBot/nicetrybot/releases). Its images are
 `ghcr.io/nicetrybot/app`, `ghcr.io/nicetrybot/edge` and `ghcr.io/nicetrybot/vector`, tagged `X.Y.Z` (and
-`latest`), for amd64 and arm64. `NICETRY_VERSION` in `.env` picks one (`1.2.0`, or `latest`); running the
-installer again updates to it. Maintainers cut a release by pushing an annotated tag, whose message becomes
+`latest`), for amd64 and arm64. `NICETRY_VERSION` in `.env` picks one (`1.2.0`, or `latest`);
+`nicetrybot update` on the server updates to the newest, and `nicetrybot rollback` undoes it. Maintainers cut a release by pushing an annotated tag, whose message becomes
 the release notes:
 
 ```sh
@@ -96,9 +96,9 @@ Add-ons are Composer packages the panel finds on its own.
     It moves origins, so it needs the Origins add-on on both panels.
 - **Paid, not in this repository:** Captchas, Fingerprints, Origins (one backend serving many hostnames),
   Request monitor and Threats, from [nicetrybot.com/marketplace](https://nicetrybot.com/marketplace).
-  - They install with Composer from NiceTryBot's private repository and need a licence key. List them in
-    `NICETRY_ADDONS`, with the Composer token from your account, in `.env`: the installer then builds
-    them into the app's image. Without Docker, `php artisan addons:install` does the same. See
+  - They install with Composer from NiceTryBot's private repository and need a licence key.
+    `nicetrybot addons add captchas` on the server builds one into the app's image, with the Composer
+    token from your account. Without Docker, `php artisan addons:install` does the same. See
     [Add-ons](deploy/README.md#add-ons).
   - Without a key, a paid add-on runs for 14 days and then turns off until a key is entered.
   - The core works without any of them.

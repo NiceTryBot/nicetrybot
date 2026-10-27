@@ -24,8 +24,9 @@
 #   --composer-token=TOKEN the Composer token from your account on nicetrybot.com (NICETRY_COMPOSER_TOKEN)
 #   -h, --help             show this
 #
-# Running it again on an installed server updates it: the newest compose.yml for the release, then
-# `docker compose pull` and `up -d`. Its .env is kept as it is (only --version changes it).
+# It also installs the nicetrybot command (/usr/local/bin/nicetrybot), which looks after the stack from
+# then on: nicetrybot update, rollback, addons add|remove, status, logs. Running this installer again
+# on a server that's running NiceTryBot hands over to nicetrybot update (to --version, if given).
 #
 # With add-ons listed in .env (NICETRY_ADDONS, with NICETRY_COMPOSER_TOKEN), the app's image is built
 # here on top of the release's, with them in it (compose.addons.yml), and built again on every run,
@@ -203,6 +204,29 @@ fetch() {
   curl -fsSL --retry 3 -o "$target.download" "$(release_url "$name")" ||
     fail "Couldn't download $name for release $(release_name) from $(release_url "$name")"
   mv -f "$target.download" "$target"
+}
+
+# The nicetrybot command, for the release, in /usr/local/bin. It's told where the stack is when that
+# isn't /opt/nicetrybot (or the releases come from elsewhere), in /etc/default/nicetrybot.
+install_cli() {
+  fetch nicetrybot /usr/local/bin/nicetrybot
+  chmod 755 /usr/local/bin/nicetrybot
+  if [[ $dir != /opt/nicetrybot || $NICETRY_RELEASE_BASE != https://github.com/NiceTryBot/nicetrybot/releases ]]; then
+    printf 'NICETRY_DIR=%q\nNICETRY_RELEASE_BASE=%q\n' "$dir" "$NICETRY_RELEASE_BASE" >/etc/default/nicetrybot
+  fi
+}
+
+# Add-ons given on the command line (a cloud image's first login, or user data) go into .env, on a new
+# install or a running one. The token is never echoed.
+apply_addon_options() {
+  if [[ $addons_given == true ]]; then
+    env_set "$dir/.env" NICETRY_ADDONS "\"$addons_arg\""
+    say "Add-ons set in .env: ${addons_arg:-none}"
+  fi
+  if [[ -n $composer_token ]]; then
+    env_set "$dir/.env" NICETRY_COMPOSER_TOKEN "$composer_token"
+    say "Composer token set in .env"
+  fi
 }
 
 # --- The server ---------------------------------------------------------------------------------
@@ -449,6 +473,16 @@ mkdir -p "$dir"
 installed=false
 [[ -f $dir/.env ]] && installed=true
 
+# A server that's running NiceTryBot (it finished installing, or its app is up) is updated by the
+# nicetrybot command instead: a backup first, a short summary, and nicetrybot rollback to undo it.
+if [[ $installed == true && $compose_only == false ]] &&
+  { [[ -f $dir/.installed ]] || [[ -n $(cd "$dir" && docker compose ps -q app 2>/dev/null) ]]; }; then
+  apply_addon_options
+  install_cli
+  say "NiceTryBot is installed in $dir; updating it (next time: nicetrybot update)"
+  exec /usr/local/bin/nicetrybot update ${version:+"--version=$version"}
+fi
+
 say "Downloading compose.yml, compose.addons.yml and .env.example for release $(release_name)"
 if [[ -f $dir/compose.yml ]]; then
   cp -f "$dir/compose.yml" "$dir/compose.yml.previous"
@@ -467,21 +501,14 @@ else
   write_env
 fi
 
-# Add-ons given on the command line (a cloud image's first login, or user data) go into .env, on a new
-# install or a running one. The token is never echoed.
-if [[ $addons_given == true ]]; then
-  env_set "$dir/.env" NICETRY_ADDONS "\"$addons_arg\""
-  say "Add-ons set in .env: ${addons_arg:-none}"
-fi
-if [[ -n $composer_token ]]; then
-  env_set "$dir/.env" NICETRY_COMPOSER_TOKEN "$composer_token"
-  say "Composer token set in .env"
-fi
+apply_addon_options
 
 if [[ $compose_only == true ]]; then
   say "Done. Start it with: cd $dir && docker compose up -d"
   exit 0
 fi
+
+install_cli
 
 cd "$dir"
 
@@ -534,6 +561,8 @@ else
   docker compose exec -T app "${install_args[@]}" --no-interaction
 fi
 
+touch "$dir/.installed"
+
 panel_host=$(env_get "$dir/.env" NICETRY_PANEL_HOST)
 echo
 # A bell, for whoever walked away while it ran.
@@ -541,5 +570,6 @@ echo
 say "NiceTryBot is running in $dir"
 echo "    The panel answers at https://$panel_host once its DNS points here (the certificate follows on its own)."
 echo "    Settings: $dir/.env (then: cd $dir && docker compose up -d)"
-echo "    Add-ons:  NICETRY_ADDONS and NICETRY_COMPOSER_TOKEN in $dir/.env, then run this installer again"
-echo "    Update:   run this installer again"
+echo "    Update:   nicetrybot update   (nicetrybot rollback undoes it)"
+echo "    Add-ons:  nicetrybot addons add captchas   (browse them at https://nicetrybot.com/marketplace)"
+echo "    More:     nicetrybot help"

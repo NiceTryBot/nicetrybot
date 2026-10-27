@@ -29,9 +29,15 @@ return [
     | token is the buyer's, from their account on the marketplace; it only
     | ever reaches Composer, through COMPOSER_AUTH.
     |
+    | via: how this installation gets its add-ons, for the Add-ons page's
+    | instructions. "docker" (the release image sets it): NICETRY_ADDONS in
+    | the stack's .env and the installer run again. "composer": required
+    | where the code lives, then deployed.
+    |
     */
 
     'install' => [
+        'via' => env('NICETRY_INSTALL') === 'docker' ? 'docker' : 'composer',
         'packages' => (string) env('NICETRY_ADDONS', ''),
         'repository' => rtrim((string) (env('NICETRY_COMPOSER_URL') ?: rtrim((string) (env('NICETRY_MARKETPLACE_URL') ?: 'https://nicetrybot.com'), '/').'/composer'), '/'),
         'token' => env('NICETRY_COMPOSER_TOKEN'),

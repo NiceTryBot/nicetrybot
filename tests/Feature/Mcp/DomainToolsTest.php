@@ -115,13 +115,25 @@ test('check-domain never calls an origin on a private address', function (string
     Http::assertNothingSent();
 })->with(['127.0.0.1', '10.0.0.5', '169.254.169.254', '192.168.1.1']);
 
-test('verify-domain verifies one of the team\'s domains', function () {
+test('verify-domain verifies one of the team\'s domains once its TXT record is in DNS', function () {
     [$token] = apiToken([ApiAbility::ManageDomains]);
     $domain = Domain::factory()->for($token->team)->create(['status' => DomainStatus::PendingVerification, 'verified_at' => null]);
+    test()->mock(LookUpDnsRecords::class, fn ($mock) => $mock->shouldReceive('txtRecords')->with($domain->verificationRecordName())->andReturn([$domain->verificationRecordValue()]));
 
     mcpAs($token)->tool(VerifyDomain::class, ['hostname' => $domain->hostname])->assertOk()->assertSee('"verified":true');
 
     expect($domain->fresh()->verified_at)->not->toBeNull();
+});
+
+test('verify-domain reports a missing TXT record and leaves the domain unverified', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+    $domain = Domain::factory()->for($token->team)->create(['hostname' => 'www.mine.test', 'status' => DomainStatus::PendingVerification, 'verified_at' => null]);
+    test()->mock(LookUpDnsRecords::class, fn ($mock) => $mock->shouldReceive('txtRecords')->andReturn([]));
+
+    mcpAs($token)->tool(VerifyDomain::class, ['hostname' => 'www.mine.test'])
+        ->assertHasErrors(['No matching TXT record at _nicetrybot.www.mine.test yet.']);
+
+    expect($domain->fresh()->verified_at)->toBeNull();
 });
 
 test('get-origin-secret and set-protection-mode only reach the token\'s own team', function () {

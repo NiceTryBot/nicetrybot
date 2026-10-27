@@ -5,10 +5,12 @@ use App\Enums\DomainStatus;
 use App\Enums\HstsPolicy;
 use App\Enums\ProtectionMode;
 use App\Enums\TeamRole;
+use App\Jobs\VerifyDomainOwnershipJob;
 use App\Models\Domain;
 use App\Models\EdgeRequest;
 use App\Models\Team;
 use App\Models\User;
+use Illuminate\Support\Facades\Queue;
 use Livewire\Livewire;
 
 use function Pest\Laravel\mock;
@@ -33,19 +35,83 @@ test('another team\'s domain returns 404', function () {
         ->assertNotFound();
 });
 
-test('checking the TXT record verifies the domain and starts protection', function () {
+test('checking the TXT record verifies the domain and starts protection once the record is in DNS', function () {
     $user = User::factory()->create();
-    $domain = Domain::factory()->for($user->currentTeam)->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create(['hostname' => 'sign.example']);
+
+    mock(LookUpDnsRecords::class)
+        ->shouldReceive('txtRecords')
+        ->once()
+        ->with('_nicetrybot.sign.example')
+        ->andReturn(['v=spf1 -all', '"'.strtoupper($domain->verificationRecordValue()).'"']);
 
     $this->actingAs($user);
 
     Livewire::test('pages::domains.show', ['domain' => $domain])
         ->call('verify')
-        ->assertHasNoErrors();
+        ->assertSet('isCheckingTxtRecord', false)
+        ->assertSet('txtRecordProblem', null);
 
     expect($domain->fresh())
         ->status->toBe(DomainStatus::Active)
         ->verified_at->not->toBeNull();
+});
+
+test('checking the TXT record leaves the domain unverified while the record is missing or wrong', function (array $records) {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create(['hostname' => 'sign.example']);
+
+    mock(LookUpDnsRecords::class)->shouldReceive('txtRecords')->once()->andReturn($records);
+
+    $this->actingAs($user);
+
+    Livewire::test('pages::domains.show', ['domain' => $domain])
+        ->call('verify')
+        ->assertSet('isCheckingTxtRecord', false)
+        ->assertSee('No matching TXT record at _nicetrybot.sign.example yet.');
+
+    expect($domain->fresh())
+        ->status->toBe(DomainStatus::PendingVerification)
+        ->verified_at->toBeNull();
+})->with([
+    'no record' => [[]],
+    'another domain\'s token' => [['nicetrybot-verify=someoneelse']],
+]);
+
+test('the TXT record is looked up on the queue while the page polls for the outcome', function () {
+    Queue::fake();
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+
+    $this->actingAs($user);
+
+    $page = Livewire::test('pages::domains.show', ['domain' => $domain])
+        ->call('verify')
+        ->assertSet('isCheckingTxtRecord', true)
+        ->assertSeeHtml('wire:poll.2s="pollTxtRecord"');
+
+    Queue::assertPushed(VerifyDomainOwnershipJob::class, fn (VerifyDomainOwnershipJob $job) => $job->domain->is($domain));
+
+    $this->travel(2)->minutes();
+
+    $page->call('pollTxtRecord')
+        ->assertSet('isCheckingTxtRecord', false)
+        ->assertSee('The check didn\'t finish.')
+        ->assertDontSeeHtml('wire:poll.2s="pollTxtRecord"');
+});
+
+test('with DNS verification off, checking the TXT record verifies without a lookup', function () {
+    config(['nicetry.verify_dns' => false]);
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+
+    mock(LookUpDnsRecords::class)->shouldNotReceive('txtRecords');
+
+    $this->actingAs($user);
+
+    Livewire::test('pages::domains.show', ['domain' => $domain])->call('verify');
+
+    expect($domain->fresh()->verified_at)->not->toBeNull();
 });
 
 test('checking DNS reports whether every visitor reaches the edge', function (array $ipv4, array $ipv6, bool $isPointed, string $summary) {

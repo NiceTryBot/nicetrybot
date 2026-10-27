@@ -52,3 +52,8 @@ Schedule::command('addons:check-licences')
     ->daily()
     ->withoutOverlapping(30)
     ->description('Ask the marketplace whether each paid add-on\'s licence key is still good');
+
+Schedule::command('nicetry:check-release')
+    ->daily()
+    ->withoutOverlapping(30)
+    ->description('Ask for the newest NiceTryBot release, for a self-hosted panel\'s update notice');

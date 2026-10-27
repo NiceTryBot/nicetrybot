@@ -3,7 +3,6 @@
 use App\Actions\Analytics\SummarizeTraffic;
 use App\Actions\Domains\CheckEdgeDns;
 use App\Actions\Domains\GenerateSampleTraffic;
-use App\Actions\Domains\VerifyDomainOwnership;
 use App\Data\TrafficSummary;
 use App\Enums\DomainStatus;
 use App\Enums\HostHeaderMode;
@@ -11,6 +10,7 @@ use App\Enums\HstsPolicy;
 use App\Enums\ProtectionMode;
 use App\Enums\TrafficPeriod;
 use App\Enums\ViewSlot;
+use App\Jobs\VerifyDomainOwnershipJob;
 use App\Models\Domain;
 use App\Rules\HeaderNames;
 use App\Rules\Hostname;
@@ -61,6 +61,10 @@ new #[Title('Domain')] class extends Component {
 
     public bool $isEdgeDnsPointed = false;
 
+    public bool $isCheckingTxtRecord = false;
+
+    public ?string $txtRecordProblem = null;
+
     public function mount(Domain $domain): void
     {
         abort_unless($domain->team_id === Auth::user()->currentTeam?->id, 404);
@@ -71,13 +75,54 @@ new #[Title('Domain')] class extends Component {
         $this->fillOriginSettings();
     }
 
-    public function verify(VerifyDomainOwnership $verifyDomainOwnership): void
+    /**
+     * Queue a lookup of the ownership TXT record; the page polls pollTxtRecord() until it's done.
+     */
+    public function verify(): void
     {
         Gate::authorize('update', $this->domain);
 
-        $verifyDomainOwnership->handle($this->domain);
+        $this->txtRecordProblem = null;
+        $this->isCheckingTxtRecord = true;
 
-        Flux::toast(variant: 'success', text: __('TXT record found. :hostname is verified.', ['hostname' => $this->domain->hostname]));
+        VerifyDomainOwnershipJob::start($this->domain);
+
+        $this->pollTxtRecord();
+    }
+
+    /**
+     * Pick up the queued TXT record lookup's outcome once it has one. A check that's gone a minute
+     * without one (no queue worker, say) is given up on, so the page doesn't poll forever.
+     */
+    public function pollTxtRecord(): void
+    {
+        if (! $this->isCheckingTxtRecord) {
+            return;
+        }
+
+        $check = VerifyDomainOwnershipJob::latest($this->domain);
+
+        if ($check !== null && $check['state'] === 'checking' && now()->getTimestamp() - $check['at'] < 60) {
+            return;
+        }
+
+        $this->isCheckingTxtRecord = false;
+
+        if ($check === null || $check['state'] === 'checking') {
+            $this->txtRecordProblem = __('The check didn\'t finish. Try again in a moment.');
+
+            return;
+        }
+
+        $this->domain->refresh();
+
+        if ($check['state'] === 'found') {
+            Flux::toast(variant: 'success', text: __('TXT record found. :hostname is verified.', ['hostname' => $this->domain->hostname]));
+
+            return;
+        }
+
+        $this->txtRecordProblem = __('No matching TXT record at :name yet. A new record can take a few minutes to show up, so check again shortly.', ['name' => $this->domain->verificationRecordName()]);
     }
 
     public function checkEdgeDns(CheckEdgeDns $checkEdgeDns): void
@@ -336,9 +381,18 @@ new #[Title('Domain')] class extends Component {
                                 </div>
 
                                 @if ($canManage)
-                                    <div class="mt-3 flex flex-wrap items-center gap-3">
-                                        <flux:button size="sm" variant="primary" icon="arrow-path" wire:click="verify" data-test="verify-domain">{{ __('Check TXT record') }}</flux:button>
-                                        <span class="text-xs text-zinc-400">{{ __('Preview: DNS isn\'t queried yet, so every check passes.') }}</span>
+                                    <div class="mt-3 flex flex-wrap items-center gap-3" @if ($isCheckingTxtRecord) wire:poll.2s="pollTxtRecord" @endif>
+                                        <flux:button size="sm" variant="primary" icon="arrow-path" wire:click="verify" :disabled="$isCheckingTxtRecord" data-test="verify-domain">{{ __('Check TXT record') }}</flux:button>
+                                        @if ($isCheckingTxtRecord)
+                                            <span class="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400" data-test="txt-record-checking">
+                                                <flux:icon.loading class="size-3.5" />
+                                                {{ __('Looking up the TXT record…') }}
+                                            </span>
+                                        @elseif ($txtRecordProblem)
+                                            <span class="text-xs text-amber-700 dark:text-amber-300" data-test="txt-record-problem">{{ $txtRecordProblem }}</span>
+                                        @elseif (! config('nicetry.verify_dns'))
+                                            <span class="text-xs text-zinc-400">{{ __('DNS checks are off on this installation, so every check passes.') }}</span>
+                                        @endif
                                     </div>
                                 @endif
                             @endunless

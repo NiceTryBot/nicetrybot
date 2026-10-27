@@ -21,6 +21,17 @@ class LookUpDnsRecords
     }
 
     /**
+     * Get the TXT records published at a name, each one's strings joined as a resolver joins them.
+     * A failed lookup yields none, like a name with no TXT records.
+     *
+     * @return list<string>
+     */
+    public function txtRecords(string $name): array
+    {
+        return $this->resolve($name, DNS_TXT, 'txt');
+    }
+
+    /**
      * @return list<string>
      */
     protected function resolve(string $hostname, int $type, string $field): array

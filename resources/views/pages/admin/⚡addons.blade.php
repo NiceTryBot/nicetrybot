@@ -250,12 +250,17 @@ new #[Title('Add-ons')] class extends Component {
 }; ?>
 
 <section class="w-full">
-    <x-pages::admin.layout :heading="__('Add-ons')" :subheading="__('What this deploy installed. Turning one off reaches every server on its next request, no deploy needed. Installing or removing one changes the code, so that waits for a deploy.')">
+    <x-pages::admin.layout :heading="__('Add-ons')" :subheading="__('What this app was built with. Turning one off reaches every server on its next request, no rebuild needed. Installing or removing one changes the code, so it\'s built in before the app is deployed.')">
         @if ($this->awaitingRemoval !== [])
             <div class="mb-5 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-500/40 dark:bg-amber-500/10" data-test="addons-awaiting-deploy">
                 <p class="font-medium text-ink dark:text-white">{{ trans_choice(':count add-on is waiting for a deploy to remove it.|:count add-ons are waiting for a deploy to remove them.', count($this->awaitingRemoval)) }}</p>
-                <p class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{{ __('They\'re off already. Run this where the code lives, commit, and deploy. Their tables and data stay until you drop them.') }}</p>
-                <x-ntb.copy-field class="mt-3" :label="__('Command')" :value="'composer remove '.collect($this->awaitingRemoval)->pluck('package')->implode(' ')" />
+                @if (config('addons.install.via') === 'docker')
+                    <p class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{{ __('They\'re off already. Run this on the server: it builds the app again without them. Their tables and data stay until you drop them.') }}</p>
+                    <x-ntb.copy-field class="mt-3" :label="__('On the server')" :value="'nicetrybot addons remove '.collect($this->awaitingRemoval)->pluck('package')->implode(' ')" />
+                @else
+                    <p class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{{ __('They\'re off already. Run this where the code lives, commit, and deploy. Their tables and data stay until you drop them.') }}</p>
+                    <x-ntb.copy-field class="mt-3" :label="__('Command')" :value="'composer remove '.collect($this->awaitingRemoval)->pluck('package')->implode(' ')" />
+                @endif
             </div>
         @endif
 
@@ -377,17 +382,26 @@ new #[Title('Add-ons')] class extends Component {
             </div>
         @endif
 
-        <div class="mt-5 rounded-xl border border-zinc-200 p-4 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
-            <p class="font-medium text-ink dark:text-white">{{ __('Installing an add-on') }}</p>
-            <p class="mt-1">{{ __('Add-ons are Composer packages. Require one where the code lives, commit, and deploy: it\'s on once the deploy lands, and its migrations run with it.') }}</p>
-            <x-ntb.copy-field class="mt-3" :label="__('Command')" value="composer require vendor/package" />
+        <div class="mt-5 rounded-xl border border-zinc-200 p-4 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300" data-test="addons-installing">
+            <div class="flex flex-wrap items-center gap-2">
+                <p class="font-medium text-ink dark:text-white">{{ __('Installing an add-on') }}</p>
+                <flux:spacer />
+                <flux:button size="xs" variant="primary" icon:trailing="arrow-top-right-on-square" :href="config('addons.marketplace.url').'/marketplace'" target="_blank" rel="noopener" data-test="addons-browse">{{ __('Browse add-ons') }}</flux:button>
+            </div>
+            @if (config('addons.install.via') === 'docker')
+                <p class="mt-1">{{ __('Add-ons are built into the app before it runs, so nothing installs from this page. Pick yours on the marketplace, then add them on the server. It asks for the Composer token from your account there the first time, builds the app again with them in and restarts it, which takes a few minutes; their migrations run as it starts.') }}</p>
+                <x-ntb.copy-field class="mt-3" :label="__('On the server')" value="nicetrybot addons add captchas threats" />
+            @else
+                <p class="mt-1">{{ __('Add-ons are Composer packages, built into the app before it\'s deployed, so nothing installs from this page. Pick yours on the marketplace, require them where the code lives, commit, and deploy: each is on once the deploy lands, and its migrations run with it.') }}</p>
+                <x-ntb.copy-field class="mt-3" :label="__('Command')" value="composer require nicetry/captchas" />
+            @endif
         </div>
 
         <div class="mt-5 rounded-xl border border-zinc-200 p-4 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300" data-test="addons-licensing">
             <p class="font-medium text-ink dark:text-white">{{ __('Licence keys') }}</p>
             <p class="mt-1">{{ __('A paid add-on needs a licence key from the marketplace: one for this installation, every team included, good for ever, with a year of updates. The key is checked here, then with the marketplace once a day. Without one a paid add-on runs for :days days from when this installation first saw it, then goes off until a key is entered.', ['days' => config('addons.licensing.trial_days')]) }}</p>
             <p class="mt-1">{{ __('From the command line:') }}</p>
-            <x-ntb.copy-field class="mt-2" :label="__('Command')" value="php artisan addons:licence captchas ntb1…" />
+            <x-ntb.copy-field class="mt-2" :label="__('Command')" :value="(config('addons.install.via') === 'docker' ? 'nicetrybot artisan' : 'php artisan').' addons:licence captchas ntb1…'" />
         </div>
 
         <flux:modal name="addon-confirm" class="max-w-lg">
@@ -399,7 +413,9 @@ new #[Title('Add-ons')] class extends Component {
                         </flux:heading>
                         <flux:text class="mt-2">{{ __('It goes off for every team, on every server, from the next request: its pages, links, gym obstacles and what it sends the edge stop. Its data stays, and is still pruned and erased on schedule.') }}</flux:text>
                         @if ($confirmingAction === 'remove')
-                            <flux:text class="mt-2">{{ __('Its code leaves with the next deploy, once :package is removed with Composer. Until then you can keep it.', ['package' => $confirmingAddon->package]) }}</flux:text>
+                            <flux:text class="mt-2">{{ config('addons.install.via') === 'docker'
+                                ? __('Its code leaves once nicetrybot addons remove :package runs on the server. Until then you can keep it.', ['package' => $confirmingAddon->package])
+                                : __('Its code leaves with the next deploy, once :package is removed with Composer. Until then you can keep it.', ['package' => $confirmingAddon->package]) }}</flux:text>
                         @endif
                     </div>
 

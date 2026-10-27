@@ -63,6 +63,25 @@ test('removing an add-on turns it off and gives the Composer command for the nex
         ->isAwaitingRemoval()->toBeFalse();
 })->skip(fn () => ! app(Addons::class)->has('fingerprints'), 'Needs the paid Fingerprints add-on (nicetry/fingerprints).');
 
+test('the Add-ons page links to the marketplace and explains installing the way this installation is built', function () {
+    $this->actingAs(administrator());
+    config()->set('addons.marketplace.url', 'https://market.example');
+
+    config()->set('addons.install.via', 'docker');
+    $this->get(route('admin.addons'))
+        ->assertSeeHtml('href="https://market.example/marketplace"')
+        ->assertSee('nicetrybot addons add captchas threats')
+        ->assertSee('nicetrybot artisan addons:licence')
+        ->assertDontSee('composer require');
+
+    config()->set('addons.install.via', 'composer');
+    $this->get(route('admin.addons'))
+        ->assertSeeHtml('href="https://market.example/marketplace"')
+        ->assertSee('composer require nicetry/captchas')
+        ->assertSee('php artisan addons:licence')
+        ->assertDontSee('nicetrybot addons');
+});
+
 test('a switch for an add-on the deploy removed is listed until dismissed, and an installed one can\'t be dismissed', function () {
     AddonSwitch::factory()->awaitingRemoval()->create(['slug' => 'gone-addon']);
     AddonSwitch::factory()->create(['slug' => 'fingerprints']);

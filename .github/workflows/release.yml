@@ -8,8 +8,9 @@ name: release
 # for amd64 and arm64 and pushes them to ghcr.io/nicetrybot/{app,edge,vector} as 1.2.0 (and latest,
 # unless the tag is a pre-release like v1.2.0-beta.1), then creates the GitHub release with what the
 # installer downloads: compose.yml, compose.addons.yml, env.example (deploy/.env.example; GitHub
-# renames assets that start with a dot) and install.sh. The tag's message becomes the release notes;
-# a lightweight tag gets notes generated from the pull requests since the last release.
+# renames assets that start with a dot), install.sh and nicetrybot (the command it installs). The
+# tag's message becomes the release notes; a lightweight tag gets notes generated from the pull
+# requests since the last release.
 #
 # To build and publish a tag again (a failed run, a fixed workflow): Run workflow, with the tag.
 
@@ -156,6 +157,9 @@ jobs:
           target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           push: true
+          # The app's image knows its release (NICETRY_RELEASE), for the panel's update notice.
+          build-args: |
+            NICETRY_RELEASE=${{ needs.version.outputs.version }}
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.title=nicetrybot-${{ matrix.image }}
@@ -193,7 +197,7 @@ jobs:
 
           assets=$RUNNER_TEMP/assets
           mkdir -p "$assets"
-          cp deploy/compose.yml deploy/compose.addons.yml deploy/install.sh "$assets/"
+          cp deploy/compose.yml deploy/compose.addons.yml deploy/install.sh deploy/nicetrybot "$assets/"
           cp deploy/.env.example "$assets/env.example"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

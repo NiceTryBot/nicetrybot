@@ -7,9 +7,10 @@ echo
 if [ -f "$env" ]; then
   host=$(sed -n 's/^NICETRY_PANEL_HOST=//p' "$env" | tail -n 1 | tr -d "\"'")
   echo "  NiceTryBot is running. The control panel: https://${host}"
-  echo "  The stack:  cd /opt/nicetrybot && docker compose ps"
-  echo "  Settings:   /opt/nicetrybot/.env, then: curl -fsSL https://nicetrybot.com/install.sh | sudo bash"
-  echo "  Updates:    curl -fsSL https://nicetrybot.com/install.sh | sudo bash"
+  echo "  The stack:  nicetrybot status"
+  echo "  Settings:   /opt/nicetrybot/.env, then: nicetrybot apply"
+  echo "  Updates:    nicetrybot update   (nicetrybot rollback undoes it)"
+  echo "  Add-ons:    nicetrybot addons add captchas"
 else
   echo "  NiceTryBot isn't set up yet. Run: nicetrybot-setup"
   echo "  (it starts on its own when you log in as root)"

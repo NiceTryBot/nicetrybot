@@ -16,8 +16,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsIdempotent;
 
 #[Description(<<<'TEXT'
     Check a domain's ownership TXT record (from add-domain or check-domain) and, when it matches, mark
-    the domain verified so the edge can serve it once DNS points there. Verifying doesn't send any
-    visitors through the edge by itself.
+    the domain verified so the edge can serve it once DNS points there. Errors when the record isn't in
+    public DNS yet. Verifying doesn't send any visitors through the edge by itself.
     TEXT)]
 #[IsIdempotent]
 class VerifyDomain extends TeamTool
@@ -39,7 +39,12 @@ class VerifyDomain extends TeamTool
 
         Gate::forUser($this->user())->authorize('update', $domain);
 
-        $verifyDomainOwnership->handle($domain);
+        if (! $verifyDomainOwnership->handle($domain)) {
+            return Response::error(__('No matching TXT record at :name yet. Add :value there; a new record can take a few minutes to show up.', [
+                'name' => $domain->verificationRecordName(),
+                'value' => $domain->verificationRecordValue(),
+            ]));
+        }
 
         return Response::structured(DomainSummary::of($domain->refresh()));
     }

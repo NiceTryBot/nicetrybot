@@ -88,8 +88,9 @@ curl -sk https://panel.localhost/up
 on your machine (Laravel Herd, Valet), set `NICETRY_HTTP_PORT`, `NICETRY_HTTPS_PORT` (and
 `NICETRY_APP_TEST_PORT`) in `.env` and add the port to the URLs.
 
-To see a site through the edge: in the panel, add the domain `site.localhost` with the origin
-`http://whoami` and verify it. `curl -skI https://site.localhost/` then answers with `Server: nginx`,
+To see a site through the edge: set `NICETRY_VERIFY_DNS=false` in `.env` (`site.localhost` has no public
+DNS to hold the ownership TXT record) and run the `up` again, then in the panel add the domain
+`site.localhost` with the origin `http://whoami` and verify it. `curl -skI https://site.localhost/` then answers with `Server: nginx`,
 and the request shows on Activity a few seconds later.
 
 `docker compose down -v` removes the containers and every volume (the database too).
@@ -112,21 +113,22 @@ Everything is in `.env` next to `compose.yml`; `.env.example` explains each key.
 | `NICETRY_VERSION` | The release to run, without the v (`1.2.0` for v1.2.0; also the images' tag), or `latest`. |
 | `NICETRY_ADDONS`, `NICETRY_COMPOSER_TOKEN` | Add-ons from the marketplace, built into the app's image here (see [Add-ons](#add-ons)). |
 
-After editing `.env`, apply it with `docker compose up -d`.
+After editing `.env`, apply it with `nicetrybot apply` (or `docker compose up -d`).
 
 ## Add-ons
 
 Lockdown, Privacy mode and Rule packs come with NiceTryBot. Add-ons from
 [nicetrybot.com/marketplace](https://nicetrybot.com/marketplace) install with Composer from its private
-repository: list them in `.env` with the Composer token from your account there, and run the installer
-again.
+repository, built into the app's image on the server:
 
 ```sh
-NICETRY_ADDONS="nicetry/captchas nicetry/threats"
-NICETRY_COMPOSER_TOKEN=ntbc_…
+nicetrybot addons add captchas threats     # asks for the Composer token from your account the first time
+nicetrybot addons remove threats
+nicetrybot addons                          # what's built in
 ```
 
-Or `NICETRY_ADDONS=all`: every add-on the token may install, as the marketplace's repository lists them,
+They're kept in `.env` as `NICETRY_ADDONS="nicetry/captchas nicetry/threats"` with
+`NICETRY_COMPOSER_TOKEN=ntbc_…`. Or `NICETRY_ADDONS=all` (`nicetrybot addons add all`): every add-on the token may install, as the marketplace's repository lists them,
 so a later purchase comes in on the next run and a refunded one goes. Building the image wants about 2 GB
 of memory; on a smaller server the installer adds a 2 GB swap file first.
 
@@ -134,8 +136,8 @@ With any listed, the installer sets `COMPOSE_FILE=compose.yml:compose.addons.yml
 built on this server, on top of the release's: `php artisan addons:install` requires the add-ons, and
 the front end is built again with their styles. The app, worker and scheduler run that image
 (`nicetrybot-app-addons`). The token is a build secret, so it isn't in the image, its layers or its
-history, and the running containers don't get it. Each run of the installer builds it again, which also brings the add-ons' newest versions your
-token may have. Taking an add-on off the list removes it; emptying the list puts the stack back on the
+history, and the running containers don't get it. Each `nicetrybot update` builds it again, which also
+brings the add-ons' newest versions your token may have. Taking an add-on off the list removes it; emptying the list puts the stack back on the
 release's image. Paid add-ons then need their licence keys, in Admin → Add-ons.
 
 Without the installer, the same by hand (Docker Compose 2.24.4 or newer):
@@ -213,8 +215,31 @@ Moving existing data between stores is up to you (`pg_dump` / `pg_restore` for P
 
 ## Updating
 
-Run the installer again: it downloads the release's `compose.yml`, keeps `.env`, then pulls the images and
-restarts what changed (the app runs any new migrations as it starts). By hand:
+```sh
+nicetrybot update                   # to the newest release
+nicetrybot update --version=v1.2.0  # to (or back to) a given one
+nicetrybot rollback                 # undo the last update, database included
+```
+
+`update` says which release it goes from and to, backs up the bundled Postgres to
+`/opt/nicetrybot/backups` (the newest three are kept; `--no-backup` skips it), downloads the release's
+`compose.yml`, keeps `.env` and pins `NICETRY_VERSION` to the release, pulls the images, builds the add-ons
+in again, and restarts what changed (the app runs any new migrations as it starts). If the app doesn't
+come up healthy it goes back to the release it came from on its own, with the database too when
+migrations had run. Docker's output goes to `/opt/nicetrybot/.updates/update.log`.
+
+`rollback` puts back the release, `compose.yml` and add-ons from before the last update, and the database
+from its backup: what changed in the panel since the update is lost, so it asks first (`--yes` doesn't).
+A managed database isn't backed up or restored here; use your provider's backups.
+
+Running the installer again on a running server does the same as `nicetrybot update`. After changing
+`.env` by hand, `nicetrybot apply` starts the stack again with it. Administrators see a notice in Admin when
+a newer release is out (`NICETRY_UPDATE_CHECK=false` turns the daily check off).
+
+The rest of `nicetrybot`: `status`, `version`, `logs [service]`, and `artisan …` for an Artisan command in
+the app (`nicetrybot artisan admin:grant you@example.com`). `nicetrybot help` lists them.
+
+By hand, without the command:
 
 ```sh
 cd /opt/nicetrybot
@@ -225,6 +250,6 @@ docker compose up -d --remove-orphans
 With add-ons, also pull the release's app image and build again: `docker pull ghcr.io/nicetrybot/app:latest`,
 then `docker compose up -d --build --remove-orphans`.
 
-`NICETRY_VERSION` in `.env` picks the release (`1.2.0`, or `latest` to follow the newest); `--version=v1.2.0`
-on the installer sets it. Releases, their notes and their files are at
+`NICETRY_VERSION` in `.env` picks the release (`1.2.0`, or `latest` to follow the newest); `nicetrybot
+update` and `--version=v1.2.0` on the installer set it. Releases, their notes and their files are at
 [github.com/NiceTryBot/nicetrybot/releases](https://github.com/NiceTryBot/nicetrybot/releases).
