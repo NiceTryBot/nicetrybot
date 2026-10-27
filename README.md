@@ -91,6 +91,9 @@ Add-ons are Composer packages the panel finds on its own.
   - Lockdown: put sites behind a maintenance page at the edge in an emergency.
   - Privacy mode: swap real hostnames for stand-ins while you share your screen.
   - Rule packs: curated sets of rules and gym routines.
+  - Transfer: move an origin, with its sites, secret, rules and gym routines, from another NiceTryBot
+    (such as the hosted service) to this one, by pulling it with an API token or with a transfer file.
+    It moves origins, so it needs the Origins add-on on both panels.
 - **Paid, not in this repository:** Captchas, Fingerprints, Origins (one backend serving many hostnames),
   Request monitor and Threats, from [nicetrybot.com/marketplace](https://nicetrybot.com/marketplace).
   - They install with Composer from NiceTryBot's private repository and need a licence key. List them in

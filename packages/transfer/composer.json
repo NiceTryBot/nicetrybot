@@ -1,0 +1,23 @@
+{
+    "name": "nicetry/transfer",
+    "description": "Transfer: move an origin, with its sites, settings and secret and its team's rules and gym routines, from one NiceTryBot to another, by pulling it from the other panel with an API token or with a transfer file. On the Domains page.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\Transfer\\": "src/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Transfer",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\Transfer\\TransferServiceProvider"
+            ]
+        }
+    }
+}

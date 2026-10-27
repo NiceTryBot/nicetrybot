@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "07ba842e02f209d167ed39eaa40a252b",
+    "content-hash": "65c371a10a1fd0f25aece411dd8363a7",
     "packages": [
         {
             "name": "aws/aws-crt-php",
@@ -3769,6 +3769,40 @@
                 "Elastic-2.0"
             ],
             "description": "Rule packs: curated, versioned sets of rules and gym routines for AI crawlers, scanners, exploit attempts, spoofed browsers and scripts on forms, installed in one go from the Rules page. Installed rules only tag, and their routines start switched off.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "nicetry/transfer",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/transfer",
+                "reference": "9fcd3181fd377338684b397af40debcb40206aca"
+            },
+            "type": "nicetry-addon",
+            "extra": {
+                "nicetry": {
+                    "name": "Transfer",
+                    "edition": "free"
+                },
+                "laravel": {
+                    "providers": [
+                        "NiceTry\\Transfer\\TransferServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "NiceTry\\Transfer\\": "src/"
+                }
+            },
+            "license": [
+                "Elastic-2.0"
+            ],
+            "description": "Transfer: move an origin, with its sites, settings and secret and its team's rules and gym routines, from one NiceTryBot to another, by pulling it from the other panel with an API token or with a transfer file. On the Domains page.",
             "transport-options": {
                 "symlink": true,
                 "relative": true
