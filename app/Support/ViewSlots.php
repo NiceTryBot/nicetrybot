@@ -14,7 +14,8 @@ use Illuminate\Support\HtmlString;
  *
  * The core's markup also carries hints for an add-on that redacts the page for screen sharing. They
  * do nothing on their own: data-privacy-skip marks what to leave as it is, data-privacy-hide what to
- * take off the page, and a page that changes what it shows while redacted reads the privacy-mode
+ * take off the page, data-privacy-mask="…" text to show as that instead (an IP's last two octets,
+ * drawn one by one where no whole address is there to match), and a page that changes what it shows while redacted reads the privacy-mode
  * class on <html> and listens for the privacy-mode-changed window event.
  */
 #[Singleton]

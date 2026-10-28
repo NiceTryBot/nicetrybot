@@ -61,7 +61,7 @@ class ProofOfWorkObstacle extends BaseObstacle
         $hashes = HashPuzzle::expectedHashes((int) $config['difficulty']);
 
         return __(':bits bits · about :laptop on a laptop, :phone on a phone', [
-            'bits' => $config['difficulty'],
+            'bits' => (int) $config['difficulty'],
             'laptop' => HashPuzzle::describeSeconds($hashes / HashPuzzle::LAPTOP_HASHES_PER_SECOND),
             'phone' => HashPuzzle::describeSeconds($hashes / HashPuzzle::PHONE_HASHES_PER_SECOND),
         ]);

@@ -66,4 +66,10 @@ enum ViewSlot: string
      * and panels. Its views get the $team.
      */
     case RulesGallery = 'rules-gallery';
+
+    /**
+     * The Rules page's editor, under "Send its clients to the gym", while a saved rule is open: panels
+     * that do something with its clients. Its views get the $team and the $rule.
+     */
+    case RulePanels = 'rule-panels';
 }

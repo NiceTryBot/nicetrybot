@@ -3,11 +3,9 @@
 namespace App\Http\Controllers\Edge;
 
 use App\Data\EdgeExpression;
+use App\Data\EdgeRuleEnvironment;
 use App\Data\RuleScript;
 use App\Enums\DomainStatus;
-use App\Enums\HostingProvider;
-use App\Enums\NetworkKind;
-use App\Enums\PathCategory;
 use App\Enums\ProtectionMode;
 use App\Http\Controllers\Controller;
 use App\Models\Domain;
@@ -34,7 +32,8 @@ class ListGymTriggersController extends Controller
      * never slowed. A routine whose required verdicts nobody holds sends no trigger at all.
      *
      * Domains in observe mode are left out: they never send anyone to the gym. A domain that serves www.
-     * triggers under www. too.
+     * triggers under www. too. A routine whose entry names its domains triggers on those domains alone,
+     * so a routine for one site never has the edge asking about every request to the team's others.
      *
      * An edge that judges single-request rules (RULES_FEATURE) also gets, on each trigger limited to rule
      * verdicts, those of its rules that one request can decide, as EdgeExpressions: it asks about a
@@ -56,6 +55,13 @@ class ListGymTriggersController extends Controller
             ->groupBy('team_id');
 
         $teamHosts = $hostnames->map(fn (Collection $domains) => $domains->flatMap(fn (Domain $domain) => $domain->edgeHostnames())->unique()->sort()->values()->all());
+        $routineHosts = function (GymRoutine $routine) use ($hostnames, $teamHosts): array {
+            $named = $routine->entry()->edgeDomains();
+
+            return $named === null ? $teamHosts[$routine->team_id] : $hostnames[$routine->team_id]
+                ->filter(fn (Domain $domain) => in_array(strtolower($domain->hostname), $named, true))
+                ->flatMap(fn (Domain $domain) => $domain->edgeHostnames())->unique()->sort()->values()->all();
+        };
         $liveRules = $judgesRules ? $this->liveRules($hostnames->keys()->all()) : collect();
 
         $triggers = GymRoutine::query()
@@ -63,17 +69,18 @@ class ListGymTriggersController extends Controller
             ->whereIn('team_id', $hostnames->keys())
             ->orderBy('id')
             ->get()
-            ->flatMap(function (GymRoutine $routine) use ($teamHosts, $liveRules, $judgesRules) {
+            ->flatMap(function (GymRoutine $routine) use ($routineHosts, $liveRules, $judgesRules) {
                 $clients = $this->clients($routine);
                 $rules = $judgesRules ? $this->routineRules($routine, $liveRules->get($routine->team_id, collect())) : [];
+                $hosts = $routineHosts($routine);
 
-                if ($clients === [] && $rules === []) {
+                if (($clients === [] && $rules === []) || $hosts === []) {
                     return [];
                 }
 
                 return array_map(fn (string $glob) => [
                     'id' => $routine->id,
-                    'hosts' => $teamHosts[$routine->team_id],
+                    'hosts' => $hosts,
                     'method' => null,
                     'path' => $glob,
                     'clients' => $clients,
@@ -89,9 +96,7 @@ class ListGymTriggersController extends Controller
 
         return response()->json([
             'triggers' => $triggers,
-            'categories' => array_map(fn (PathCategory $category) => ['id' => $category->value, 'patterns' => $category->patterns()], PathCategory::cases()),
-            'networks' => [['kind' => NetworkKind::Hosting->value, 'asns' => collect(HostingProvider::cases())->flatMap(fn (HostingProvider $provider) => $provider->asns())->unique()->sort()->values()->all()]],
-            'domains' => $hostnames->flatten()->map(fn (Domain $domain) => ['hostname' => $domain->hostname, 'aliases' => $domain->edgeHostnames()])->values()->all(),
+            ...EdgeRuleEnvironment::for($hostnames->flatten()),
         ]);
     }
 

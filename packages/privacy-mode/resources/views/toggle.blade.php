@@ -5,7 +5,7 @@
     x-on:privacy-mode-changed.window="on = $event.detail.enabled"
     x-on:click="window.privacyMode?.toggle()"
     x-bind:aria-pressed="on.toString()"
-    x-bind:title="(on ? @js(__('Privacy mode is on: domains are hidden')) : @js(__('Hide domains for screen sharing'))) + ' (' + shortcut + ')'"
+    x-bind:title="(on ? @js(__('Privacy mode is on: domains and IPs are hidden')) : @js(__('Hide domains and IPs for screen sharing'))) + ' (' + shortcut + ')'"
     class="group inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition sm:px-2.5"
     x-bind:class="on
         ? 'border-coral-300 bg-coral-50 text-coral-700 hover:bg-coral-100 dark:border-coral-500/40 dark:bg-coral-500/10 dark:text-coral-300 dark:hover:bg-coral-500/20'

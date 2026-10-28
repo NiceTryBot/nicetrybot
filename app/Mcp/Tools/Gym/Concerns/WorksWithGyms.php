@@ -224,7 +224,7 @@ trait WorksWithGyms
      *
      * @param  mixed  $rows  Untrusted input, meant to be a list of {type, config, escalate}.
      * @param  list<array{id: string, type: string, config: array<string, mixed>, escalate: string|null}>  $current
-     * @return list<array{id: string, type: string, config: array<string, int|string|bool>, escalate: string|null}>
+     * @return list<array{id: string, type: string, config: array<string, int|string|bool|list<string>>, escalate: string|null}>
      *
      * @throws ValidationException When an obstacle can't be used, saying what to fix.
      */
@@ -255,7 +255,7 @@ trait WorksWithGyms
      * Check one obstacle as an agent sent it and configure it.
      *
      * @param  list<mixed>  $routineTypes  The obstacle types the routine will have, which escalation can't add again.
-     * @return array{type: string, config: array<string, int|string|bool>, escalate: string|null}
+     * @return array{type: string, config: array<string, int|string|bool|list<string>>, escalate: string|null}
      *
      * @throws ValidationException
      */

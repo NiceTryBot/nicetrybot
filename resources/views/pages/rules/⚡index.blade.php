@@ -994,6 +994,11 @@ new #[Title('Rules')] class extends Component {
                                 <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ __('No gym routine takes this rule\'s clients yet.') }}</p>
                             @endif
                         </x-ntb.panel>
+
+                        {{-- Add-ons' panels for the open rule, from App\Support\ViewSlots. --}}
+                        @if (($openRule = $this->rules->firstWhere('id', $editingId)) !== null)
+                            {{ app(ViewSlots::class)->render(ViewSlot::RulePanels, ['team' => $this->team, 'rule' => $openRule]) }}
+                        @endif
                     @endif
 
                     {{-- Backtest --}}

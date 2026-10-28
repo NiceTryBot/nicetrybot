@@ -68,7 +68,7 @@ class WaitingRoomObstacle extends BaseObstacle
     {
         return __(':time · :intensity work · about :hashes hashes', [
             'time' => HashPuzzle::describeSeconds((int) $config['seconds']),
-            'intensity' => strtolower((string) $config['intensity']),
+            'intensity' => strtolower((string) $this->scalar($config, 'intensity')),
             'hashes' => Number::abbreviate($this->workHashes($config)),
         ]);
     }
@@ -146,7 +146,7 @@ class WaitingRoomObstacle extends BaseObstacle
     /**
      * Get the difficulty of each round.
      *
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      */
     private function bits(array $config): int
     {
@@ -175,7 +175,7 @@ class WaitingRoomObstacle extends BaseObstacle
     }
 
     /**
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      * @return array<string, mixed>
      */
     private function payload(ObstacleState $state, array $config): array

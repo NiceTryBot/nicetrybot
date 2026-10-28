@@ -14,6 +14,8 @@ use App\Gym\RoutineTemplates;
 use App\Http\Middleware\EnsureAddonIsOn;
 use App\Http\Middleware\EnsureTeamMembership;
 use App\Mcp\McpTools;
+use App\Support\ActionAddon;
+use App\Support\ActionAddons;
 use App\Support\CaptureFeed;
 use App\Support\CaptureFeedContributor;
 use App\Support\ClientAddon;
@@ -35,6 +37,8 @@ use App\Support\RuleTemplates;
 use App\Support\RuleTemplateSource;
 use App\Support\SettingsNav;
 use App\Support\SettingsNavItem;
+use App\Support\TarpitFeed;
+use App\Support\TarpitFeedContributor;
 use App\Support\ViewSlots;
 use App\Support\VisitorDataHolder;
 use App\Support\VisitorDataHolders;
@@ -66,7 +70,8 @@ use ReflectionClass;
  *   every attempt a visitor makes. An obstacle lives in gym/obstacles/<Vendor>/<Name>/ as the core's
  *   do, so the gym's stylesheet builds the classes its views use.
  * - the $policies for its models, registered with the Gate rather than left to its guessing
- * - its entries in the edge's capture feed ($captureFeed) and lockdown feed ($lockdownFeed), its
+ * - its entries in the edge's capture feed ($captureFeed), lockdown feed ($lockdownFeed) and tarpit
+ *   feed ($tarpitFeed), its
  *   models that point at a domain ($domainRecords, moved with it when www. folds), and what names
  *   Livewire components for a team ($livewireComponentSources)
  * - the request fields in $ruleFields, which rule scripts and Activity searches can test after the
@@ -75,7 +80,8 @@ use ReflectionClass;
  * - starter rules and gym routines for the template galleries, after the core's: $ruleTemplates
  *   (App\Support\RuleTemplateSource) and $routineTemplates (App\Gym\Contracts\RoutineTemplateSource)
  * - what it keeps from the edge's log lines beside each request ($edgeLineAddons), and what it shows
- *   about requests on the Activity page ($requestAddons: marks in the list, details and buttons)
+ *   about requests on the Activity page ($requestAddons: marks in the list, details and buttons;
+ *   $actionAddons: badges in the Action column)
  *
  * Anything else goes in registerAddon() and bootAddon(); tag classes into a registry there with
  * $this->tag(), so they're known as the add-on's.
@@ -141,6 +147,11 @@ abstract class AddonServiceProvider extends ServiceProvider
     protected array $lockdownFeed = [];
 
     /**
+     * @var list<class-string<TarpitFeedContributor>>
+     */
+    protected array $tarpitFeed = [];
+
+    /**
      * Models with a domain_id whose rows move to site when a www.site domain folds into it.
      *
      * @var list<class-string<Model>>
@@ -181,6 +192,11 @@ abstract class AddonServiceProvider extends ServiceProvider
     protected array $requestAddons = [];
 
     /**
+     * @var list<class-string<ActionAddon>>
+     */
+    protected array $actionAddons = [];
+
+    /**
      * Tools the add-on gives AI agents on the MCP server (each a Laravel\Mcp\Server\Tool).
      *
      * @var list<class-string<Tool>>
@@ -213,20 +229,22 @@ abstract class AddonServiceProvider extends ServiceProvider
         $this->app->tag($this->attemptListeners, AttemptListeners::TAG);
         $this->app->tag($this->captureFeed, CaptureFeed::TAG);
         $this->app->tag($this->lockdownFeed, LockdownFeed::TAG);
+        $this->app->tag($this->tarpitFeed, TarpitFeed::TAG);
         $this->app->tag($this->domainRecords, DomainRecords::TAG);
         $this->app->tag($this->livewireComponentSources, LivewireComponentSources::TAG);
         $this->app->tag($this->ruleTemplates, RuleTemplates::TAG);
         $this->app->tag($this->routineTemplates, RoutineTemplates::TAG);
         $this->app->tag($this->edgeLineAddons, EdgeLineAddons::TAG);
         $this->app->tag($this->requestAddons, RequestAddons::TAG);
+        $this->app->tag($this->actionAddons, ActionAddons::TAG);
         $this->app->tag($this->mcpTools, McpTools::TAG);
         $this->app->make(RuleFields::class)->add(...$this->ruleFields);
 
         $addons->claim($this->addon()->slug, [
             ...$this->gymAddons, ...$this->clientAddons, ...$this->visitorData, ...$this->obstacles, ...$this->attemptListeners,
-            ...$this->captureFeed, ...$this->lockdownFeed, ...$this->domainRecords, ...$this->livewireComponentSources,
+            ...$this->captureFeed, ...$this->lockdownFeed, ...$this->tarpitFeed, ...$this->domainRecords, ...$this->livewireComponentSources,
             ...$this->ruleTemplates, ...$this->routineTemplates, ...$this->edgeLineAddons, ...$this->requestAddons,
-            ...$this->mcpTools,
+            ...$this->actionAddons, ...$this->mcpTools,
         ]);
 
         $this->registerAddon();

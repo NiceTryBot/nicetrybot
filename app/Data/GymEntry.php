@@ -88,6 +88,30 @@ readonly class GymEntry
     }
 
     /**
+     * Get the domains (by hostname, lowercase) one of which every admitted visitor's request is for, so
+     * the edge can ask about only those domains' requests. Null when the entry doesn't pin the domain
+     * down and the edge must ask about every domain of the team.
+     *
+     * @return list<string>|null
+     */
+    public function edgeDomains(): ?array
+    {
+        $isDomainCondition = fn (GymCondition $condition) => $condition->field === GymField::Domain && $condition->operator === GymOperator::In;
+        $hostnames = fn (GymCondition $condition) => array_map('strtolower', $condition->values);
+
+        $domainConditions = array_values(array_filter($this->conditions, $isDomainCondition));
+
+        return match (true) {
+            $domainConditions === [] => null,
+            // With AND, any one domain condition has to hold, so its domains are enough.
+            $this->matchAll => $hostnames($domainConditions[0]),
+            // With OR, only an entry made of nothing but domain conditions narrows the domains.
+            count($domainConditions) === count($this->conditions) => array_values(array_unique(array_merge(...array_map($hostnames, $domainConditions)))),
+            default => null,
+        };
+    }
+
+    /**
      * Get the rules one of whose verdicts every admitted visitor must hold, so the edge can ask about
      * only those clients' requests. An empty list means a verdict from any rule. Null when the entry
      * doesn't require a verdict.

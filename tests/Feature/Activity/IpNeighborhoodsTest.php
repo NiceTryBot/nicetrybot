@@ -64,6 +64,7 @@ test('right-clicking a client can enrich its IP with a prefix ladder, and stop',
         ->assertDontSeeHtml('data-test="prefix-ladder"')
         ->call('enrichClient', '198.18.126.138')
         ->assertSeeHtml('data-test="prefix-ladder"')
+        ->assertSeeHtml('data-privacy-mask="x"')
         ->assertSeeHtml('aria-label="/24 · 4 hits · 2 IPs"')
         ->assertSeeHtml('aria-label="/32 · 3 hits"');
 

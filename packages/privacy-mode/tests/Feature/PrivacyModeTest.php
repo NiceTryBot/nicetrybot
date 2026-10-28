@@ -21,7 +21,7 @@ test('privacy mode is a free add-on', function () {
         ->paid->toBeFalse();
 });
 
-test('the toggle sits before the cog, and every page with the app\'s head loads the script', function () {
+test('the toggle sits before the cog, every page with the app\'s head loads the script, and the mode starts on', function () {
     $script = route('privacy.script', ['v' => Script::version()]);
 
     $this->get(route('login'))
@@ -33,7 +33,7 @@ test('the toggle sits before the cog, and every page with the app\'s head loads 
         ->get(route('dashboard'))
         ->assertOk()
         ->assertSee('<script type="module" src="'.e($script).'" data-navigate-track></script>', false)
-        ->assertSee("localStorage.getItem('nicetrybot:privacy-mode')", false)
+        ->assertSee("localStorage.getItem('nicetrybot:privacy-mode') !== '0'", false)
         ->assertSeeInOrder(['data-test="privacy-toggle"', 'data-test="workspace-menu"'], false);
 });
 

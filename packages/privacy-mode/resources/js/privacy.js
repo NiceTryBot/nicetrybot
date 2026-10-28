@@ -1,8 +1,9 @@
 /**
  * Privacy mode: swaps every real domain on the page for its made-up stand-in
- * (invisible-pony.hidden-domain.com), and every word in Settings → Privacy for
- * its own, so the app can be shown on screen without giving away whose sites it
- * protects. Toggle with the button or Cmd/Ctrl + /.
+ * (invisible-pony.hidden-domain.com), every word in Settings → Privacy for its
+ * own, and every IP's last two octets for x.x (193.148.x.x), so the app can be
+ * shown on screen without giving away whose sites it protects or who visits them.
+ * It's on until someone turns it off. Toggle with the button or Cmd/Ctrl + /.
  *
  * The add-on's body-end view loads the team's hostname → stand-in map as base64 JSON
  * into window.ntbPrivacyHostnames (a cached script) and renders the global word map in
@@ -75,6 +76,18 @@ function wordReplacer(map) {
     };
 }
 
+/**
+ * An IPv4 address keeps its first two octets (193.148.x.x, its /16), an IPv6 one its first two groups
+ * (2001:db8:x:x), in text and in a prefix like 193.148.18.0/24. Clock times (04:29:45) never match: an
+ * IPv6 address has at least three colons.
+ */
+const IPV4 = /(?<![\w.])(\d{1,3}\.\d{1,3})\.\d{1,3}\.\d{1,3}(?!\w|\.\d)/g;
+const IPV6 = /(?<![\w:])([0-9a-f]{1,4}:[0-9a-f]{0,4}):(?:[0-9a-f]{0,4}:){1,6}[0-9a-f]{0,4}(?![\w:])/gi;
+
+function maskIps(text) {
+    return text.replace(IPV4, '$1.x.x').replace(IPV6, '$1:x:x');
+}
+
 let hostnames = {};
 let words = {};
 
@@ -85,9 +98,11 @@ function setMaps(hostnameMap, wordMap) {
     const hostnamesToStandIns = replacer(hostnameMap);
     const wordsToStandIns = wordReplacer(wordMap);
 
-    toStandIn = hostnamesToStandIns && wordsToStandIns
-        ? (text) => wordsToStandIns(hostnamesToStandIns(text))
-        : (hostnamesToStandIns ?? wordsToStandIns);
+    toStandIn = (text) => {
+        const withStandIns = hostnamesToStandIns ? hostnamesToStandIns(text) : text;
+
+        return maskIps(wordsToStandIns ? wordsToStandIns(withStandIns) : withStandIns);
+    };
     toReal = replacer(Object.fromEntries(Object.entries(hostnameMap).map(([real, standIn]) => [standIn, real])));
 }
 
@@ -112,16 +127,17 @@ function isSkipped(element) {
 }
 
 /**
- * Mask a value, remembering what it said; or unmask it, back to what it said if it's still as masked,
- * else by turning hostname stand-ins back into real names (as on a page restored from history).
+ * Mask a value (with toStandIn, or the mask given), remembering what it said; or unmask it, back to
+ * what it said if it's still as masked, else by turning hostname stand-ins back into real names (as on
+ * a page restored from history).
  */
-function rewriteValue(value, masking, remembered, remember, forget) {
+function rewriteValue(value, masking, remembered, remember, forget, mask = toStandIn) {
     if (masking) {
-        if (remembered?.masked === value || !toStandIn) {
+        if (remembered?.masked === value || !mask) {
             return value;
         }
 
-        const rewritten = toStandIn(value);
+        const rewritten = mask(value);
 
         if (rewritten !== value) {
             remember({ original: value, masked: rewritten });
@@ -171,12 +187,15 @@ function rewriteElement(element, masking) {
 }
 
 function rewriteText(node, masking) {
+    // Text the core marks data-privacy-mask="…" (an IP's octet, drawn on its own) shows as that.
+    const fixed = node.parentElement?.closest('[data-privacy-mask]')?.getAttribute('data-privacy-mask');
     const rewritten = rewriteValue(
         node.data,
         masking,
         textOriginals.get(node),
         (entry) => textOriginals.set(node, entry),
         () => textOriginals.delete(node),
+        fixed == null || node.data.trim() === '' ? toStandIn : () => fixed,
     );
 
     if (rewritten !== node.data) {
@@ -246,8 +265,8 @@ const observer = new MutationObserver((mutations) => {
 });
 
 /**
- * Whether the page is one wire:navigate restored from its history cache with words already masked:
- * there's nothing to read them back from, so turning the mode off reloads it instead.
+ * Whether the page is one wire:navigate restored from its history cache already masked: its words and
+ * IPs can't be read back from what shows, so turning the mode off reloads it instead.
  */
 let restoredWithMaskedWords = false;
 
@@ -267,7 +286,7 @@ function apply() {
     root.classList.add('privacy-ready');
 
     // Rides along in the history snapshot, so a restored page can tell it came back masked.
-    document.body?.toggleAttribute('data-privacy-masked-words', enabled && Object.keys(words).length > 0);
+    document.body?.toggleAttribute('data-privacy-masked-words', enabled);
 }
 
 function setEnabled(value) {

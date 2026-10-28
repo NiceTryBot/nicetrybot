@@ -19,8 +19,8 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Description(<<<'TEXT'
     List the obstacle types a gym can use: each one's type key, name, what the visitor goes through, and
-    its settings (key, type range|choice|toggle|text, default, options for a choice, min/max/step for a
-    range, help). can_escalate says whether it can flag a visitor as automated, and so take an `escalate`
+    its settings (key, type range|choice|choices|toggle|text, default, options for a choice or choices (a
+    choices value is a list of option values), min/max/step for a range, help). can_escalate says whether it can flag a visitor as automated, and so take an `escalate`
     obstacle that's added when it does. Call it before create-gym, update-gym or add-obstacle: obstacles
     are given as {type, config: {setting: value}, escalate}, and settings left out take their default.
     TEXT)]
@@ -58,7 +58,7 @@ class ListObstacleTypes extends TeamTool
                     'label' => $setting->label,
                     'type' => $setting->type,
                     'default' => $setting->default,
-                    'options' => $setting->type === 'choice' ? $setting->options : null,
+                    'options' => in_array($setting->type, ['choice', 'choices'], true) ? $setting->options : null,
                     'min' => $setting->type === 'range' ? $setting->min : null,
                     'max' => in_array($setting->type, ['range', 'text'], true) ? $setting->max : null,
                     'step' => $setting->type === 'range' ? $setting->step : null,

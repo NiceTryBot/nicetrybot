@@ -132,3 +132,12 @@ transforms:
       # Someone is watching this host live (nicetry_tail); in bucket mode this routes the line to the
       # app too.
       if log.tail == true { .tail = true }
+
+      # A tarpit held (or counted) the request (nicetry_tarpit): which one, why, which try, for how long.
+      if log.tarpit != null {
+        .tarpit = log.tarpit
+        .tarpit_why = log.tarpit_why
+        .tarpit_try = log.tarpit_try
+        .tarpit_ms = log.tarpit_ms
+        .tarpit_outcome = log.tarpit_outcome
+      }

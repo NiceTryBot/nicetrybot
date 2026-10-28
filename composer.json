@@ -24,6 +24,7 @@
         "nicetry/lockdown": "^1.0",
         "nicetry/privacy-mode": "^1.0",
         "nicetry/rule-packs": "^1.0",
+        "nicetry/tarpit": "^1.0",
         "nicetry/transfer": "^1.0"
     },
     "require-dev": {

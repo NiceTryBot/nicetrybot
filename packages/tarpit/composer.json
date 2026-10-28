@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/tarpit",
+    "description": "Tarpits: make the worst bots wait. Clients a rule puts in a tarpit, gym no-shows, and clients the edge catches collecting 404s or sending bursts get a free try, then wait longer each request (2 s, 8 s, 24 s… up to 30 s) at the edge, with a cap on how many are held at once.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\Tarpit\\": "src/",
+            "NiceTry\\Tarpit\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Tarpit",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\Tarpit\\TarpitServiceProvider"
+            ]
+        }
+    }
+}

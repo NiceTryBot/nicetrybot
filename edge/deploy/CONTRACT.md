@@ -58,6 +58,7 @@ edge. All of them except `ask` carry `Authorization: Bearer $NICETRY_EDGE_TOKEN`
 | `GET /caddy/gym-check`, `GET /caddy/gym-report` | per request on a trigger | as now (3 s timeout; the request goes through if the app fails) |
 | `GET /caddy/live-tail` | every 10 s | `{"hosts":[...]}` |
 | `GET /caddy/lockdowns` | every 10 s, ETag | `{"lockdowns":[...]}` (must name the key) |
+| `GET /caddy/tarpit-feed` | every 10 s, ETag | `{"tarpits":[...]}` (must name the key) |
 | `POST /caddy/ingest` | Vector, every ~2 s | 2xx. Body below. |
 
 Polls that fail keep the last list, so sites stay up while the app restarts.

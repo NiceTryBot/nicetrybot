@@ -48,28 +48,28 @@ interface Obstacle
      * Fill in defaults and clamp a stored or edited config to the settings' bounds.
      *
      * @param  array<string, mixed>  $config
-     * @return array<string, int|string|bool>
+     * @return array<string, int|string|bool|list<string>>
      */
     public function configure(array $config): array;
 
     /**
      * Sum a config up in a few words, e.g. "18 bits · about 0.2 s on a laptop".
      *
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      */
     public function summarize(array $config): string;
 
     /**
      * Estimate the seconds a person spends on the obstacle.
      *
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      */
     public function humanSeconds(array $config): float;
 
     /**
      * Estimate the SHA-256 hashes a visitor's machine burns clearing the obstacle.
      *
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      */
     public function workHashes(array $config): int;
 
@@ -82,7 +82,7 @@ interface Obstacle
     /**
      * Set the obstacle up the first time a visitor reaches it: issue a challenge, draw a code.
      *
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      */
     public function begin(ObstacleState $state, array $config): void;
 
@@ -94,7 +94,7 @@ interface Obstacle
     /**
      * Get the data the view needs.
      *
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      * @return array<string, mixed>
      */
     public function viewData(ObstacleState $state, array $config): array;
@@ -102,7 +102,7 @@ interface Obstacle
     /**
      * Judge one attempt: clear it, keep it going, or ask for another try.
      *
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      * @param  array<string, mixed>  $input
      */
     public function attempt(ObstacleState $state, array $config, array $input): ObstacleOutcome;

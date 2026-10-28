@@ -12,8 +12,10 @@
 	order nicetry_gym before handle
 	# Who the visitor really is behind Cloudflare (CF-Connecting-IP, only from Cloudflare's own ranges).
 	order nicetry_client before nicetry_gym
+	# Tarpitted clients wait first, so even a request the PHP guard or a lockdown refuses costs them the wait.
+	order nicetry_tarpit after nicetry_client
 	# PHP's session upload progress field is refused before anything reaches an origin (or the gym).
-	order nicetry_php_guard after nicetry_client
+	order nicetry_php_guard after nicetry_tarpit
 	# A locked-down team's hostnames get the maintenance page before anything else (gym, origin) hears of it.
 	order nicetry_lockdown after nicetry_php_guard
 	# Where each domain's traffic goes (set in NiceTryBot), handed to reverse_proxy as vars.
@@ -84,6 +86,17 @@
 		token {$NICETRY_EDGE_TOKEN}
 		interval 10s
 		state /data/nicetry/lockdown.json
+	}
+
+	# Tarpits: clients a team puts in one (by rule, by gym no-show, or by the edge's own count of 404s and
+	# bursts) get a free try, then wait longer each request (2 s, 8 s, 24 s… up to the tarpit's cap)
+	# before going on, getting a 404, or being hung up on. Held requests are capped per tarpit and, here,
+	# across the edge; past a cap the request is answered at once. Logged as tarpit, tarpit_ms and friends.
+	nicetry_tarpit {
+		endpoint {$NICETRY_APP_URL}/caddy/tarpit-feed
+		token {$NICETRY_EDGE_TOKEN}
+		interval 10s
+		max_held 1000
 	}
 
 	# Live tail: requests to hostnames someone is watching on Activity get `tail: true` in the access

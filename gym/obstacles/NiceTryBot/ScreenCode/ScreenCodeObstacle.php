@@ -73,7 +73,7 @@ class ScreenCodeObstacle extends BaseObstacle
     public function summarize(array $config): string
     {
         return __(':length :characters · :noise noise', [
-            'length' => $config['length'],
+            'length' => (int) $config['length'],
             'characters' => mb_strtolower($this->setting('characters')->format($config['characters'])),
             'noise' => mb_strtolower($this->setting('noise')->format($config['noise'])),
         ]);
@@ -103,7 +103,7 @@ class ScreenCodeObstacle extends BaseObstacle
     public function viewData(ObstacleState $state, array $config): array
     {
         return [
-            'image' => CodeImage::dataUri($this->code($state), (string) $config['noise']),
+            'image' => CodeImage::dataUri($this->code($state), (string) $this->scalar($config, 'noise')),
             'length' => (int) $config['length'],
             'numeric' => $config['characters'] === 'digits',
         ];
@@ -143,11 +143,11 @@ class ScreenCodeObstacle extends BaseObstacle
     /**
      * Draw a fresh code. It's stored encrypted, so the session never holds it in the clear.
      *
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      */
     private function draw(ObstacleState $state, array $config): void
     {
-        $alphabet = self::ALPHABETS[$config['characters']] ?? self::ALPHABETS['digits'];
+        $alphabet = self::ALPHABETS[(string) $this->scalar($config, 'characters')] ?? self::ALPHABETS['digits'];
         $code = '';
 
         for ($i = 0; $i < (int) $config['length']; $i++) {

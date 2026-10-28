@@ -135,6 +135,33 @@ test('the page the visitor returns to always stays on the site', function () {
     expect(GymSession::sole()->destination)->toBe('/gymbros//evil.example');
 });
 
+test('a routine for named domains sends the edge only those domains\' hostnames, and none for a domain the team doesn\'t enforce', function () {
+    $routine = gymbrosRoutine();
+    Domain::factory()->for($routine->team)->verified()->enforcing()->servingWww()->create(['hostname' => 'demo.example']);
+    Domain::factory()->for($routine->team)->verified()->create(['hostname' => 'observed.example']);
+    $demo = GymRoutine::factory()->for($routine->team)->entering([
+        ['field' => 'domain', 'operator' => 'in', 'values' => ['Demo.example']],
+        ['field' => 'category', 'operator' => 'in', 'values' => ['probe']],
+    ])->create();
+    GymRoutine::factory()->for($routine->team)->entering([['field' => 'domain', 'operator' => 'in', 'values' => ['observed.example']]])->create();
+
+    $triggers = collect($this->withToken('edge-token')->getJson(route('edge.gym.triggers'))->assertOk()->json('triggers'))->keyBy('id');
+
+    expect($triggers[$demo->id]['hosts'])->toBe(['demo-example.preview.example', 'demo.example', 'www.demo.example'])
+        ->and($triggers[$routine->id]['hosts'])->toContain('demo.example', 'sign.example')
+        ->and($triggers)->toHaveCount(2);
+});
+
+test('a routine narrows the edge to domains only when its entry pins them down', function (array $conditions, bool $matchAll, ?array $domains) {
+    expect(GymEntry::fromArray($conditions, $matchAll)->edgeDomains())->toBe($domains);
+})->with([
+    'one domain, with another condition' => [[['field' => 'domain', 'operator' => 'in', 'values' => ['Demo.example']], ['field' => 'category', 'operator' => 'in', 'values' => ['probe']]], true, ['demo.example']],
+    'any of two domain conditions' => [[['field' => 'domain', 'operator' => 'in', 'values' => ['a.example']], ['field' => 'domain', 'operator' => 'in', 'values' => ['b.example']]], false, ['a.example', 'b.example']],
+    'any of a domain or a network' => [[['field' => 'domain', 'operator' => 'in', 'values' => ['a.example']], ['field' => 'network', 'operator' => 'in', 'values' => ['hetzner']]], false, null],
+    'not these domains' => [[['field' => 'domain', 'operator' => 'not_in', 'values' => ['a.example']]], true, null],
+    'everyone' => [[], true, null],
+]);
+
 test('a routine narrows the edge to paths only when its entry pins them down', function (array $conditions, bool $matchAll, ?array $globs) {
     expect(GymEntry::fromArray($conditions, $matchAll)->edgePathGlobs())->toBe($globs);
 })->with([

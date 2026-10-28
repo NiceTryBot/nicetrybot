@@ -40,6 +40,7 @@ use App\Models\SavedSearch;
 use App\Models\Team;
 use App\Models\UserAgent;
 use App\Models\Verdict;
+use App\Support\ActionAddons;
 use App\Support\AnthropicException;
 use App\Support\ClientAddons;
 use App\Support\RequestAddons;
@@ -1533,6 +1534,23 @@ new #[Title('Activity')] class extends Component {
     }
 
     /**
+     * What packages say happened to each request on the page (App\Support\ActionAddons), by request id.
+     *
+     * @return array<int, list<\App\Support\ActionBadge>>
+     */
+    #[Computed]
+    public function actionBadges(): array
+    {
+        if ($this->view !== 'requests') {
+            return [];
+        }
+
+        $ids = $this->requests->getCollection()->pluck('id')->map(fn (mixed $id) => (int) $id)->all();
+
+        return $ids === [] ? [] : array_combine($ids, app(ActionAddons::class)->badges($this->team, $ids));
+    }
+
+    /**
      * What packages add to the client cell of each row on the page (App\Support\ClientAddons), by row.
      *
      * @return array<int, \Illuminate\Support\HtmlString>
@@ -2488,13 +2506,23 @@ new #[Title('Activity')] class extends Component {
                                     </flux:table.cell>
                                     <flux:table.cell><x-ntb.status-code :code="$request->status_code" /></flux:table.cell>
                                     <flux:table.cell>
-                                        @if (($gymSession = $this->gymSessionsByRequest[$request->id] ?? null) && $gymSession->routines->isNotEmpty())
-                                            <flux:tooltip :content="trans_choice('Routine: :names|Routines: :names', $gymSession->routines->count(), ['names' => $gymSession->routines->pluck('name')->join(', ')])" position="top">
-                                                <x-ntb.action-badge :action="$request->action" class="cursor-help" data-test="gym-routines" />
-                                            </flux:tooltip>
-                                        @else
-                                            <x-ntb.action-badge :action="$request->action" />
-                                        @endif
+                                        @php($actionBadges = $this->actionBadges[$request->id] ?? [])
+                                        <span class="flex flex-wrap items-center gap-1">
+                                            @if (($gymSession = $this->gymSessionsByRequest[$request->id] ?? null) && $gymSession->routines->isNotEmpty())
+                                                <flux:tooltip :content="trans_choice('Routine: :names|Routines: :names', $gymSession->routines->count(), ['names' => $gymSession->routines->pluck('name')->join(', ')])" position="top">
+                                                    <x-ntb.action-badge :action="$request->action" class="cursor-help" data-test="gym-routines" />
+                                                </flux:tooltip>
+                                            @elseif ($request->action !== RequestAction::Passed || ! collect($actionBadges)->contains('replacesPassed', true))
+                                                <x-ntb.action-badge :action="$request->action" />
+                                            @endif
+                                            {{-- Add-ons' badges, from App\Support\ActionAddons. --}}
+                                            @foreach ($actionBadges as $actionBadge)
+                                                {{ $actionBadge->badge }}
+                                            @endforeach
+                                        </span>
+                                        @foreach ($actionBadges as $actionBadge)
+                                            {{ $actionBadge->note }}
+                                        @endforeach
                                         @if ($gymSession)
                                             <span class="mt-1 flex items-center gap-1 text-[0.65rem] whitespace-nowrap text-zinc-500 dark:text-zinc-400" title="{{ $gymSession->routines->pluck('name')->join(', ') }}" data-test="gym-outcome">
                                                 <span @class([
@@ -2659,7 +2687,13 @@ new #[Title('Activity')] class extends Component {
 
                 <div class="flex flex-wrap items-center gap-2">
                     <x-ntb.status-code :code="$request->status_code" />
-                    <x-ntb.action-badge :action="$request->action" />
+                    @php($actionBadges = app(ActionAddons::class)->badges($this->team, [$request->id])[0])
+                    @if ($request->action !== RequestAction::Passed || ! collect($actionBadges)->contains('replacesPassed', true))
+                        <x-ntb.action-badge :action="$request->action" />
+                    @endif
+                    @foreach ($actionBadges as $actionBadge)
+                        {{ $actionBadge->badge }}
+                    @endforeach
                     @if ($request->bot_tag)
                         <flux:badge size="sm" icon="bug-ant">{{ $request->bot_tag }}</flux:badge>
                     @endif

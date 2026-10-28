@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "65c371a10a1fd0f25aece411dd8363a7",
+    "content-hash": "4eb6c1382e25f1f47c19a1b30ccd0812",
     "packages": [
         {
             "name": "aws/aws-crt-php",
@@ -3769,6 +3769,41 @@
                 "Elastic-2.0"
             ],
             "description": "Rule packs: curated, versioned sets of rules and gym routines for AI crawlers, scanners, exploit attempts, spoofed browsers and scripts on forms, installed in one go from the Rules page. Installed rules only tag, and their routines start switched off.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "nicetry/tarpit",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/tarpit",
+                "reference": "43490d2f08e6bf644813eacabb10bd5c117cccd8"
+            },
+            "type": "nicetry-addon",
+            "extra": {
+                "nicetry": {
+                    "name": "Tarpit",
+                    "edition": "free"
+                },
+                "laravel": {
+                    "providers": [
+                        "NiceTry\\Tarpit\\TarpitServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "NiceTry\\Tarpit\\": "src/",
+                    "NiceTry\\Tarpit\\Database\\Factories\\": "database/factories/"
+                }
+            },
+            "license": [
+                "Elastic-2.0"
+            ],
+            "description": "Tarpits: make the worst bots wait. Clients a rule puts in a tarpit, gym no-shows, and clients the edge catches collecting 404s or sending bursts get a free try, then wait longer each request (2 s, 8 s, 24 s… up to 30 s) at the edge, with a cap on how many are held at once.",
             "transport-options": {
                 "symlink": true,
                 "relative": true

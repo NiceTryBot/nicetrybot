@@ -15,7 +15,7 @@ readonly class GymStep
 {
     /**
      * @param  string  $key  The routine's id for this obstacle entry, so progress survives edits.
-     * @param  array<string, int|string|bool>  $config
+     * @param  array<string, int|string|bool|list<string>>  $config
      * @param  string|null  $escalateTo  The obstacle to add after this one when it flags the visitor.
      */
     public function __construct(

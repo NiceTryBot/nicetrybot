@@ -31,7 +31,7 @@
                     style="height: {{ max(2, round(log10($rung['count'] + 1) / $logScale * $barArea, 1)) }}px"
                 ></span>
             </span>
-            <span>{{ $rung['octet'] }}</span>
+            <span @if ($rung['prefix'] >= 24) data-privacy-mask="x" @endif>{{ $rung['octet'] }}</span>
             <span
                 role="tooltip"
                 class="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 rounded-md border border-line bg-white px-1.5 py-0.5 font-sans text-[0.65rem] whitespace-nowrap text-ink shadow-sm group-hover/rung:block group-focus/rung:block dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"

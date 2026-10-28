@@ -14,7 +14,7 @@ abstract class BaseObstacle implements Obstacle
 {
     /**
      * @param  array<string, mixed>  $config
-     * @return array<string, int|string|bool>
+     * @return array<string, int|string|bool|list<string>>
      */
     public function configure(array $config): array
     {
@@ -25,6 +25,18 @@ abstract class BaseObstacle implements Obstacle
         }
 
         return $configured;
+    }
+
+    /**
+     * Read a setting that holds one value (a range, choice, toggle or text) from a configured config.
+     *
+     * @param  array<string, int|string|bool|list<string>>  $config
+     */
+    protected function scalar(array $config, string $key): int|string|bool
+    {
+        $value = $config[$key] ?? null;
+
+        return is_scalar($value) ? $value : '';
     }
 
     public function flagsWhen(): ?string

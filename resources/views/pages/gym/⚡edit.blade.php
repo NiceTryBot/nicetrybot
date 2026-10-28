@@ -784,7 +784,7 @@ new #[Title('Gym routine')] class extends Component {
                                                         $model = "obstacles.{$index}.config.{$setting->key}";
                                                     @endphp
 
-                                                    <div wire:key="setting-{{ $item['id'] }}-{{ $setting->key }}" @class(['sm:col-span-2' => $setting->type === 'text'])>
+                                                    <div wire:key="setting-{{ $item['id'] }}-{{ $setting->key }}" @class(['sm:col-span-2' => in_array($setting->type, ['text', 'choices'], true)])>
                                                         @switch($setting->type)
                                                             @case('range')
                                                                 <div x-data="{ value: {{ (int) $value }} }">
@@ -821,6 +821,25 @@ new #[Title('Gym routine')] class extends Component {
                                                                         @endforeach
                                                                     </flux:select>
                                                                 @endif
+                                                                @break
+                                                            @case('choices')
+                                                                <p class="mb-2 text-sm font-medium">{{ $setting->label }}</p>
+                                                                <div class="flex flex-wrap gap-2" data-test="setting-choices">
+                                                                    @foreach ($setting->options as $optionValue => $optionLabel)
+                                                                        <label wire:key="choice-{{ $item['id'] }}-{{ $optionValue }}" @class([
+                                                                            'inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-sm select-none has-focus-visible:ring-2 has-focus-visible:ring-coral-400',
+                                                                            'border-coral-400 bg-coral-50 text-coral-800 dark:border-coral-500/60 dark:bg-coral-500/10 dark:text-coral-200' => in_array((string) $optionValue, (array) $value, true),
+                                                                            'border-line text-zinc-600 hover:border-zinc-400 dark:border-zinc-700 dark:text-zinc-300' => ! in_array((string) $optionValue, (array) $value, true),
+                                                                            'pointer-events-none opacity-60' => ! $this->canManage,
+                                                                        ])>
+                                                                            <input type="checkbox" value="{{ $optionValue }}" wire:model.live="{{ $model }}" class="sr-only" @disabled(! $this->canManage) />
+                                                                            @if (in_array((string) $optionValue, (array) $value, true))
+                                                                                <flux:icon.check variant="micro" class="size-3.5" />
+                                                                            @endif
+                                                                            {{ $optionLabel }}
+                                                                        </label>
+                                                                    @endforeach
+                                                                </div>
                                                                 @break
                                                             @case('toggle')
                                                                 <flux:switch wire:model.live="{{ $model }}" :label="$setting->label" :disabled="! $this->canManage" class="mt-6" />
