@@ -26,6 +26,12 @@ enum ClientBrowser: int
     private const string LAGGING_FORK_PATTERN = '#SamsungBrowser/|YaBrowser/|UCBrowser/|MiuiBrowser/|HuaweiBrowser/#';
 
     /**
+     * The highest major version any real browser could claim. Spoofed user agents send versions
+     * like "Chrome/83044", which no browser has shipped and which wouldn't fit the profile column.
+     */
+    private const int MAX_MAJOR_VERSION = 999;
+
+    /**
      * Read the browser a user agent claims. A user agent that names both Chrome and Firefox is no
      * real browser's, so it stays unknown.
      */
@@ -46,6 +52,7 @@ enum ClientBrowser: int
 
     /**
      * Read the major version of this browser from a user agent, e.g. 152 from "CriOS/152.0.7977.53".
+     * A version no browser could have shipped stays unknown.
      */
     public function majorVersionIn(string $userAgent): ?int
     {
@@ -60,7 +67,13 @@ enum ClientBrowser: int
             self::Unknown, self::Bot => null,
         };
 
-        return $pattern !== null && preg_match($pattern, $userAgent, $matches) === 1 ? (int) $matches[1] : null;
+        if ($pattern === null || preg_match($pattern, $userAgent, $matches) !== 1) {
+            return null;
+        }
+
+        $majorVersion = (int) $matches[1];
+
+        return $majorVersion <= self::MAX_MAJOR_VERSION ? $majorVersion : null;
     }
 
     public function label(): string

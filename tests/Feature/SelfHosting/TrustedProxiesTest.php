@@ -14,16 +14,16 @@ beforeEach(function () {
 /**
  * Ask the test route as the edge would: from a container address, with the visitor in X-Forwarded-*.
  */
-function requestThroughProxy(string $from): array
+function requestThroughProxy(string $from, array $headers = []): array
 {
     return test()->withServerVariables(['REMOTE_ADDR' => $from])
         ->withHeaders([
             'X-Forwarded-For' => '203.0.113.7',
             'X-Forwarded-Proto' => 'https',
-            'X-Forwarded-Host' => 'panel.example.com',
             'X-Forwarded-Port' => '443',
+            ...$headers,
         ])
-        ->getJson('/_test/proxied')
+        ->getJson('http://panel.example.com/_test/proxied')
         ->assertOk()
         ->json();
 }
@@ -60,4 +60,23 @@ test('TRUSTED_PROXIES drives the setting, and empty trusts no one', function () 
     expect(configFileWith('trustedproxy.php', ['TRUSTED_PROXIES' => '172.16.0.0/12'])['proxies'])->toBe('172.16.0.0/12')
         ->and(configFileWith('trustedproxy.php', ['TRUSTED_PROXIES' => ''])['proxies'])->toBeNull()
         ->and(configFileWith('trustedproxy.php', ['TRUSTED_PROXIES' => null])['proxies'])->toBeNull();
+});
+
+test('nobody but the edge picks the host the app builds its links on, not even a trusted proxy', function () {
+    config(['trustedproxy.proxies' => '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16', 'services.nicetry_edge.token' => 'edge-secret']);
+
+    expect(requestThroughProxy('172.18.0.5', ['X-Forwarded-Host' => 'evil.example'])['root'])->toBe('https://panel.example.com')
+        ->and(requestThroughProxy('198.51.100.4', ['X-Forwarded-Host' => 'evil.example', 'Authorization' => 'Bearer wrong'])['root'])->toBe('http://panel.example.com')
+        ->and(requestThroughProxy('172.18.0.5', ['X-Forwarded-Host' => 'shop.example.com', 'Authorization' => 'Bearer edge-secret'])['root'])->toBe('https://shop.example.com');
+});
+
+test('on Vapor the visitor\'s IP is the one its runtime saw, whatever X-Forwarded-For says', function () {
+    config(['trustedproxy.proxies' => ['0.0.0.0/0', '2000:0:0:0:0:0:0:0/3']]);
+    putenv('LAMBDA_TASK_ROOT=/var/task');
+
+    try {
+        expect(requestThroughProxy('127.0.0.1', ['X-Forwarded-For' => '6.6.6.6, 203.0.113.7', 'X-Vapor-Source-Ip' => '198.51.100.20'])['ip'])->toBe('198.51.100.20');
+    } finally {
+        putenv('LAMBDA_TASK_ROOT');
+    }
 });

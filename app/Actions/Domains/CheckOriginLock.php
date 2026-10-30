@@ -4,6 +4,7 @@ namespace App\Actions\Domains;
 
 use App\Data\OriginLockCheck;
 use App\Models\Domain;
+use App\Support\PublicAddress;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 
@@ -69,7 +70,7 @@ class CheckOriginLock
         }
 
         foreach ($addresses as $address) {
-            if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+            if (! PublicAddress::isPublic($address)) {
                 return null;
             }
         }

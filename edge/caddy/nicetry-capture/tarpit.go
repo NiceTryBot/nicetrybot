@@ -96,7 +96,8 @@ func (t *Tarpit) Validate() error {
 }
 
 func (t *Tarpit) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	if strings.HasPrefix(r.URL.Path, tarpitSkipPrefix) {
+	// Cleaned, so /_q/../login (which the origin gets as /login) is held like /login.
+	if strings.HasPrefix(cleanedPath(r), tarpitSkipPrefix) {
 		return next.ServeHTTP(w, r)
 	}
 	pits := t.set.current.Load().byHost[strings.ToLower(hostOnly(r.Host))]
@@ -222,7 +223,7 @@ func (p *tarpitPit) admits(r *http.Request, ip, ja4 string, burst bool, now time
 	if len(p.rules) > 0 {
 		facts := factsFor(r, p.env, sharedGeo())
 		for _, rule := range p.rules {
-			if v := rule.Expr.eval(facts); v != nil && *v {
+			if facts.holds(rule.Expr) {
 				return "rule"
 			}
 		}

@@ -409,9 +409,12 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 		if c.Method != nil {
 			method = strings.ToUpper(*c.Method)
 		}
-		glob := GlobRegexp(c.Path)
-		if foldCase {
-			glob = regexp.MustCompile("(?i)" + glob.String())
+		// A pattern too large to compile is left out, not panicked over: the poller runs outside any
+		// request, so a panic would take Caddy down on every edge, again on every restart.
+		glob, err := compileGlob(c.Path, foldCase)
+		if err != nil {
+			skippedPattern(listKey+" path", strconv.Itoa(c.ID), err)
+			continue
 		}
 		var clients []clientFilter
 		for _, cl := range c.Clients {
@@ -430,7 +433,10 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 		}
 		var component *regexp.Regexp
 		if c.Component != nil && *c.Component != "" {
-			component = GlobRegexp(*c.Component)
+			if component, err = compileGlob(*c.Component, false); err != nil {
+				skippedPattern(listKey+" component", strconv.Itoa(c.ID), err)
+				continue
+			}
 		}
 		tagOnly := i >= tagsFrom
 		if tagOnly {
@@ -449,15 +455,67 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 }
 
 // GlobRegexp turns a capture path into an anchored regexp: `*` matches anything, including slashes.
+// It panics on a glob too large to compile; data from the app goes through compileGlob.
 func GlobRegexp(glob string) *regexp.Regexp {
-	return regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(glob), `\*`, ".*") + "$")
+	re, err := compileGlob(glob, false)
+	if err != nil {
+		panic(err)
+	}
+	return re
+}
+
+// compileGlob is GlobRegexp with an error for a glob too large to compile, optionally ignoring case.
+func compileGlob(glob string, foldCase bool) (*regexp.Regexp, error) {
+	flags := ""
+	if foldCase {
+		flags = "(?i)"
+	}
+	return compilePattern(flags + "^" + strings.ReplaceAll(regexp.QuoteMeta(glob), `\*`, ".*") + "$")
+}
+
+// skippedPattern logs a pattern from the app that couldn't be compiled. Go's error quotes the whole
+// pattern, which can run to megabytes, so only its start is logged.
+// maxPatternBytes is the longest regular expression the edge compiles from what the app sends. Real
+// triggers, rules and categories are a few hundred bytes; a huge one would cost every edge seconds of
+// CPU on each poll before Go gave up on it anyway.
+const maxPatternBytes = 64 << 10
+
+// compilePattern compiles a regular expression built from the app's data, refusing one too long to be
+// real without trying.
+func compilePattern(expr string) (*regexp.Regexp, error) {
+	if len(expr) > maxPatternBytes {
+		return nil, fmt.Errorf("pattern is %d bytes, more than %d", len(expr), maxPatternBytes)
+	}
+	return regexp.Compile(expr)
+}
+
+func skippedPattern(what, which string, err error) {
+	msg := err.Error()
+	if len(msg) > 200 {
+		msg = msg[:200] + "…"
+	}
+	caddy.Log().Named("nicetry_patterns").Warn("skipping a pattern that doesn't compile",
+		zap.String("pattern", what), zap.String("which", truncate(which, 100)), zap.String("error", msg))
 }
 
 func (ts *targetSet) match(r *http.Request) *target {
-	if candidates := ts.candidates(r); len(candidates) > 0 {
-		return candidates[0]
+	t, _ := ts.matchOn(r)
+	return t
+}
+
+// matchOn is the first target that fits the request, and the first of the request's judged paths its
+// path glob matches.
+func (ts *targetSet) matchOn(r *http.Request) (*target, string) {
+	candidates := ts.candidates(r)
+	if len(candidates) == 0 {
+		return nil, ""
 	}
-	return nil
+	for _, p := range judgedPaths(r) {
+		if candidates[0].Path.MatchString(p) {
+			return candidates[0], p
+		}
+	}
+	return candidates[0], r.URL.Path
 }
 
 // candidates lists the targets whose host, method, path and clients fit the request, in list order.
@@ -475,11 +533,21 @@ func (ts *targetSet) candidates(r *http.Request) []*target {
 	var found []*target
 	for i := range targets {
 		t := &targets[i]
-		if t.Hosts[host] && (t.Method == "" || t.Method == r.Method) && t.Path.MatchString(r.URL.Path) && t.admits(r) {
+		if t.Hosts[host] && (t.Method == "" || t.Method == r.Method) && t.matchesPath(r) && t.admits(r) {
 			found = append(found, t)
 		}
 	}
 	return found
+}
+
+// matchesPath reports whether the target's path glob matches any of the request's judged paths.
+func (t *target) matchesPath(r *http.Request) bool {
+	for _, p := range judgedPaths(r) {
+		if t.Path.MatchString(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // admits reports whether the request comes from one of the target's clients (any client, if it has

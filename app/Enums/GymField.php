@@ -234,9 +234,9 @@ enum GymField: string
             self::UserAgent => self::testText($visitor->userAgent, $operator, $values),
             self::Path => self::testText($visitor->path, $operator, $values),
             self::Ip => IpUtils::checkIp($visitor->ip, $values),
-            self::Ja4 => $visitor->ja4 !== null && ($operator === GymOperator::StartsWith
-                ? collect($values)->contains(fn (string $value) => str_starts_with($visitor->ja4, $value))
-                : in_array($visitor->ja4, $values, true)),
+            self::Ja4 => collect($visitor->ja4s())->contains(fn (string $ja4) => $operator === GymOperator::StartsWith
+                ? collect($values)->contains(fn (string $value) => str_starts_with($ja4, $value))
+                : in_array($ja4, $values, true)),
             self::Domain => $visitor->host !== null && in_array(strtolower($visitor->host), $values, true),
             self::Category => ($category = $visitor->category()) !== null
                 && (in_array($category->slug(), $values, true) || in_array($category->family(), $values, true)),

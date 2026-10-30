@@ -2,6 +2,8 @@
 
 use App\Http\Middleware\AddServerTiming;
 use App\Http\Middleware\SetTeamUrlDefaults;
+use App\Http\Middleware\TrustEdgeForwardedHost;
+use App\Http\Middleware\UseVaporSourceIp;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -19,7 +21,12 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->prepend(AddServerTiming::class);
+        $middleware->prepend([AddServerTiming::class, UseVaporSourceIp::class]);
+
+        // Proxies may say who the visitor is and how they arrived, but not which host they asked for:
+        // only the edge may, with its token (TrustEdgeForwardedHost).
+        $middleware->trustProxies(headers: Request::HEADER_X_FORWARDED_FOR | Request::HEADER_X_FORWARDED_PORT | Request::HEADER_X_FORWARDED_PROTO | Request::HEADER_X_FORWARDED_AWS_ELB);
+        $middleware->append(TrustEdgeForwardedHost::class);
 
         $middleware->web(append: [
             SetTeamUrlDefaults::class,

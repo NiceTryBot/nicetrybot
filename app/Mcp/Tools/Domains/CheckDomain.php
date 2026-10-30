@@ -4,6 +4,7 @@ namespace App\Mcp\Tools\Domains;
 
 use App\Actions\Domains\CheckEdgeDns;
 use App\Actions\Domains\CheckOriginLock;
+use App\Actions\Domains\VerifyDomainOwnership;
 use App\Enums\ProtectionMode;
 use App\Mcp\Tools\TeamTool;
 use App\Models\Domain;
@@ -17,7 +18,7 @@ use Laravel\Mcp\Server\Tools\Annotations\IsReadOnly;
 
 #[Description(<<<'TEXT'
     Check where one domain stands and what's left to do. Reports: ownership (the TXT record to add and
-    whether it's verified), the DNS records that point visitors at the edge and whether public DNS
+    whether it's verified: a domain whose record has appeared in DNS is verified here), the DNS records that point visitors at the edge and whether public DNS
     already does, and whether the origin is locked to the edge. The origin check asks the origin for
     its home page twice, as the edge would: without the secret header (a locked origin refuses it with
     a 4xx) and with it (it should serve it). Run it after locking the origin and after changing DNS.
@@ -28,7 +29,7 @@ class CheckDomain extends TeamTool
     /**
      * Handle the tool request.
      */
-    public function handle(Request $request, CheckEdgeDns $checkEdgeDns, CheckOriginLock $checkOriginLock): Response|ResponseFactory
+    public function handle(Request $request, CheckEdgeDns $checkEdgeDns, CheckOriginLock $checkOriginLock, VerifyDomainOwnership $verifyDomainOwnership): Response|ResponseFactory
     {
         $request->validate(['hostname' => ['required', 'string']]);
 
@@ -38,6 +39,9 @@ class CheckDomain extends TeamTool
             return Response::error(__('No domain called :hostname on this team. Call list-domains to see them, or add-domain to add it.', ['hostname' => $request->get('hostname')]));
         }
 
+        $wasVerified = $domain->verified_at !== null;
+        $verified = $verifyDomainOwnership->handle($domain);
+
         $dns = $checkEdgeDns->handle($domain);
         $domain->update(['edge_dns_pointed_at' => $dns->isPointedAtEdge() ? ($domain->edge_dns_pointed_at ?? now()) : null]);
         $origin = $checkOriginLock->handle($domain);
@@ -46,7 +50,15 @@ class CheckDomain extends TeamTool
             ...DomainSummary::of($domain),
             'ownership' => [
                 ...DomainSummary::ownershipRecord($domain),
-                'verified' => $domain->verified_at !== null,
+                'verified' => $verified,
+                'summary' => match (true) {
+                    $wasVerified => __('Verified.'),
+                    $verified => __('Found the TXT record: the domain is verified.'),
+                    default => __('No matching TXT record at :name yet. Add :value there; a new record can take a few minutes to show up.', [
+                        'name' => $domain->verificationRecordName(),
+                        'value' => $domain->verificationRecordValue(),
+                    ]),
+                },
             ],
             'dns' => [
                 'records' => DomainSummary::edgeRecords($domain),
@@ -68,7 +80,7 @@ class CheckDomain extends TeamTool
         $steps = [];
 
         if ($domain->verified_at === null) {
-            $steps[] = __('Add the ownership TXT record, then call verify-domain.');
+            $steps[] = __('Add the ownership TXT record, then check again.');
         }
 
         if (! $originLocked) {

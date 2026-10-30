@@ -5,6 +5,7 @@ use App\Enums\ClientPlatform;
 use App\Enums\TlsFingerprintType;
 use App\Enums\TlsStack;
 use App\Models\ClientHint;
+use App\Models\RequestPath;
 use App\Models\TlsFingerprint;
 use App\Models\UserAgent;
 use Illuminate\Support\Facades\DB;
@@ -26,4 +27,15 @@ test('profiling classifies every recorded user agent, JA4 fingerprint and set of
     $this->assertDatabaseHas('tls_fingerprint_profiles', ['tls_fingerprint_id' => $ja4->id, 'stack' => TlsStack::Apple]);
     $this->assertDatabaseMissing('tls_fingerprint_profiles', ['tls_fingerprint_id' => $ja3->id]);
     $this->assertDatabaseHas('client_hint_profiles', ['client_hint_id' => $clientHints->id, 'platform' => ClientPlatform::Ios]);
+});
+
+test('recording path refs covers the paths stored before the table existed', function () {
+    $claim = RequestPath::factory()->create(['path' => '/sign/a20a2ddd-49fd-4df5-864c-a0c388e62db5/A315E938-9177-4882-B1EB-D010CD786FBF/thank-you']);
+    RequestPath::factory()->create(['path' => '/sign/a20a2ddd-49fd-4df5-864c-a0c388e62db5']);
+    DB::table('request_path_refs')->delete();
+
+    $this->artisan('edge:record-path-refs')->assertSuccessful();
+
+    expect(DB::table('request_path_refs')->get(['path_id', 'ref'])->map(fn ($row) => (array) $row)->all())
+        ->toBe([['path_id' => $claim->id, 'ref' => 'a315e938-9177-4882-b1eb-d010cd786fbf']]);
 });

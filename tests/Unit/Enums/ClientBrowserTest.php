@@ -17,5 +17,6 @@ test('a user agent claims the browser and major version it names', function (str
     'Googlebot' => ['Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)', ClientBrowser::Bot, null],
     'headless Chrome' => ['Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/142.0.0.0 Safari/537.36', ClientBrowser::Bot, null],
     'an HTTP library' => ['python-requests/2.32.3', ClientBrowser::Bot, null],
+    'a spoofed version no browser has shipped' => ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83044.0.0.0 Safari/537.36', ClientBrowser::Chromium, null],
     'a user agent claiming Chrome and Firefox at once' => ['Mozilla/5.0 (X11; Ubuntu; Linux i686; rv:24.0) Gecko/20100101 Firefox/24.0 Chrome/80.0.3987.132 Safari/537.36', ClientBrowser::Unknown, null],
 ]);

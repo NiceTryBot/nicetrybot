@@ -17,8 +17,8 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
  * What another panel pulls with, behind the API token check: the token's team's origins, and one of
  * them as a transfer bundle. A bundle holds the origin's secret, so the token must be allowed to add
  * and change domains, and its user still allowed to on the team. Anything the token may not see (no
- * such ability, Origins off, another team's origin, no origin at all) answers the same 404 an
- * unrouted path does.
+ * such ability, Origins off, a token for all teams rather than one, another team's origin, no origin
+ * at all) answers the same 404 an unrouted path does.
  */
 class TransferApi extends Controller
 {
@@ -62,7 +62,7 @@ class TransferApi extends Controller
     {
         $token = $this->context->token();
 
-        if (! OriginsAddon::isOn() || ! $token->canOnTeam(ApiAbility::ManageDomains)) {
+        if (! OriginsAddon::isOn() || $token->coversAllTeams() || ! $token->canOnTeam(ApiAbility::ManageDomains)) {
             $this->notFound($request);
         }
 

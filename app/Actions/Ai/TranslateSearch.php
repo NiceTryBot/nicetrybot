@@ -27,7 +27,7 @@ class TranslateSearch
     /**
      * Bumped whenever the instructions change, so translations cached under the old ones aren't reused.
      */
-    private const int PROMPT_VERSION = 8;
+    private const int PROMPT_VERSION = 9;
 
     /**
      * Worked examples for the instructions. Each must parse; a test holds them to it.

@@ -60,7 +60,7 @@ test('mistakes are reported with where they are and how to fix them', function (
     'unsupported subject' => ['BAN asn FOR 1 HOUR', 1, 5, 'ip or ja4'],
     'tag without a name' => ['TAG ip FOR 1 DAY', 1, 8, 'TAG needs a name'],
     'window over a day' => ['BAN ip FOR 1 HOUR WITHIN 2 DAYS HAVING COUNT(*) > 1', 1, 26, 'at most 24 hours'],
-    'unknown kind of client' => ["BAN ip FOR 1 HOUR WHERE client = 'old'", 1, 34, "client is 'spoofed', 'outdated' or 'corporate'"],
+    'unknown kind of client' => ["BAN ip FOR 1 HOUR WHERE client = 'old'", 1, 34, "client is 'spoofed', 'outdated', 'corporate' or 'hopped'"],
     'client tested for null' => ['BAN ip FOR 1 HOUR WHERE client IS NULL', 1, 32, 'client is never null'],
 ]);
 

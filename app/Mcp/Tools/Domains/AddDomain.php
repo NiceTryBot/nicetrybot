@@ -9,8 +9,8 @@ use App\Mcp\Tools\TeamTool;
 use App\Models\Domain;
 use App\Rules\HeaderNames;
 use App\Rules\Hostname;
+use App\Rules\ReachableOrigin;
 use App\Support\HeaderName;
-use Closure;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\JsonSchema\Types\Type;
 use Illuminate\Support\Facades\Gate;
@@ -53,11 +53,7 @@ class AddDomain extends TeamTool
                 'string',
                 'max:255',
                 'url:http,https',
-                function (string $attribute, mixed $value, Closure $fail) use ($hostname) {
-                    if (parse_url((string) $value, PHP_URL_HOST) === $hostname) {
-                        $fail(__('The origin must be a different host than the domain, or requests would loop back to the edge.'));
-                    }
-                },
+                new ReachableOrigin($hostname),
             ],
             'host_header_mode' => ['nullable', Rule::enum(HostHeaderMode::class)],
             'origin_host_header' => ['nullable', 'string', new Hostname],

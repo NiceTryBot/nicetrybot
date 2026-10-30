@@ -113,6 +113,7 @@ test('requests the routine doesn\'t want, and domains in observe mode, go straig
 test('a valid pass skips the gym, and a forged, expired or other team\'s pass does not', function () {
     $routine = gymbrosRoutine();
     $session = GymSession::factory()->create(['team_id' => $routine->team_id]);
+    $session->routines()->attach($routine);
     $pass = $session->passCookie(3600, secure: true)->getValue();
     [$team, $expires, $token] = explode('.', $pass);
     $otherTeams = GymSession::factory()->create()->passCookie(3600, secure: true)->getValue();
@@ -238,4 +239,22 @@ test('a visitor sent to the gym keeps the client hints the edge passes on from t
         ->assertOk();
 
     expect(GymSession::sole()->clientHint->value)->toBe('"Chromium";v="152" | "iOS"');
+});
+
+test('the edge gets its feeds gzipped when it accepts gzip, with ETags from the plain list', function () {
+    $routine = gymbrosRoutine();
+    Domain::factory()->for($routine->team)->verified()->enforcing()->count(40)->create();
+
+    $plain = $this->withToken('edge-token')->getJson(route('edge.gym.triggers'))->assertOk();
+    $gzipped = $this->withToken('edge-token')->withHeaders(['Accept-Encoding' => 'gzip'])->getJson(route('edge.gym.triggers'))
+        ->assertOk()
+        ->assertHeader('Content-Encoding', 'gzip');
+
+    expect(gzdecode($gzipped->getContent()))->toBe($plain->getContent())
+        ->and(strlen($gzipped->getContent()))->toBeLessThan(strlen($plain->getContent()))
+        ->and($gzipped->headers->get('ETag'))->toBe($plain->headers->get('ETag'));
+
+    $this->withToken('edge-token')->withHeaders(['Accept-Encoding' => 'gzip', 'If-None-Match' => $plain->headers->get('ETag')])
+        ->getJson(route('edge.gym.triggers'))
+        ->assertStatus(304);
 });

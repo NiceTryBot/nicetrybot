@@ -248,6 +248,41 @@ itself (database, cache, queue, failed jobs, edge log imports), with what to do 
 The rest of `nicetrybot`: `status`, `version`, `logs [service]`, and `artisan …` for an Artisan command in
 the app (`nicetrybot artisan admin:grant you@example.com`). `nicetrybot help` lists them.
 
+## The app from the command line, on the server or your laptop
+
+`nicetrybot` also runs the app's own commands: the tools the MCP server gives AI agents, so the command,
+the panel and an agent all go through the same validation. On the server they act as the first
+administrator's team owner (`--team=SLUG` picks another team):
+
+```sh
+nicetrybot domains add docs.example.com docs-origin.example.com --host-header=rewrite --forwarded-host-header=X-Forwarded-Host
+nicetrybot domains                          # the team's domains
+nicetrybot domains check docs.example.com   # DNS, the origin lock, what's left to do
+nicetrybot domains remove docs.example.com  # asks first (--yes doesn't)
+nicetrybot tools                            # every tool; nicetrybot call TOOL key=value… runs any of them
+```
+
+On a laptop (macOS or Linux, with `curl` and `jq`), the same commands run on a panel: a remote. Get the
+command from the release, then save the panel with an API token an administrator makes in Admin → API
+tokens (it's asked for, hidden, and kept in `~/.config/nicetrybot/remotes`, readable only by you):
+
+```sh
+curl -fsSL https://github.com/NiceTryBot/nicetrybot/releases/latest/download/nicetrybot -o ~/.local/bin/nicetrybot
+chmod +x ~/.local/bin/nicetrybot
+
+nicetrybot remote add panel.example.com     # or: remote add prod panel.example.com
+nicetrybot remote list                      # * marks the current one, with when each token expires
+nicetrybot remote use prod                  # --remote=NAME runs one command elsewhere
+nicetrybot remote auth                      # a new token, when the old one expires
+nicetrybot remote remove prod               # forget it (delete the token in Admin to stop it now)
+nicetrybot teams                            # with a token for all your teams: the teams, * the one in use
+nicetrybot team use acme                    # switch team (--team=SLUG: one command only)
+nicetrybot cli update                       # this command, to the newest release
+```
+
+The server-only commands (`update`, `rollback`, `addons`, `doctor`, `logs`…) always work on the server
+they run on.
+
 By hand, without the command:
 
 ```sh

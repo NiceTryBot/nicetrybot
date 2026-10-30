@@ -24,6 +24,15 @@ return [
     'verify_dns' => (bool) env('NICETRY_VERIFY_DNS', true),
 
     /*
+     * Whether a site's origin may be on a private network: 10.x, 192.168.x, a container's name. Off,
+     * origins must be on the public internet, so nobody who can add a domain can make the edge reach
+     * what only its own network can (a cloud's metadata service, the stack's other containers). Turn it
+     * on only for an edge meant to reach origins on its own private network. The edge reads the same
+     * setting.
+     */
+    'allow_private_origins' => (bool) env('NICETRY_ALLOW_PRIVATE_ORIGINS', false),
+
+    /*
      * How many domains this installation protects for free (10 unless set). Each More domains pack
      * from the marketplace adds 100 more (Admin → Add-ons); hostnames behind an Origins origin don't
      * count. "unlimited" turns the limit off, as the hosted service runs.

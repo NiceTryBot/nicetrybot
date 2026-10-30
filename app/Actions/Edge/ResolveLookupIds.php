@@ -24,7 +24,7 @@ class ResolveLookupIds
      */
     private const int CHUNK_SIZE = 500;
 
-    public function __construct(private RecordClientProfiles $recordClientProfiles)
+    public function __construct(private RecordClientProfiles $recordClientProfiles, private RecordPathRefs $recordPathRefs)
     {
         //
     }
@@ -35,7 +35,11 @@ class ResolveLookupIds
      */
     public function paths(iterable $paths): array
     {
-        return $this->byHash('request_paths', 'path', $paths, fn (string $path) => ['category' => PathCategory::classify($path)?->value]);
+        $ids = $this->byHash('request_paths', 'path', $paths, fn (string $path) => ['category' => PathCategory::classify($path)?->value]);
+
+        $this->recordPathRefs->paths($ids);
+
+        return $ids;
     }
 
     /**

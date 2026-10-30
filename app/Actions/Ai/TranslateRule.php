@@ -29,7 +29,7 @@ class TranslateRule
     /**
      * Bumped whenever the instructions change, so translations cached under the old ones aren't reused.
      */
-    private const int PROMPT_VERSION = 4;
+    private const int PROMPT_VERSION = 5;
 
     /**
      * The most gym routines sent along.

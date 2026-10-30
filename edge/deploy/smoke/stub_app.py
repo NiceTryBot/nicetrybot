@@ -1,13 +1,13 @@
 """A stand-in for the NiceTryBot app on :8080, just enough for deploy/smoke/run.sh.
 
-GET  /caddy/ask?domain=     200 for site.localhost, else 404 (no token, like the app)
+GET  /caddy/ask?domain=     200 for site.localhost, else 404 (and 404 without the token, like the app)
 GET  /caddy/origins         site.localhost -> http://whoami:80
 GET  /caddy/<other lists>   empty lists in the shapes the edge's modules expect
 POST /caddy/ingest          prints each NDJSON line ("stub-app: line {...}"); the first
                             STUB_FAIL_FIRST_INGESTS batches get a 503, to show Vector retrying
 anything else               a small "panel" page
 
-Every /caddy/* call but ask must carry the bearer token; refusals are printed.
+Every /caddy/* call must carry the bearer token; refusals are printed.
 """
 import json
 import os
@@ -72,6 +72,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/caddy/ask":
+            if self.headers.get("Authorization") != "Bearer " + TOKEN:
+                say("refused ask %s (no or wrong token)" % self.path)
+                return self.send(404, "")
             domain = parse_qs(url.query).get("domain", [""])[0]
             say("ask %s" % domain)
             return self.send(200 if domain == "site.localhost" else 404, "")

@@ -42,6 +42,7 @@ class GetOriginSecret extends TeamTool
 
         return Response::structured([
             'hostname' => $domain->hostname,
+            'origin_url' => $domain->origin_url,
             'header' => Domain::ORIGIN_SECRET_HEADER,
             'value' => $domain->origin_secret,
         ]);

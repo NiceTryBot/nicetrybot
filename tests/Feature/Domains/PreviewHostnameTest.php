@@ -42,7 +42,7 @@ test('the edge serves a verified domain\'s preview as the domain itself', functi
         'forwarded_host_header' => 'X-Domain',
     ]);
 
-    $this->get(route('edge.certificates.authorize', ['domain' => 'claims-example-com.preview.example']))->assertOk();
+    askForCertificate('claims-example-com.preview.example')->assertOk();
 
     $this->withToken('edge-token')
         ->getJson(route('edge.origins.resolve', ['host' => 'claims-example-com.preview.example']))
@@ -60,7 +60,7 @@ test('the edge serves a verified domain\'s preview as the domain itself', functi
 test('an unverified domain\'s preview gets no certificate and no route', function () {
     Domain::factory()->create(['hostname' => 'pending.example.com']);
 
-    $this->get(route('edge.certificates.authorize', ['domain' => 'pending-example-com.preview.example']))->assertNotFound();
+    askForCertificate('pending-example-com.preview.example')->assertNotFound();
 
     $this->withToken('edge-token')
         ->getJson(route('edge.origins.resolve', ['host' => 'pending-example-com.preview.example']))

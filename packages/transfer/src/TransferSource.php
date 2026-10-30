@@ -2,6 +2,7 @@
 
 namespace NiceTry\Transfer;
 
+use App\Support\PublicAddress;
 use Closure;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
@@ -127,32 +128,7 @@ class TransferSource
      */
     public static function isPublic(string $address): bool
     {
-        if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
-            return false;
-        }
-
-        if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
-            $long = (int) ip2long($address);
-
-            // Carrier-grade NAT (100.64.0.0/10), benchmarking (198.18.0.0/15) and multicast (224.0.0.0/4),
-            // which PHP's flags let through.
-            return ! (($long & 0xFFC00000) === (int) ip2long('100.64.0.0')
-                || ($long & 0xFFFE0000) === (int) ip2long('198.18.0.0')
-                || ($long & 0xF0000000) === (int) ip2long('224.0.0.0'));
-        }
-
-        // IPv6: multicast, and IPv4 addresses written as IPv6, checked as IPv4.
-        $packed = (string) inet_pton($address);
-
-        if ($packed[0] === "\xFF") {
-            return false;
-        }
-
-        if (str_starts_with($packed, str_repeat("\0", 10)."\xFF\xFF")) {
-            return self::isPublic((string) inet_ntop(substr($packed, 12)));
-        }
-
-        return true;
+        return PublicAddress::isPublic($address);
     }
 
     /**
@@ -187,7 +163,7 @@ class TransferSource
         }
 
         if ($response->status() === 404 || $response->status() === 401 || $response->status() === 403) {
-            throw new InvalidTransferBundle(__('That panel didn\'t accept the token, or doesn\'t have Transfer and Origins on. The token needs "Add and change domains", and its team must be the one with the origin.'));
+            throw new InvalidTransferBundle(__('That panel didn\'t accept the token, or doesn\'t have Transfer and Origins on. The token needs "Add and change domains", and must be for the one team with the origin, not all teams.'));
         }
 
         if (! $response->successful()) {

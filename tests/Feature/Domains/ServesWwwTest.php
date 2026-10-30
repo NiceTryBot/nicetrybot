@@ -17,8 +17,8 @@ test('a domain that serves www. is allowed a certificate for www. too', function
     Domain::factory()->verified()->servingWww()->create(['hostname' => 'example.com']);
     Domain::factory()->verified()->create(['hostname' => 'plain.com']);
 
-    $this->get(route('edge.certificates.authorize', ['domain' => 'www.example.com']))->assertOk();
-    $this->get(route('edge.certificates.authorize', ['domain' => 'www.plain.com']))->assertNotFound();
+    askForCertificate('www.example.com')->assertOk();
+    askForCertificate('www.plain.com')->assertNotFound();
 });
 
 test('the edge hears www.site with site\'s route when site serves www.', function () {

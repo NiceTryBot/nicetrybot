@@ -147,6 +147,15 @@ settings() {
     on | off) ;;
     *) fail "NICETRY_BLOCK_MULTIPART must be on or off (got $NICETRY_BLOCK_MULTIPART)" ;;
   esac
+
+  # Read by the nicetry_origin transport itself; checked here so a typo doesn't quietly mean "off".
+  private=${NICETRY_ALLOW_PRIVATE_ORIGINS:-}
+  blank "$private" && private=false
+  case $(printf '%s' "$private" | tr '[:upper:]' '[:lower:]') in
+    true | 1) say "origins may be on a private network (NICETRY_ALLOW_PRIVATE_ORIGINS)" ;;
+    false | 0) ;;
+    *) fail "NICETRY_ALLOW_PRIVATE_ORIGINS must be true or false (got $private)" ;;
+  esac
 }
 
 settings

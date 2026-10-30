@@ -54,15 +54,16 @@ class MatchGymRoutines
      */
     public function activeVerdicts(Team $team, GymVisitor $visitor): Builder
     {
-        $ja4Id = $visitor->ja4 === null ? null : TlsFingerprint::query()
+        $ja4Ids = $visitor->ja4s() === [] ? [] : TlsFingerprint::query()
             ->where('type', TlsFingerprintType::Ja4)
-            ->where('value', $visitor->ja4)
-            ->value('id');
+            ->whereIn('value', $visitor->ja4s())
+            ->pluck('id')
+            ->all();
 
         return Verdict::query()
             ->active()
             ->where('team_id', $team->id)
             ->where(fn (Builder $query) => $query->whereNull('client_ip')->orWhere('client_ip', $visitor->ip))
-            ->where(fn (Builder $query) => $ja4Id === null ? $query->whereNull('ja4_id') : $query->whereNull('ja4_id')->orWhere('ja4_id', $ja4Id));
+            ->where(fn (Builder $query) => $ja4Ids === [] ? $query->whereNull('ja4_id') : $query->whereNull('ja4_id')->orWhereIn('ja4_id', $ja4Ids));
     }
 }

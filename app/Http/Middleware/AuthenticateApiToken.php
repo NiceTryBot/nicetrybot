@@ -16,7 +16,7 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
  * database time in Server-Timing, so a stranger can't tell there's an API here at all.
  *
  * A token works while it hasn't expired, its user is still an administrator, and they're still on
- * the token's team.
+ * the token's team (a token for all of their teams reaches whichever they're on at the time).
  */
 class AuthenticateApiToken
 {
@@ -61,7 +61,11 @@ class AuthenticateApiToken
 
         $token = ApiToken::findByPlainText($plainText);
 
-        if ($token?->team === null || ! $token->user->isAdministrator() || ! $token->user->belongsToTeam($token->team)) {
+        if ($token === null || ! $token->user->isAdministrator()) {
+            return null;
+        }
+
+        if (! $token->coversAllTeams() && ($token->team === null || ! $token->user->belongsToTeam($token->team))) {
             return null;
         }
 

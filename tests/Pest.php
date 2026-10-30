@@ -7,6 +7,7 @@ use App\Models\Administrator;
 use App\Models\ApiToken;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Testing\TestResponse;
 use Laravel\Mcp\Server\Testing\PendingTestResponse;
 use Tests\TestCase;
 
@@ -163,4 +164,14 @@ function mcpAs(ApiToken $token): PendingTestResponse
     app(ApiContext::class)->use($token);
 
     return NiceTryBotServer::actingAs($token->user);
+}
+
+/**
+ * Ask the app, as the edge does (with its token), whether it may get a certificate for a hostname.
+ */
+function askForCertificate(?string $hostname = null): TestResponse
+{
+    config(['services.nicetry_edge.token' => 'edge-token']);
+
+    return test()->get(route('edge.certificates.authorize', array_filter(['domain' => $hostname, 'token' => 'edge-token'])));
 }

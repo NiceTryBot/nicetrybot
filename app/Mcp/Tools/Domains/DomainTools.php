@@ -19,5 +19,6 @@ final class DomainTools
         VerifyDomain::class,
         GetOriginSecret::class,
         SetProtectionMode::class,
+        RemoveDomain::class,
     ];
 }

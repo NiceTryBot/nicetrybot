@@ -19,7 +19,10 @@ use App\Models\Domain;
 use App\Models\EdgeRule;
 use App\Models\GymRoutine;
 use App\Models\Team;
+use App\Rules\ReachableOrigin;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use NiceTry\Origins\Models\DomainProtectionOverride;
 use NiceTry\Origins\Models\Origin;
@@ -55,6 +58,12 @@ class ImportOrigin
     {
         if (! OriginsAddon::isOn()) {
             throw new InvalidTransferBundle(__('A transfer brings an origin, so it needs the Origins add-on on this panel, installed and on.'));
+        }
+
+        $originUrl = Validator::make(['origin_url' => $bundle['origin']['origin_url'] ?? ''], ['origin_url' => [new ReachableOrigin]]);
+
+        if ($originUrl->fails()) {
+            throw new InvalidTransferBundle($originUrl->errors()->first('origin_url'));
         }
 
         $summary = new ImportSummary;
@@ -97,7 +106,8 @@ class ImportOrigin
             'fold_www' => (bool) $data['fold_www'],
             'protection_mode' => ProtectionMode::from($data['protection_mode']),
             'origin_secret' => $data['origin_secret'],
-            'authorize_url' => $data['authorize_url'] ?? null,
+            // Vouching for any hostname is the installation's call: only an administrator brings one in.
+            'authorize_url' => $this->byAdministrator() ? ($data['authorize_url'] ?? null) : $origin?->authorize_url,
         ];
 
         if ($origin === null) {
@@ -168,9 +178,9 @@ class ImportOrigin
                     ...$origin->domainSettings(),
                     'origin_id' => $origin->id,
                     'hostname' => $hostname,
-                    'status' => DomainStatus::Active,
+                    'status' => $this->byAdministrator() ? DomainStatus::Active : DomainStatus::PendingVerification,
                     'verification_token' => Str::lower(Str::random(32)),
-                    'verified_at' => now(),
+                    'verified_at' => $this->byAdministrator() ? now() : null,
                 ]);
                 $summary->sitesAdded++;
                 $this->ownMode($domain, $ownMode);
@@ -365,5 +375,15 @@ class ImportOrigin
             && (bool) $routine->one_try === $attributes['one_try']
             && json_encode($routine->conditions) === json_encode($conditions)
             && json_encode($routine->obstacles) === json_encode($this->saveRoutine->normalizeObstacles($attributes['obstacles']));
+    }
+
+    /**
+     * Whether an installation administrator is importing: only they bring sites in verified (the bundle
+     * says another panel verified them, which this one can't check) and an authorize URL with them.
+     * Anyone else's new sites prove ownership with their TXT record, like any added domain.
+     */
+    private function byAdministrator(): bool
+    {
+        return Auth::user()?->can('administer') === true;
     }
 }

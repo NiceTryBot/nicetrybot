@@ -21,8 +21,10 @@ runs; visitors' places are just unknown.
 The Caddyfile has the same handlers, in the same order, as production. The control panel is one site
 (`NICETRY_PANEL_HOST`), proxied to the app, with a certificate obtained up front. Its `/caddy/*` gets nginx's 404
 at the edge, because only the edge and Vector use those endpoints, and they call the app directly. Every other hostname gets a
-certificate on demand if the app's `/caddy/ask` allows it, and is routed by `nicetry_origins`. `/_q/*` goes to the
-app (the gym). Responses carry `Server: nginx` and nginx's own error pages. The PHP upload-progress guard is on.
+certificate on demand if the app's `/caddy/ask` allows it (asked with the token), and is routed by
+`nicetry_origins` to its origin, but only on a public address unless `NICETRY_ALLOW_PRIVATE_ORIGINS` is on. A
+request an origin sends back to the edge (a loop) gets nginx's 508, and a path with `../` gets nginx's 400. `/_q/*`
+goes to the app (the gym). Responses carry `Server: nginx` and nginx's own error pages. The PHP upload-progress guard is on.
 The access log is written as JSON to `/var/log/caddy/access.log`, rolled at 100 MiB with ten files kept. Two things
 are left out on purpose: production's per-customer sites and exceptions, and HTTP/3.
 
@@ -44,6 +46,7 @@ Redis settings first. Anything else runs as given, e.g. `docker compose exec edg
 | `NICETRY_CERT_REDIS_CA` | | Path to a PEM CA for a Redis whose certificate isn't publicly trusted. Without it, the system's CAs are used and the hostname is checked. |
 | `NICETRY_CERT_REDIS_TLS` | (from the URL) | `true` or `false`, to override what the URL implies. |
 | `NICETRY_BLOCK_MULTIPART` | `off` | `on` refuses every multipart upload with nginx's 403 (bot_tag `php_multipart`): the emergency switch for a PHP upload CVE. |
+| `NICETRY_ALLOW_PRIVATE_ORIGINS` | `false` | `true` lets sites' origins be on a private network (10.x, 192.168.x, a container's name). Off, the edge only connects to origins on public addresses, so nobody who can add a domain can make it reach the cloud's metadata service or the stack's other containers (they get nginx's 502). Set the app's to the same value. |
 | `NICETRY_DBIP` | `on` | `off` never fetches DB-IP. |
 | `NICETRY_DBIP_WAIT` | `300` | How many seconds a start waits for the first DB-IP download before Caddy starts without it. |
 | `NICETRY_DBIP_URL` | `https://download.db-ip.com/free` | Where `dbip-fetch` looks for `dbip-{city,asn}-lite-YYYY-MM.mmdb.gz`, e.g. a mirror. |
@@ -110,7 +113,8 @@ whoami doesn't answer the `/caddy/*` polls with JSON, so the edge logs that it i
 `deploy/smoke/run.sh [https-port]` goes further, with no app needed. It builds both images, then answers the
 edge's calls with a stub app (`deploy/smoke/stub_app.py`). It checks four things:
 - the panel answers with `Server: nginx`;
-- `site.localhost` is routed by `nicetry_origins` to a whoami origin;
+- `site.localhost` is routed by `nicetry_origins` to a whoami origin (a container, so the edge runs with
+  `NICETRY_ALLOW_PRIVATE_ORIGINS=true`);
 - Vector delivers the redacted lines to `/caddy/ingest`;
 - the first two batches, which the stub refuses with a 503, arrive anyway after retries.
 

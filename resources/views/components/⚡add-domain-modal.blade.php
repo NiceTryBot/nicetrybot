@@ -5,6 +5,7 @@ use App\Enums\HostHeaderMode;
 use App\Models\Domain;
 use App\Rules\HeaderNames;
 use App\Rules\Hostname;
+use App\Rules\ReachableOrigin;
 use App\Support\AddDomainWithAiPrompt;
 use App\Support\HeaderName;
 use Flux\Flux;
@@ -51,11 +52,7 @@ new class extends Component {
                 'string',
                 'max:255',
                 'url:http,https',
-                function (string $attribute, mixed $value, Closure $fail) {
-                    if (parse_url((string) $value, PHP_URL_HOST) === $this->hostname) {
-                        $fail(__('The origin must be a different host than the domain, or requests would loop back to the edge.'));
-                    }
-                },
+                new ReachableOrigin($this->hostname),
             ],
             'hostHeaderMode' => ['required', Rule::enum(HostHeaderMode::class)],
             'originHostHeader' => ['nullable', 'string', new Hostname],

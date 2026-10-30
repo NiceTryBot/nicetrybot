@@ -26,6 +26,11 @@ use Illuminate\Support\Str;
 class BuildRuleQuery
 {
     /**
+     * How far back a request looks for another IP on the same visit, for client = 'hopped'.
+     */
+    public const int HOP_WINDOW_SECONDS = 3600;
+
+    /**
      * Start a query over the team's requests with every lookup the script reads joined in, and the
      * script's WHERE applied. Its HAVING (and its FILTERs) can be added to the query after.
      */
@@ -350,8 +355,9 @@ class BuildRuleQuery
 
     /**
      * Match requests from clients that are any of the given kinds: spoofed or outdated (as the Activity
-     * page's client filter decides, against the profile side tables), or behind a corporate security
-     * gateway. Negated, a request whose parts are unknown counts as not that kind.
+     * page's client filter decides, against the profile side tables), behind a corporate security
+     * gateway, or picking up a visit another IP started. Negated, a request whose parts are unknown
+     * counts as not that kind.
      *
      * @param  list<int|string>  $kinds
      */
@@ -360,11 +366,37 @@ class BuildRuleQuery
         $releases = BrowserReleases::now();
         $conditions = array_map(fn (int|string $kind) => match ($kind) {
             'corporate' => WhereCondition::of(EdgeRequest::query()->whereIn('edge_requests.asn', InspectingProxy::allAsns())),
+            'hopped' => new WhereCondition($this->hoppedSql(), []),
             default => WhereCondition::of(ClientTrait::constrainAny(EdgeRequest::query(), ClientTrait::forFilter((string) $kind), $releases)),
         }, $kinds);
 
         $sql = 'coalesce(('.implode(' or ', array_map(fn (WhereCondition $condition) => $condition->sql, $conditions)).'), false)';
 
         $query->whereRaw($negated ? "not {$sql}" : $sql, array_merge(...array_map(fn (WhereCondition $condition) => $condition->bindings, $conditions)), $boolean);
+    }
+
+    /**
+     * The condition that a request points at a visitor's record (request_path_refs) another IP asked
+     * for on the same site within the hour before: one visit that moved to a new IP partway, as a
+     * rotating proxy does. The IP that started the visit isn't matched, only the ones that took it over.
+     */
+    private function hoppedSql(): string
+    {
+        $windowStart = match (DB::connection()->getDriverName()) {
+            'pgsql' => "edge_requests.occurred_at - interval '".self::HOP_WINDOW_SECONDS." seconds'",
+            'mysql', 'mariadb' => 'edge_requests.occurred_at - interval '.self::HOP_WINDOW_SECONDS.' second',
+            default => "datetime(edge_requests.occurred_at, '-".self::HOP_WINDOW_SECONDS." seconds')",
+        };
+
+        return <<<SQL
+            exists (select 1 from request_path_refs as hop_ref
+                join request_path_refs as hop_shared on hop_shared.ref = hop_ref.ref
+                join edge_requests as hop_earlier on hop_earlier.path_id = hop_shared.path_id
+                where hop_ref.path_id = edge_requests.path_id
+                    and hop_earlier.domain_id = edge_requests.domain_id
+                    and hop_earlier.client_ip <> edge_requests.client_ip
+                    and hop_earlier.occurred_at <= edge_requests.occurred_at
+                    and hop_earlier.occurred_at >= {$windowStart})
+            SQL;
     }
 }

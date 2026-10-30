@@ -150,3 +150,27 @@ test('every tool a token may use comes back on the first page of the list', func
         ->assertJsonFragment(['name' => 'lift-lockdown'])
         ->assertJsonFragment(['name' => 'add-domain']);
 });
+
+test('a tool call needs no initialize first, as the nicetrybot command sends one', function () {
+    [, $plainText] = apiToken();
+
+    $this->withToken($plainText)
+        ->postJson('/mcp', [
+            'jsonrpc' => '2.0',
+            'id' => 1,
+            'method' => 'tools/call',
+            'params' => [
+                'name' => 'whoami',
+                'arguments' => (object) [],
+                '_meta' => ['io.modelcontextprotocol/protocolVersion' => '2026-07-28', 'io.modelcontextprotocol/clientCapabilities' => (object) []],
+            ],
+        ], [
+            'Accept' => 'application/json, text/event-stream',
+            'MCP-Protocol-Version' => '2026-07-28',
+            'Mcp-Method' => 'tools/call',
+            'Mcp-Name' => 'whoami',
+        ])
+        ->assertOk()
+        ->assertJsonPath('result.isError', false)
+        ->assertJsonPath('result.structuredContent.abilities', ['read']);
+});

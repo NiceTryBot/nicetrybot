@@ -88,9 +88,18 @@ func (g *Gym) Validate() error {
 }
 
 func (g *Gym) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	// The gym's own requests (/_q/…) and the edge diagnostic are never sent to the gym.
-	if strings.HasPrefix(r.URL.Path, "/_q/") || strings.HasPrefix(r.URL.Path, "/__nicetry/") || g.targets.match(r) == nil {
+	// The gym's own requests (/_q/…) and the edge diagnostic are never sent to the gym. The path is
+	// cleaned first: /_q/../login reaches the origin as /login.
+	if cleaned := cleanedPath(r); strings.HasPrefix(cleaned, "/_q/") || strings.HasPrefix(cleaned, "/__nicetry/") {
 		return next.ServeHTTP(w, r)
+	}
+	trigger, matched := g.targets.matchOn(r)
+	if trigger == nil {
+		return next.ServeHTTP(w, r)
+	}
+	if matched != r.URL.Path {
+		// NiceTryBot matches routines to the path too: tell it the one the trigger matched.
+		caddyhttp.SetVar(r.Context(), gymPathVar, matched)
 	}
 
 	resp, err := g.ask(r)
@@ -129,6 +138,10 @@ func (g *Gym) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.H
 	return err
 }
 
+// gymPathVar holds the judged path a request's trigger matched, when it isn't the path as sent
+// (/index.php/login for a trigger on /login*).
+const gymPathVar = "nicetry_gym_path"
+
 // describe is what NiceTryBot hears about a visitor's request: who, what, and the gym's own cookies.
 func (g *Gym) describe(r *http.Request) http.Header {
 	h := http.Header{}
@@ -143,7 +156,11 @@ func (g *Gym) describe(r *http.Request) http.Header {
 		}
 	}
 	h.Set("X-NiceTry-Host", strings.ToLower(hostOnly(r.Host)))
-	h.Set("X-NiceTry-Uri", r.URL.RequestURI())
+	uri := r.URL.RequestURI()
+	if matched, ok := caddyhttp.GetVar(r.Context(), gymPathVar).(string); ok && matched != "" {
+		uri = uriFor(r, matched)
+	}
+	h.Set("X-NiceTry-Uri", uri)
 	h.Set("X-NiceTry-Method", r.Method)
 	h.Set("X-NiceTry-Client-Ip", requestIP(r))
 	if repl, ok := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer); ok {

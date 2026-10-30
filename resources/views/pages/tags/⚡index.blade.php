@@ -29,7 +29,8 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 
-new #[Title('Tags & bans')] class extends Component {
+new #[Title('Tags & bans')] class extends Component
+{
     /**
      * The periods the clients' recent requests can be counted over.
      *
@@ -41,6 +42,22 @@ new #[Title('Tags & bans')] class extends Component {
      * How many clients the table shows at first, and how many more each "Show more" adds.
      */
     public const int PAGE_SIZE = 50;
+
+    /**
+     * The columns the clients can be sorted by, each with the direction a first click sorts it.
+     *
+     * @var array<string, 'asc'|'desc'>
+     */
+    public const array SORTS = [
+        'client' => 'asc',
+        'tag' => 'asc',
+        'rule' => 'asc',
+        'matched' => 'desc',
+        'requests' => 'desc',
+        'tagged' => 'desc',
+        'last_matched' => 'desc',
+        'expires' => 'asc',
+    ];
 
     /**
      * The tag being looked at; empty shows only the overview.
@@ -66,6 +83,15 @@ new #[Title('Tags & bans')] class extends Component {
      */
     #[Url(except: '1h')]
     public string $period = '1h';
+
+    /**
+     * The column the clients are sorted by: one of SORTS.
+     */
+    #[Url(as: 'sort', except: 'last_matched')]
+    public string $sortBy = 'last_matched';
+
+    #[Url(as: 'dir', except: 'desc')]
+    public string $sortDirection = 'desc';
 
     /**
      * The IP the person using the app browses from, read when the page opens, or null when it can't be told.
@@ -98,9 +124,24 @@ new #[Title('Tags & bans')] class extends Component {
         $this->limit = min($this->limit + self::PAGE_SIZE * 2, 1000);
     }
 
+    /**
+     * Sort the clients by a column, or turn the sort around when they already are.
+     */
+    public function sort(string $column): void
+    {
+        if (! array_key_exists($column, self::SORTS)) {
+            return;
+        }
+
+        $this->sortDirection = $this->sortBy === $column ? ($this->sortDirection === 'asc' ? 'desc' : 'asc') : self::SORTS[$column];
+        $this->sortBy = $column;
+        $this->limit = self::PAGE_SIZE;
+    }
+
     public function mount(): void
     {
         $this->normalizePeriod();
+        $this->normalizeSort();
         $this->viewerIp = ViewerIp::of(request());
     }
 
@@ -241,7 +282,8 @@ new #[Title('Tags & bans')] class extends Component {
     }
 
     /**
-     * The clients holding the tag (or ban) being looked at, most recently matched first.
+     * The clients holding the tag (or ban) being looked at, in the order picked: most recently matched first
+     * at first.
      *
      * @return Collection<int, Verdict>
      */
@@ -252,7 +294,21 @@ new #[Title('Tags & bans')] class extends Component {
             return new Collection;
         }
 
-        return $this->filteredVerdicts()->with(['rule:id,name', 'ja4Fingerprint'])->latest('last_matched_at')->latest('id')->limit($this->limit)->get();
+        $query = $this->filteredVerdicts()->with(['rule:id,name', 'ja4Fingerprint']);
+        $direction = $this->sortDirection === 'asc' ? 'asc' : 'desc';
+
+        match ($this->sortBy) {
+            'client' => $query->orderBy('verdicts.client_ip', $direction),
+            'tag' => $query->orderBy('verdicts.tag', $direction),
+            'rule' => $query->orderBy(EdgeRule::query()->select('name')->whereColumn('edge_rules.id', 'verdicts.edge_rule_id'), $direction),
+            'matched' => $query->orderBy('verdicts.matched_requests', $direction),
+            'requests' => $this->sortByRecentRequests($query, $direction),
+            'tagged' => $query->orderBy('verdicts.created_at', $direction),
+            'expires' => $query->orderByRaw("verdicts.expires_at is null {$direction}")->orderBy('verdicts.expires_at', $direction),
+            default => $query->orderBy('verdicts.last_matched_at', $direction),
+        };
+
+        return $query->orderBy('verdicts.id', $direction)->limit($this->limit)->get();
     }
 
     /**
@@ -373,9 +429,46 @@ new #[Title('Tags & bans')] class extends Component {
             ->map(fn (SupportCollection $rows) => (int) $rows->sum('requests'));
     }
 
+    /**
+     * Order the clients by the requests they sent the team's sites over the period, counted as
+     * requestsFrom() counts them: by IP and fingerprint, or by IP alone when tagged by IP.
+     *
+     * @param  HasMany<Verdict, Team>  $query
+     */
+    protected function sortByRecentRequests(HasMany $query, string $direction): void
+    {
+        $recent = EdgeRequest::query()
+            ->toBase()
+            ->whereIn('domain_id', $this->team->domains()->select('id'))
+            ->where('occurred_at', '>=', now()->subSeconds(TrafficPeriod::from($this->period)->seconds()))
+            ->whereIn('client_ip', $this->filteredVerdicts()->select('client_ip'))
+            ->groupBy('client_ip', 'ja4_id')
+            ->selectRaw('client_ip as recent_ip, ja4_id as recent_ja4_id, count(*) as recent_requests');
+
+        $query->select('verdicts.*')
+            ->leftJoinSub($recent, 'recent', fn ($join) => $join->on('recent.recent_ip', '=', 'verdicts.client_ip')
+                ->whereRaw('(verdicts.ja4_id is null or recent.recent_ja4_id = verdicts.ja4_id)'))
+            ->groupBy('verdicts.id')
+            ->orderByRaw("coalesce(sum(recent.recent_requests), 0) {$direction}");
+    }
+
     protected function isSearching(): bool
     {
         return trim($this->search) !== '';
+    }
+
+    /**
+     * Forget a sort the page doesn't offer.
+     */
+    protected function normalizeSort(): void
+    {
+        if (! array_key_exists($this->sortBy, self::SORTS)) {
+            $this->sortBy = 'last_matched';
+        }
+
+        if (! in_array($this->sortDirection, ['asc', 'desc'], true)) {
+            $this->sortDirection = 'desc';
+        }
     }
 
     /**
@@ -544,16 +637,16 @@ new #[Title('Tags & bans')] class extends Component {
                                 @if ($this->canManage)
                                     <flux:table.column class="w-8"></flux:table.column>
                                 @endif
-                                <flux:table.column>{{ __('Client') }}</flux:table.column>
+                                <flux:table.column sortable :sorted="$sortBy === 'client'" :direction="$sortDirection" wire:click="sort('client')" data-test="sort-client">{{ __('Client') }}</flux:table.column>
                                 @if ($searching)
-                                    <flux:table.column>{{ __('Tag') }}</flux:table.column>
+                                    <flux:table.column sortable :sorted="$sortBy === 'tag'" :direction="$sortDirection" wire:click="sort('tag')">{{ __('Tag') }}</flux:table.column>
                                 @endif
-                                <flux:table.column>{{ __('Rule') }}</flux:table.column>
-                                <flux:table.column align="end" class="max-md:hidden">{{ __('Matched') }}</flux:table.column>
-                                <flux:table.column align="end">{{ __('Requests, :period', ['period' => mb_strtolower(TrafficPeriod::from($period)->label())]) }}</flux:table.column>
-                                <flux:table.column class="max-md:hidden">{{ __('Tagged') }}</flux:table.column>
-                                <flux:table.column class="max-md:hidden">{{ __('Last matched') }}</flux:table.column>
-                                <flux:table.column>{{ __('Expires') }}</flux:table.column>
+                                <flux:table.column sortable :sorted="$sortBy === 'rule'" :direction="$sortDirection" wire:click="sort('rule')">{{ __('Rule') }}</flux:table.column>
+                                <flux:table.column align="end" class="max-md:hidden" sortable :sorted="$sortBy === 'matched'" :direction="$sortDirection" wire:click="sort('matched')">{{ __('Matched') }}</flux:table.column>
+                                <flux:table.column align="end" sortable :sorted="$sortBy === 'requests'" :direction="$sortDirection" wire:click="sort('requests')">{{ __('Requests, :period', ['period' => mb_strtolower(TrafficPeriod::from($period)->label())]) }}</flux:table.column>
+                                <flux:table.column class="max-md:hidden" sortable :sorted="$sortBy === 'tagged'" :direction="$sortDirection" wire:click="sort('tagged')">{{ __('Tagged') }}</flux:table.column>
+                                <flux:table.column class="max-md:hidden" sortable :sorted="$sortBy === 'last_matched'" :direction="$sortDirection" wire:click="sort('last_matched')">{{ __('Last matched') }}</flux:table.column>
+                                <flux:table.column sortable :sorted="$sortBy === 'expires'" :direction="$sortDirection" wire:click="sort('expires')">{{ __('Expires') }}</flux:table.column>
                                 <flux:table.column></flux:table.column>
                             </flux:table.columns>
                             <flux:table.rows>
@@ -620,7 +713,7 @@ new #[Title('Tags & bans')] class extends Component {
 
                         @if ($this->verdictCount > $this->verdicts->count())
                             <div class="flex items-center justify-center gap-3 py-3 text-xs text-zinc-500 dark:text-zinc-400" data-test="tagged-more">
-                                {{ __('Showing :shown of :total, most recently matched first.', ['shown' => Number::format($this->verdicts->count()), 'total' => Number::format($this->verdictCount)]) }}
+                                {{ __('Showing :shown of :total.', ['shown' => Number::format($this->verdicts->count()), 'total' => Number::format($this->verdictCount)]) }}
                                 @if ($limit < 1000)
                                     <flux:button size="xs" wire:click="showMore" data-test="tagged-show-more">{{ __('Show more') }}</flux:button>
                                 @endif

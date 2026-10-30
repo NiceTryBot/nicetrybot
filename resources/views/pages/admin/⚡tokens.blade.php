@@ -18,9 +18,14 @@ new #[Title('API tokens')] class extends Component {
      */
     public const array LIFETIMES = [1 => '1 hour', 4 => '4 hours', 24 => '1 day', 168 => '1 week', 720 => '30 days', 2160 => '90 days'];
 
+    /**
+     * The team select's value for a token that works on all of the administrator's teams.
+     */
+    public const string ALL_TEAMS = 'all';
+
     public string $name = '';
 
-    public ?int $teamId = null;
+    public int|string|null $teamId = null;
 
     /** @var list<string> */
     public array $abilities = [];
@@ -58,8 +63,8 @@ new #[Title('API tokens')] class extends Component {
     }
 
     /**
-     * Make a token for an AI agent, as this administrator on one of their teams. The token is shown
-     * once, here; only its hash is kept.
+     * Make a token for an AI agent, as this administrator on one of their teams or all of them. The
+     * token is shown once, here; only its hash is kept.
      */
     public function create(): void
     {
@@ -67,7 +72,7 @@ new #[Title('API tokens')] class extends Component {
 
         $validated = $this->validate([
             'name' => ['required', 'string', 'max:100'],
-            'teamId' => ['required', 'integer', Rule::in($this->teams->modelKeys())],
+            'teamId' => ['required', Rule::in([self::ALL_TEAMS, ...$this->teams->modelKeys()])],
             'abilities' => ['array'],
             'abilities.*' => [Rule::enum(ApiAbility::class)],
             'lifetimeHours' => ['required', 'integer', Rule::in(array_keys(self::LIFETIMES))],
@@ -75,7 +80,7 @@ new #[Title('API tokens')] class extends Component {
 
         [, $this->plainTextToken] = ApiToken::issue(
             Auth::user(),
-            $this->teams->find($validated['teamId']),
+            $validated['teamId'] === self::ALL_TEAMS ? null : $this->teams->find((int) $validated['teamId']),
             $validated['name'],
             array_map(fn (string $ability) => ApiAbility::from($ability), $validated['abilities']),
             now()->addHours($validated['lifetimeHours']),
@@ -108,6 +113,15 @@ new #[Title('API tokens')] class extends Component {
     }
 
     /**
+     * The command that saves this panel as a remote for the nicetrybot command, which asks for the token
+     * (hidden) rather than taking it on the command line, so it stays out of the shell's history.
+     */
+    public function nicetrybotCommand(): string
+    {
+        return 'nicetrybot remote add '.preg_replace('#^https://#', '', rtrim(url('/'), '/'));
+    }
+
+    /**
      * The MCP server entry other agents (Cursor, Claude Desktop, VS Code...) read from their mcp.json.
      */
     public function mcpJson(): string
@@ -129,7 +143,7 @@ new #[Title('API tokens')] class extends Component {
 }; ?>
 
 <section class="w-full">
-    <x-pages::admin.layout :heading="__('API tokens')" :subheading="__('Tokens let an AI agent, like Claude Code, use NiceTryBot\'s MCP server as you on one of your teams: add domains, ask about traffic, write rules, train gyms. Without a token the server isn\'t there at all.')">
+    <x-pages::admin.layout :heading="__('API tokens')" :subheading="__('Tokens let an AI agent, like Claude Code, or the nicetrybot command on your laptop use NiceTryBot\'s MCP server as you on one of your teams, or all of them: add domains, ask about traffic, write rules, train gyms. Without a token the server isn\'t there at all.')">
         <x-ntb.copy-field :label="__('MCP server')" :value="route('mcp')" data-test="mcp-url" />
 
         @if ($plainTextToken !== null)
@@ -144,6 +158,7 @@ new #[Title('API tokens')] class extends Component {
                     <x-ntb.copy-field :label="__('Token')" :value="$plainTextToken" />
                     <x-ntb.copy-field :label="__('Claude Code')" :value="$this->claudeCodeCommand()" />
                     <x-ntb.copy-field :label="__('Other agents (mcp.json)')" :value="$this->mcpJson()" />
+                    <x-ntb.copy-field :label="__('The nicetrybot command (paste the token when it asks)')" :value="$this->nicetrybotCommand()" />
                 </div>
 
                 <flux:button size="sm" class="mt-4" wire:click="dismissToken">{{ __('I\'ve copied it') }}</flux:button>
@@ -158,7 +173,7 @@ new #[Title('API tokens')] class extends Component {
                         <div class="min-w-0 flex-1">
                             <p class="truncate font-medium text-ink dark:text-white">{{ $token->name }}</p>
                             <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">
-                                {{ $token->team->name }} ·
+                                {{ $token->coversAllTeams() ? __('All teams') : $token->team?->name }} ·
                                 {{ collect($token->abilities)->map(fn (string $ability) => ApiAbility::tryFrom($ability)?->value)->filter()->implode(', ') }} ·
                                 {{ $token->last_used_at !== null ? __('used :when', ['when' => $token->last_used_at->diffForHumans()]) : __('never used') }} ·
                                 {{ $token->expires_at !== null ? ($token->expires_at->isPast() ? __('expired') : __('expires :when', ['when' => $token->expires_at->diffForHumans()])) : __('no expiry') }}
@@ -175,13 +190,14 @@ new #[Title('API tokens')] class extends Component {
 
             <flux:input wire:model="name" :label="__('Name')" :placeholder="__('Claude Code on my laptop')" :description="__('So you can tell your tokens apart.')" />
 
-            <flux:select wire:model="teamId" :label="__('Team')" :description="__('The token works on this team only, as you.')">
+            <flux:select wire:model="teamId" :label="__('Team')" :description="__('The token works on this team only, as you. All my teams lets it work on any team you\'re on, naming the team on each call.')">
+                <flux:select.option :value="$this::ALL_TEAMS">{{ __('All my teams') }}</flux:select.option>
                 @foreach ($this->teams as $team)
                     <flux:select.option :value="$team->id">{{ $team->name }}</flux:select.option>
                 @endforeach
             </flux:select>
 
-            <flux:checkbox.group wire:model="abilities" :label="__('What it may do')" :description="__('Every token can read. Tick only what the agent needs for this job. It can never do more than you can on the team.')">
+            <flux:checkbox.group wire:model="abilities" :label="__('What it may do')" :description="__('Every token can read. Tick only what the agent needs for this job. It can never do more than you can on the team it\'s working on.')">
                 @foreach (ApiAbility::cases() as $ability)
                     @if ($ability !== ApiAbility::Read)
                         <flux:checkbox :value="$ability->value" :label="$ability->label()" />

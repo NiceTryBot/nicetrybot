@@ -319,3 +319,30 @@ test('a tag shows its most recent clients first and the rest a page at a time', 
         ->assertSee('198.51.100.60<', false)
         ->assertDontSee('Showing 50 of 60');
 });
+
+test('the tagged clients can be sorted by any column, a second click turning the sort around', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+    $rule = tagRule($user->currentTeam, 'Hunt', "TAG ip AS 'bad-actor' FOR FOREVER\nWHERE status = 404");
+    taggedClient($rule, 'bad-actor', '198.51.100.1', ['matched_requests' => 5, 'last_matched_at' => now()->subMinutes(1), 'expires_at' => now()->addHours(5)]);
+    taggedClient($rule, 'bad-actor', '198.51.100.2', ['matched_requests' => 50, 'last_matched_at' => now()->subMinutes(2), 'expires_at' => null]);
+    taggedClient($rule, 'bad-actor', '198.51.100.3', ['matched_requests' => 1, 'last_matched_at' => now()->subMinutes(3), 'expires_at' => now()->addHour()]);
+    EdgeRequest::factory()->for($domain)->count(3)->create(['client_ip' => '198.51.100.3', 'occurred_at' => now()->subMinutes(5)]);
+    EdgeRequest::factory()->for($domain)->create(['client_ip' => '198.51.100.1', 'occurred_at' => now()->subMinutes(5)]);
+
+    $this->actingAs($user);
+
+    $order = fn ($page) => $page->instance()->verdicts->pluck('client_ip')->all();
+    $page = Livewire::test('pages::tags.index')->call('show', 'bad-actor');
+
+    expect($order($page))->toBe(['198.51.100.1', '198.51.100.2', '198.51.100.3'])
+        ->and($order($page->call('sort', 'matched')))->toBe(['198.51.100.2', '198.51.100.1', '198.51.100.3'])
+        ->and($order($page->call('sort', 'matched')))->toBe(['198.51.100.3', '198.51.100.1', '198.51.100.2'])
+        ->and($order($page->call('sort', 'requests')))->toBe(['198.51.100.3', '198.51.100.1', '198.51.100.2'])
+        ->and($order($page->call('sort', 'expires')))->toBe(['198.51.100.3', '198.51.100.1', '198.51.100.2'])
+        ->and($order($page->call('sort', 'client')))->toBe(['198.51.100.1', '198.51.100.2', '198.51.100.3']);
+
+    $page->set('sortDirection', 'desc; drop table verdicts')->call('sort', 'nope');
+
+    expect($order($page))->toBe(['198.51.100.3', '198.51.100.2', '198.51.100.1']);
+});

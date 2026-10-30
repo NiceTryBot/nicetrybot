@@ -8,6 +8,8 @@
 	order nicetry_ja4h after nicetry_capture
 	# Marks requests to hostnames someone is watching live, so Vector sends them to the app right away.
 	order nicetry_tail after nicetry_ja4h
+	# Requests no browser sends (one this edge sent itself, a path with ../) are refused before the rest.
+	order nicetry_guard after nicetry_tail
 	# The gym check runs after logging and tagging are set up, before any site handles the request.
 	order nicetry_gym before handle
 	# Who the visitor really is behind Cloudflare (CF-Connecting-IP, only from Cloudflare's own ranges).
@@ -33,9 +35,14 @@
 		protocols h1 h2
 	}
 
-	# Certificates on demand only for hostnames the app says are verified Domains.
+	# Certificates on demand only for hostnames the app says are verified Domains. Only the edge may ask,
+	# so the ask carries the token, as a bearer token: Caddy's own `ask` could only put it in the URL,
+	# which Caddy writes into the errors it logs.
 	on_demand_tls {
-		ask {$NICETRY_APP_URL}/caddy/ask
+		permission nicetry_ask {
+			endpoint {$NICETRY_APP_URL}/caddy/ask
+			token {$NICETRY_EDGE_TOKEN}
+		}
 	}
 
 	# Who issues certificates (NICETRY_ACME) and where they're kept (NICETRY_CERT_STORAGE).
@@ -105,6 +112,15 @@
 		endpoint {$NICETRY_APP_URL}/caddy/live-tail
 		token {$NICETRY_EDGE_TOKEN}
 		interval 10s
+	}
+
+	# A request this installation's edge sent itself (an origin pointing back at the edge: its own
+	# preview hostname, another site here) gets nginx's 508 Loop Detected instead of going round until
+	# the domain's timeout; a path with "." or ".." segments, which browsers never send, gets nginx's
+	# 400. Both are logged as blocked (bot_tag loop or dot_segments). Origins get X-NiceTry-Hop, a hash
+	# of the token the guard recognises; a visitor's own X-NiceTry-Hop goes no further.
+	nicetry_guard {
+		token {$NICETRY_EDGE_TOKEN}
 	}
 
 	# Bot gym: requests on a trigger (host + path from NiceTryBot routines on enforcing domains) ask
@@ -216,7 +232,7 @@
 	}
 
 	# The app's edge endpoints are for the edge and Vector, which reach it inside the network; from
-	# outside they get nginx's 404 (/caddy/ask has no token at all).
+	# outside they get nginx's 404, so nobody can try tokens against them.
 	handle /caddy/* {
 		error 404
 	}
@@ -232,9 +248,9 @@
 }
 
 # Any domain's origin, from the vars nicetry_origins sets: Host as the domain chose, the site's host
-# in X-Forwarded-Host and its chosen header, the origin secret and the TLS fingerprints. The site is the
-# visitor's host, except on a preview hostname, where the origin is told the visitor asked for the
-# domain itself.
+# in X-Forwarded-Host and its chosen header, the origin secret, the hop marker and the TLS fingerprints.
+# The site is the visitor's host, except on a preview hostname, where the origin is told the visitor
+# asked for the domain itself.
 (origin_dynamic_headers) {
 	header_up Host {http.vars.nicetry_origin_host}
 	header_up X-Forwarded-Host {http.vars.nicetry_origin_site}
@@ -242,6 +258,7 @@
 	# Some origins built for another proxy read the port from here.
 	header_up X-Forwarded-Port {http.request.local.port}
 	header_up X-NiceTry-Origin-Secret {http.vars.nicetry_origin_secret}
+	header_up X-NiceTry-Hop {http.vars.nicetry_hop}
 	header_up X-NiceTry-JA3 {tls.ja3}
 	header_up X-NiceTry-JA4 {tls.ja4}
 }
@@ -256,12 +273,17 @@
 	encode gzip
 }
 
+# A team chooses its origin, so it's only ever reached on a public address: transport nicetry_origin
+# is transport http that checks the address each connection goes to (a private, loopback or link-local
+# one, like the cloud's metadata service or another container, gets nginx's 502).
+# NICETRY_ALLOW_PRIVATE_ORIGINS=true lets origins be on the edge's private network. The upstream stays
+# the hostname, so TLS's server name, the Host header and pooled connections stay that hostname's.
 (origin_dynamic) {
 	handle @origin_https {
 		import origin_dynamic_response
 		reverse_proxy {http.vars.nicetry_origin_upstream} {
 			import origin_dynamic_headers
-			transport http {
+			transport nicetry_origin {
 				tls
 				tls_server_name {http.vars.nicetry_origin_sni}
 			}
@@ -271,6 +293,7 @@
 		import origin_dynamic_response
 		reverse_proxy {http.vars.nicetry_origin_upstream} {
 			import origin_dynamic_headers
+			transport nicetry_origin
 		}
 	}
 	# Verified, but no origin the edge can use yet.

@@ -8,21 +8,26 @@ use App\Mcp\Tools\Domains\AddDomain;
 use App\Mcp\Tools\Domains\CheckDomain;
 use App\Mcp\Tools\Domains\GetOriginSecret;
 use App\Mcp\Tools\Domains\ListDomains;
+use App\Mcp\Tools\Domains\RemoveDomain;
 use App\Mcp\Tools\Domains\SetProtectionMode;
 use App\Mcp\Tools\Domains\VerifyDomain;
+use App\Mcp\Tools\Whoami;
 use App\Models\Domain;
 use App\Models\Team;
 use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Support\Facades\Http;
 
 /**
- * Answer DNS lookups with these addresses, for every host.
+ * Answer DNS lookups with these addresses, for every host, and no TXT records.
  *
  * @param  list<string>  $ipv4
  */
 function resolveEverythingTo(array $ipv4): void
 {
-    test()->mock(LookUpDnsRecords::class, fn ($mock) => $mock->shouldReceive('handle')->andReturn(['ipv4' => $ipv4, 'ipv6' => []]));
+    test()->mock(LookUpDnsRecords::class, function ($mock) use ($ipv4) {
+        $mock->shouldReceive('handle')->andReturn(['ipv4' => $ipv4, 'ipv6' => []]);
+        $mock->shouldReceive('txtRecords')->andReturn([]);
+    });
 }
 
 test('list-domains shows the team\'s domains and nobody else\'s', function () {
@@ -102,6 +107,32 @@ test('check-domain says when the origin still serves requests that go around the
         ->assertSee(['"locked":false', 'anyone can go around the edge']);
 });
 
+test('check-domain looks for the TXT record and verifies the domain once it\'s there', function () {
+    [$token] = apiToken();
+    $domain = Domain::factory()->for($token->team)->create(['hostname' => 'www.mine.test', 'status' => DomainStatus::PendingVerification, 'verified_at' => null]);
+    $txtRecords = [];
+    test()->mock(LookUpDnsRecords::class, function ($mock) use (&$txtRecords) {
+        $mock->shouldReceive('handle')->andReturn(['ipv4' => ['203.0.113.10'], 'ipv6' => []]);
+        $mock->shouldReceive('txtRecords')->andReturnUsing(function () use (&$txtRecords) {
+            return $txtRecords;
+        });
+    });
+    Http::fake(fn () => Http::response('hello', 200));
+
+    mcpAs($token)->tool(CheckDomain::class, ['hostname' => 'www.mine.test'])
+        ->assertOk()
+        ->assertSee(['No matching TXT record at _nicetrybot.www.mine.test yet.', 'Add the ownership TXT record, then check again.']);
+    expect($domain->fresh()->verified_at)->toBeNull();
+
+    $txtRecords = ['"'.$domain->verificationRecordValue().'"'];
+
+    mcpAs($token)->tool(CheckDomain::class, ['hostname' => 'www.mine.test'])
+        ->assertOk()
+        ->assertSee('Found the TXT record: the domain is verified.')
+        ->assertDontSee('Add the ownership TXT record');
+    expect($domain->fresh())->verified_at->not->toBeNull()->status->toBe(DomainStatus::Active);
+});
+
 test('check-domain never calls an origin on a private address', function (string $address) {
     [$token] = apiToken();
     Domain::factory()->for($token->team)->create(['hostname' => 'www.inside.test', 'origin_url' => 'http://origin.inside.test']);
@@ -151,7 +182,37 @@ test('set-protection-mode changes the mode, and get-origin-secret hands over the
     $domain = Domain::factory()->for($token->team)->create();
 
     mcpAs($token)->tool(SetProtectionMode::class, ['hostname' => $domain->hostname, 'mode' => 'enforce'])->assertOk();
-    mcpAs($token)->tool(GetOriginSecret::class, ['hostname' => $domain->hostname])->assertOk()->assertSee($domain->origin_secret);
+    mcpAs($token)->tool(GetOriginSecret::class, ['hostname' => $domain->hostname])->assertOk()->assertStructuredContent([
+        'hostname' => $domain->hostname,
+        'origin_url' => $domain->origin_url,
+        'header' => 'X-NiceTry-Origin-Secret',
+        'value' => $domain->origin_secret,
+    ]);
 
     expect($domain->fresh()->protection_mode)->toBe(ProtectionMode::Enforce);
+});
+
+test('remove-domain takes one of the team\'s domains out, and can\'t reach another team\'s', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+    Domain::factory()->for($token->team)->create(['hostname' => 'www.mine.test']);
+    $theirs = Domain::factory()->for(Team::factory())->create(['hostname' => 'www.theirs.test']);
+
+    mcpAs($token)->tool(RemoveDomain::class, ['hostname' => 'https://WWW.Mine.test/'])->assertOk()->assertSee('www.mine.test');
+    mcpAs($token)->tool(RemoveDomain::class, ['hostname' => 'www.theirs.test'])->assertHasErrors(['No domain called www.theirs.test']);
+
+    expect(Domain::pluck('id')->all())->toBe([$theirs->id]);
+});
+
+test('remove-domain is only offered to a token that may manage domains', function () {
+    [$token] = apiToken();
+
+    mcpAs($token)->tools()->assertNotRegistered(RemoveDomain::class);
+});
+
+test('whoami names the token\'s team, its user, and what it may do', function () {
+    [$token] = apiToken([ApiAbility::ManageDomains]);
+
+    mcpAs($token)->tool(Whoami::class)
+        ->assertOk()
+        ->assertSee([$token->team->slug, $token->user->email, 'domains']);
 });

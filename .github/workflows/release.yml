@@ -255,6 +255,9 @@ jobs:
           assets=$RUNNER_TEMP/assets
           mkdir -p "$assets"
           cp deploy/compose.yml deploy/compose.addons.yml deploy/install.sh deploy/nicetrybot "$assets/"
+          # The command knows the release it came from, for nicetrybot cli version and cli update.
+          sed -i "s/^cli_version=dev\$/cli_version=$VERSION/" "$assets/nicetrybot"
+          grep -qx "cli_version=$VERSION" "$assets/nicetrybot" || { echo "::error::Couldn't write the release into the nicetrybot command."; exit 1; }
           cp deploy/.env.example "$assets/env.example"
 
           if gh release view "$TAG" >/dev/null 2>&1; then

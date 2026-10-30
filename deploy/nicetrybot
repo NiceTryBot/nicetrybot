@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # nicetrybot: look after a self-hosted NiceTryBot from the command line. The installer puts it in
-# /usr/local/bin, and each update brings the release's newest copy.
+# /usr/local/bin, and each update brings the release's newest copy. On a laptop (macOS or Linux, with
+# curl and jq) it runs the app's commands on any NiceTryBot panel: a remote.
 #
 #   nicetrybot update              update to the newest release (the database is backed up first)
 #   nicetrybot update --version=X  update (or go back) to release X, like v1.3.0
@@ -9,19 +10,52 @@
 #   nicetrybot addons              list the marketplace add-ons built into the app
 #   nicetrybot addons add NAME…    build add-ons in, like captchas or nicetry/captchas; NAME=KEY also
 #                                  enters its licence key (Your licences on nicetrybot.com builds this)
-#   nicetrybot addons remove NAME… take add-ons out
+#   nicetrybot addons remove NAME…
+#                                  take add-ons out
 #   nicetrybot addons keys         enter the licence keys paid add-ons still need
 #   nicetrybot apply               start the stack again with what you changed in .env
 #   nicetrybot doctor              check the server, the containers, the panel and the app, with advice
 #   nicetrybot status              the release, the containers and the add-ons
 #   nicetrybot version             the release running, and the newest one
+#   nicetrybot cli update          update this command itself to the newest release (--version=X for
+#                                  another); on a server, nicetrybot update updates it with the stack
+#   nicetrybot cli version         this command's release, and the newest one
 #   nicetrybot logs [SERVICE]      follow the logs (app, worker, scheduler, edge, vector, postgres, valkey)
 #   nicetrybot artisan COMMAND…    run an Artisan command in the app, like admin:grant you@example.com
 #
+# The app, on this server or on the current remote:
+#   nicetrybot whoami              the team, user and abilities the commands act with
+#   nicetrybot teams               the teams the remote's token works on (* marks the one in use)
+#   nicetrybot team use SLUG       switch team, with a token for all your teams (--team=SLUG: one command)
+#   nicetrybot domains             the team's domains
+#   nicetrybot domains add HOST ORIGIN [--www] [--host-header=rewrite] [--forwarded-host-header=NAME]
+#                                  put HOST behind the edge, forwarding to ORIGIN (domains help: more)
+#   nicetrybot domains check|verify|secret|remove HOST
+#   nicetrybot domains mode HOST off|observe|enforce
+#   nicetrybot rules [ID]          the team's rules; rules remove ID deletes one
+#   nicetrybot gyms                the team's gyms; gyms remove ID deletes one
+#   nicetrybot tools               every tool the token may use, which any of these call
+#   nicetrybot call TOOL [key=value…]  call one, like: nicetrybot call query-traffic group_by=country
+#
+# Remotes: panels the app's commands run on, each with an API token from its Admin → API tokens
+# (saved in ~/.config/nicetrybot/remotes, readable only by you):
+#   nicetrybot remote add [NAME] URL   save a panel, like app.example.com, and make it the current one
+#   nicetrybot remote NAME|URL         switch to a saved remote (or save a new one)
+#   nicetrybot remote list             the saved remotes; * marks the current one
+#   nicetrybot remote use NAME         make NAME current (remote use --local: back to this server)
+#   nicetrybot remote auth [NAME]      give a remote a new token (they expire)
+#   nicetrybot remote remove NAME      forget a remote
+#
 # Options:
-#   --yes          don't ask before a rollback
+#   --yes          don't ask before a rollback, or before removing a domain, rule or gym
 #   --no-backup    update without backing up the database first (then rollback can't restore it)
-#   --token=TOKEN  with addons add: the Composer token from your account on nicetrybot.com
+#   --token=TOKEN  with addons add: the Composer token from your account on nicetrybot.com; with
+#                  remote add or auth: the API token (asked for otherwise, which keeps it out of history)
+#   --remote=NAME  run an app command on that remote rather than the current one
+#   --local        run an app command on this server's stack, even with a current remote
+#   --team=SLUG    the team to work on: on a remote with a token for all teams, for this command only;
+#                  on this server, the first administrator's when left out
+#   --json         print the app's answer as JSON
 #
 # The stack lives in /opt/nicetrybot, or NICETRY_DIR (set in /etc/default/nicetrybot by the installer
 # when it was put somewhere else). Each update keeps what it replaced in <dir>/.updates and the
@@ -39,22 +73,56 @@ backups=$dir/backups
 log=$updates/update.log
 keep_backups=3
 
+# The release this copy of the command came from: the release workflow writes it in. "dev" is a copy
+# from the repository.
+cli_version=dev
+
 assume_yes=false
 backup=true
 token=
 target=
 
-say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
-done_() { printf '\033[32m✓\033[0m %s\n' "$*"; }
-warn() { printf '\033[33mWarning:\033[0m %s\n' "$*" >&2; }
+# Colors, on a terminal only: pipes, logs and NO_COLOR (https://no-color.org) get plain text.
+if [[ -t 1 && -z ${NO_COLOR:-} && ${TERM:-} != dumb ]]; then
+  c_bold=$'\033[1m' c_dim=$'\033[90m' c_red=$'\033[31m' c_green=$'\033[32m' c_yellow=$'\033[33m'
+  c_cyan=$'\033[36m' c_coral=$'\033[38;5;203m' c_link=$'\033[4m' c_reset=$'\033[0m'
+else
+  c_bold='' c_dim='' c_red='' c_green='' c_yellow='' c_cyan='' c_coral='' c_link='' c_reset=''
+fi
+
+# Text without its colors.
+plain() { sed $'s/\033\\[[0-9;]*m//g' <<<"$1"; }
+
+# A command to run, in cyan, and a link, underlined, inside a message.
+cmd() { printf '%s%s%s' "$c_cyan" "$*" "$c_reset"; }
+link_to() { printf '%s%s%s' "$c_link" "$*" "$c_reset"; }
+
+# What to do next, after a coral "Next:".
+next_step() { printf '%s%sNext:%s %s\n' "$c_coral" "$c_bold" "$c_reset" "$*"; }
+
+say() { printf '%s%s==>%s %s%s%s\n' "$c_coral" "$c_bold" "$c_reset" "$c_bold" "$*" "$c_reset"; }
+done_() { printf '%s✓%s %s\n' "$c_green" "$c_reset" "$*"; }
+warn() { to_stderr "${c_yellow}${c_bold}Warning:${c_reset} $*"; }
 fail() {
-  printf '\033[31mError:\033[0m %s\n' "$*" >&2
+  to_stderr "${c_red}${c_bold}Error:${c_reset} $*"
   exit 1
+}
+
+# A message on standard error, in color while that's a terminal too.
+to_stderr() {
+  if [[ -t 2 ]]; then printf '%s\n' "$1" >&2; else plain "$1" >&2; fi
 }
 
 usage() {
   banner
-  sed -n '2,/^$/{s/^# \{0,1\}//;p;}' "$0"
+  sed -n '2,/^$/{s/^# \{0,1\}//;p;}' "$0" | color_help
+}
+
+# Help text with its commands and options in cyan and its headings in bold.
+color_help() {
+  sed -E -e "s/^( *)(nicetrybot [^ ]+( [^ ]+)*)(  |\$)/\\1${c_cyan}\\2${c_reset}\\4/" \
+    -e "s/^(  )(--[a-z-]+(=[A-Z]+)?)/\\1${c_cyan}\\2${c_reset}/" \
+    -e "s/^([A-Z][^ ].*:)\$/${c_bold}\\1${c_reset}/"
 }
 
 # The installer's NiceTryBot, "Bot" in coral, on a terminal only: scripts and logs get just the steps.
@@ -71,7 +139,7 @@ banner() {
   )
   echo
   for line in "${lines[@]}"; do
-    printf '  \033[1m%s\033[38;5;203m%s\033[0m\n' "${line:0:33}" "${line:33}"
+    printf '  %s%s%s%s%s\n' "$c_bold" "${line:0:33}" "$c_coral" "${line:33}" "$c_reset"
   done
   echo
 }
@@ -116,6 +184,9 @@ require_stack() {
   cd "$dir"
   mkdir -p "$updates"
 }
+
+# Seconds since 1970 for a date like openssl's "Jan  5 12:00:00 2027 GMT": GNU date, or BSD date on a Mac.
+epoch() { date -d "$1" +%s 2>/dev/null || date -j -f '%b %e %T %Y %Z' "$1" +%s; }
 
 bare() { printf '%s' "${1#v}"; }
 valid_version() { [[ $1 =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; }
@@ -163,7 +234,7 @@ apply_addons_file() {
     return 0
   fi
   [[ -n $(env_get .env NICETRY_COMPOSER_TOKEN) ]] ||
-    fail "NICETRY_ADDONS lists add-ons, but NICETRY_COMPOSER_TOKEN in $dir/.env is empty. Make a Composer token on your account at nicetrybot.com, then: nicetrybot addons add --token=TOKEN"
+    fail "NICETRY_ADDONS lists add-ons, but NICETRY_COMPOSER_TOKEN in $dir/.env is empty. Make a Composer token on your account at nicetrybot.com, then: $(cmd "nicetrybot addons add --token=TOKEN")"
   case $compose_file in
     '' | compose.yml) env_set .env COMPOSE_FILE compose.yml:compose.addons.yml ;;
     *compose.addons.yml*) ;;
@@ -330,7 +401,7 @@ put_back() {
   }
   wait_healthy || {
     show_log_tail
-    fail "v$version didn't become healthy either; see $log and: nicetrybot logs app"
+    fail "v$version didn't become healthy either; see $log and: $(cmd "nicetrybot logs app")"
   }
   [[ $restore_db == true ]] && compose exec -T app php artisan cache:clear >>"$log" 2>&1 || true
   mv -f "$updates/previous" "$updates/rolled-back-$(date -u +%Y%m%d-%H%M%S)"
@@ -416,7 +487,7 @@ cmd_update() {
   if [[ $current == "$target" ]]; then
     done_ "Add-ons built in again on v$target in $(elapsed)."
   else
-    done_ "Updated to v$target in $(elapsed).   Undo: nicetrybot rollback"
+    done_ "Updated to v$target in $(elapsed).   Undo: $(cmd "nicetrybot rollback")"
   fi
 }
 
@@ -517,17 +588,19 @@ composer_token_problem() {
   fi
 }
 
-# The keys given as NAME=KEY on the command line, entered once the add-ons are built in.
-declare -A given_keys=()
+# The keys given as NAME=KEY on the command line, one "slug key" line each, entered once the add-ons
+# are built in. (A list rather than an associative array: macOS's bash 3.2 has none.)
+given_keys=
 enter_given_keys() {
-  local slug
-  ((${#given_keys[@]} > 0)) || return 0
+  local slug key
+  [[ -n $given_keys ]] || return 0
   say "Entering the licence keys"
-  for slug in "${!given_keys[@]}"; do
-    if ! compose exec -T app php artisan addons:licence "$slug" "${given_keys[$slug]}" 2>&1 | sed 's/^/    /'; then
-      warn "The key for $slug wasn't taken; check it on nicetrybot.com → Your licences, then: nicetrybot addons keys"
+  while read -r slug key; do
+    [[ -n $slug ]] || continue
+    if ! compose exec -T app php artisan addons:licence "$slug" "$key" </dev/null 2>&1 | sed 's/^/    /'; then
+      warn "The key for $slug wasn't taken; check it on nicetrybot.com → Your licences, then: $(cmd "nicetrybot addons keys")"
     fi
-  done
+  done <<<"$given_keys"
 }
 
 # Each paid add-on built in without a good licence key: ask for it here (or say where it goes), one
@@ -537,16 +610,16 @@ ask_licence_keys() {
   # Releases before 0.4.0 don't have --missing: then just say where the keys go.
   if ! missing=$(compose exec -T app php artisan addons:licence --missing 2>/dev/null | tr -d '\r') ||
     grep -qvE '^[a-z0-9-]*$' <<<"$missing"; then
-    ((${#given_keys[@]} > 0)) && return 0
+    [[ -n $given_keys ]] && return 0
     echo "Paid add-ons need their licence keys from nicetrybot.com → Your licences: paste each in Admin → Add-ons,"
-    echo "or: nicetrybot artisan addons:licence <add-on> <key>"
+    echo "or: $(cmd "nicetrybot artisan addons:licence <add-on> <key>")"
     return 0
   fi
   [[ -n $missing ]] || return 0
 
   if [[ $assume_yes == true || ! -r /dev/tty ]]; then
     echo "Paid add-ons need their licence keys from nicetrybot.com → Your licences: paste each in Admin → Add-ons, or"
-    for slug in $missing; do echo "  nicetrybot artisan addons:licence $slug <key>"; done
+    for slug in $missing; do echo "  $(cmd "nicetrybot artisan addons:licence $slug <key>")"; done
     return 0
   fi
 
@@ -557,7 +630,7 @@ ask_licence_keys() {
     key=$(printf '%s' "$key" | tr -d '[:space:]')
     [[ -n $key ]] || continue
     if ! compose exec -T app php artisan addons:licence "$slug" "$key" 2>&1 | sed 's/^/      /'; then
-      warn "That key wasn't taken for $slug; try again with: nicetrybot addons keys"
+      warn "That key wasn't taken for $slug; try again with: $(cmd "nicetrybot addons keys")"
     fi
   done
 }
@@ -571,7 +644,7 @@ cmd_addons() {
   case $action in
     list | ls)
       if [[ -z $before ]]; then
-        echo "No marketplace add-ons are built in. Browse them at https://nicetrybot.com/marketplace, then: nicetrybot addons add NAME"
+        echo "No marketplace add-ons are built in. Browse them at $(link_to https://nicetrybot.com/marketplace), then: $(cmd "nicetrybot addons add NAME")"
       else
         echo "Built in from NICETRY_ADDONS: $before"
       fi
@@ -599,7 +672,7 @@ cmd_addons() {
       for name in "$@"; do
         # captchas=ntb1.… : the add-on and its licence key.
         if [[ $name == *=* ]]; then
-          given_keys[$(basename "$(addon_package "${name%%=*}")")]=${name#*=}
+          given_keys+="$(basename "$(addon_package "${name%%=*}")") ${name#*=}"$'\n'
           name=${name%%=*}
         fi
         package=$(addon_package "$name")
@@ -610,7 +683,7 @@ cmd_addons() {
         fi
       done
       [[ $list == "$before" && $# -gt 0 ]] && echo "Already listed: $before. Building them in again, for their newest versions."
-      [[ -n $list ]] || fail "Name an add-on to add, like: nicetrybot addons add captchas"
+      [[ -n $list ]] || fail "Name an add-on to add, like: $(cmd "nicetrybot addons add captchas")"
       env_set .env NICETRY_ADDONS "\"$list\""
       say "Add-ons: $list"
       rebuild_addons "$before"
@@ -623,8 +696,8 @@ cmd_addons() {
       return 0
       ;;
     remove | rm)
-      [[ $# -gt 0 ]] || fail "Name an add-on to take out, like: nicetrybot addons remove captchas"
-      [[ $before == all ]] && fail "NICETRY_ADDONS is \"all\": list the ones to keep instead, like: nicetrybot addons add captchas threats (after setting NICETRY_ADDONS= in $dir/.env)"
+      [[ $# -gt 0 ]] || fail "Name an add-on to take out, like: $(cmd "nicetrybot addons remove captchas")"
+      [[ $before == all ]] && fail "NICETRY_ADDONS is \"all\": list the ones to keep instead, like: $(cmd "nicetrybot addons add captchas threats") (after setting NICETRY_ADDONS= in $dir/.env)"
       list=" $before "
       for name in "$@"; do
         package=$(addon_package "$name")
@@ -638,7 +711,7 @@ cmd_addons() {
       say "Add-ons: ${list:-none}"
       rebuild_addons "$before"
       ;;
-    *) fail "nicetrybot addons [list|add NAME…|remove NAME…|keys] (got $action)" ;;
+    *) fail "$(cmd "nicetrybot addons [list|add NAME…|remove NAME…|keys]") (got $action)" ;;
   esac
 }
 
@@ -660,18 +733,18 @@ cmd_apply() {
 problems=0
 warnings=0
 
-heading() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+heading() { printf '\n%s%s%s\n' "$c_bold" "$1" "$c_reset"; }
 
 # One line: a mark, the check, what it found, and (in grey) what to do about it.
 check() {
   local status=$1 name=$2 value=$3 advice=${4:-} mark
   case $status in
-    ok) mark=$'\033[32m✓\033[0m' ;;
-    warn) mark=$'\033[33m!\033[0m' warnings=$((warnings + 1)) ;;
-    *) mark=$'\033[31m✗\033[0m' problems=$((problems + 1)) ;;
+    ok) mark="${c_green}✓${c_reset}" ;;
+    warn) mark="${c_yellow}!${c_reset}" warnings=$((warnings + 1)) ;;
+    *) mark="${c_red}✗${c_reset}" problems=$((problems + 1)) ;;
   esac
   printf '  %s %-14s %s' "$mark" "$name" "$value"
-  [[ -n $advice ]] && printf '   \033[90m%s\033[0m' "$advice"
+  [[ -n $advice ]] && printf '   %s%s%s' "$c_dim" "$(sed "s/nicetrybot .*/${c_cyan}&/" <<<"$advice")" "$c_reset"
   printf '\n'
 }
 
@@ -823,7 +896,7 @@ doctor_panel() {
     if [[ -z $expires ]]; then
       check warn Certificate "none yet" "the edge gets one once $host points here: nicetrybot logs edge"
     else
-      days=$((($(date -d "$expires" +%s) - $(date +%s)) / 86400))
+      days=$((($(epoch "$expires") - $(date +%s)) / 86400))
       if ((days < 7)); then
         check fail Certificate "expires in $days day(s)" "the edge renews it itself; if it can't: nicetrybot logs edge"
       elif ((days < 20)); then
@@ -841,7 +914,7 @@ doctor_app() {
   heading "App"
   output=$(compose exec -T app php artisan nicetry:doctor --ansi 2>&1) || status=$?
   if grep -q 'nicetry:doctor.*not defined\|There are no commands defined' <<<"$output"; then
-    echo "  The app's own checks come with release 0.3.0: nicetrybot update"
+    echo "  The app's own checks come with release 0.3.0: $(cmd "nicetrybot update")"
     return 0
   fi
   if [[ -z $(compose ps -q app 2>/dev/null) ]]; then
@@ -859,25 +932,30 @@ cmd_doctor() {
   banner
   local current
   current=$(running_version)
-  printf '\033[1mNiceTryBot v%s\033[0m in %s\n' "${current:-?}" "$dir"
+  printf '%sNiceTryBot v%s%s in %s\n' "$c_bold" "${current:-?}" "$c_reset" "$dir"
   doctor_server
   doctor_containers
   doctor_panel
   doctor_app
   echo
   if ((problems > 0)); then
-    printf '\033[31m✗\033[0m %d problem(s), %d warning(s).\n' "$problems" "$warnings"
+    printf '%s✗ %d problem(s)%s, %d warning(s).\n' "$c_red" "$problems" "$c_reset" "$warnings"
     return 1
   elif ((warnings > 0)); then
-    printf '\033[33m!\033[0m Working, with %d warning(s).\n' "$warnings"
+    printf '%s!%s Working, with %s%d warning(s)%s.\n' "$c_yellow" "$c_reset" "$c_yellow" "$warnings" "$c_reset"
   else
-    printf '\033[32m✓\033[0m All good.\n'
+    printf '%s✓ All good.%s\n' "$c_green" "$c_reset"
   fi
 }
 
 # --- Looking around -----------------------------------------------------------------------------
 
 cmd_version() {
+  # A laptop has no stack here: its version is the command's own.
+  if [[ ! -f $dir/.env || ! -f $dir/compose.yml ]]; then
+    cli_show_version
+    return 0
+  fi
   require_stack
   local current latest
   current=$(running_version)
@@ -888,7 +966,7 @@ cmd_version() {
   elif [[ $latest == "$current" ]]; then
     echo "That's the newest release."
   else
-    echo "v$latest is out: $(notes_url "$latest")   Update: nicetrybot update"
+    echo "${c_yellow}v$latest is out:${c_reset} $(link_to "$(notes_url "$latest")")   Update: $(cmd "nicetrybot update")"
   fi
 }
 
@@ -923,6 +1001,841 @@ cmd_artisan() {
   fi
 }
 
+# --- The app: on this server, or on a remote -----------------------------------------------------
+#
+# The app's commands are calls to its MCP server's tools, the ones an AI agent uses. On a server they
+# go to the stack here (php artisan nicetry:mcp, as the team's owner); from anywhere else they go to a
+# remote's /mcp over HTTPS with an API token an administrator made in Admin → API tokens. Either way
+# it's the same message, the same tools and the same answer.
+
+config_dir=${NICETRYBOT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/nicetrybot}
+remotes=$config_dir/remotes
+current_remote_file=$config_dir/current-remote
+mcp_protocol=2026-07-28
+
+remote_opt=
+use_local=false
+team_opt=
+json_out=false
+app_remote=
+app_team=
+
+need_jq() {
+  command -v jq >/dev/null 2>&1 && return 0
+  if [[ $(uname -s) == Linux && $EUID -eq 0 ]] && command -v apt-get >/dev/null 2>&1; then
+    say "Installing jq, which reads the app's answers"
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null 2>&1 ||
+      { apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null 2>&1; }; then
+      return 0
+    fi
+  fi
+  fail "This needs jq: brew install jq (macOS before 15), or apt-get install jq"
+}
+
+remote_get() { sed -n "s/^$2=//p" "$remotes/$1" 2>/dev/null | tail -n 1; }
+
+# The team a remote's commands work on, in words: its token's team, or the one picked for a token for
+# all teams.
+remote_team() {
+  if [[ $(remote_get "$1" all_teams) != yes ]]; then
+    printf 'team %s' "$(remote_get "$1" team)"
+  elif [[ -n $(remote_get "$1" team_slug) ]]; then
+    printf 'team %s (token for all teams)' "$(remote_get "$1" team)"
+  else
+    printf 'no team picked yet (token for all teams)'
+  fi
+}
+valid_remote_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+looks_like_api_token() { [[ $1 =~ ^ntb_[A-Za-z0-9]{48}$ ]]; }
+
+# A panel's address, from what was typed: app.example.com, https://app.example.com/ or …/mcp.
+panel_url() {
+  local url=$1
+  [[ $url == *://* ]] || url="https://$url"
+  url=${url%/}
+  url=${url%/mcp}
+  url=${url%/}
+  [[ $url =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || fail "That isn't a panel's address: $1 (like app.example.com)"
+  printf '%s' "$url"
+}
+
+# Where the app's commands go: --local, else --remote (or NICETRYBOT_REMOTE), else the current remote,
+# else this server's stack.
+resolve_app_target() {
+  app_remote=
+  [[ $use_local == true ]] && return 0
+  app_remote=${remote_opt:-${NICETRYBOT_REMOTE:-}}
+  [[ -z $app_remote && -s $current_remote_file ]] && app_remote=$(cat "$current_remote_file")
+  if [[ -n $app_remote ]]; then
+    [[ -f $remotes/$app_remote ]] || fail "No remote called $app_remote ($(cmd "nicetrybot remote list"))"
+    app_team=${team_opt:-$(remote_get "$app_remote" team_slug)}
+    return 0
+  fi
+  [[ -f $dir/.env && -f $dir/compose.yml ]] ||
+    fail "No remote yet, and there's no NiceTryBot on this machine. Add your panel: $(cmd "nicetrybot remote add app.example.com")"
+}
+
+# Who the commands act as, on stderr and on a terminal only, so a change never lands somewhere unexpected.
+say_target() {
+  [[ -t 2 ]] || return 0
+  if [[ -n $app_remote ]]; then
+    local team
+    team=$(remote_team "$app_remote")
+    [[ -n $team_opt ]] && team="team $team_opt"
+    printf '%s→ %s (%s), %s%s\n' "$c_dim" "$app_remote" "$(remote_get "$app_remote" url)" "$team" "$c_reset" >&2
+  else
+    printf '%s→ this server (%s)%s%s\n' "$c_dim" "$dir" "${team_opt:+, team $team_opt}" "$c_reset" >&2
+  fi
+}
+
+# POST one JSON-RPC message to a panel's /mcp and print the answer. The token goes to curl on its
+# standard input, never on its command line, where anyone on the machine could read it.
+mcp_post() {
+  local url=$1 api_token=$2 method=$3 name=$4 body=$5 work code
+  work=$(mktemp -d "${TMPDIR:-/tmp}/nicetrybot.XXXXXX")
+  printf '%s' "$body" >"$work/body"
+  code=$(printf 'header = "Authorization: Bearer %s"\n' "$api_token" |
+    curl -sS -m 120 -K - -o "$work/answer" -w '%{http_code}' \
+      -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+      -H "MCP-Protocol-Version: $mcp_protocol" -H "Mcp-Method: $method" ${name:+-H "Mcp-Name: $name"} \
+      --data-binary "@$work/body" "$url/mcp" 2>"$work/error") || {
+    local error
+    error=$(cat "$work/error")
+    rm -rf "$work"
+    fail "Couldn't reach $url: ${error#curl: }"
+  }
+  # A streamed answer arrives as server-sent events: the last one is the result.
+  if grep -q '^data: ' "$work/answer"; then
+    sed -n 's/^data: //p' "$work/answer" | tail -n 1 >"$work/result"
+    mv -f "$work/result" "$work/answer"
+  fi
+  if ! jq -e 'has("jsonrpc")' "$work/answer" >/dev/null 2>&1; then
+    rm -rf "$work"
+    # Without a working token the API isn't there at all: the same 404 as any made-up path.
+    [[ $code == 404 ]] && fail "$url doesn't take that token: it expired or was deleted, its user isn't an administrator any more, or there's no NiceTryBot there. Make a new one at $(link_to "${url%/}/admin/tokens"), then: $(cmd "nicetrybot remote auth")"
+    fail "$url answered HTTP $code"
+  fi
+  cat "$work/answer"
+  rm -rf "$work"
+}
+
+# A JSON-RPC request, stateless (protocol 2026-07-28): no initialize first, each one says who it is.
+mcp_body() {
+  jq -nc --arg method "$1" --argjson params "$2" --arg version "$mcp_protocol" \
+    '{jsonrpc: "2.0", id: 1, method: $method, params: ($params + {_meta: {"io.modelcontextprotocol/protocolVersion": $version, "io.modelcontextprotocol/clientCapabilities": {}}})}'
+}
+
+# One JSON-RPC request to the app (here or on the remote); prints the answer.
+mcp_request() {
+  local method=$1 params=$2 name=${3:-} body output
+  body=$(mcp_body "$method" "$params")
+  if [[ -n $app_remote ]]; then
+    mcp_post "$(remote_get "$app_remote" url)" "$(remote_get "$app_remote" token)" "$method" "$name" "$body"
+    return
+  fi
+  require_stack
+  output=$(compose exec -T app php artisan nicetry:mcp ${team_opt:+"--team=$team_opt"} <<<"$body" 2>&1) || {
+    grep -q 'nicetry:mcp.*not defined\|There are no commands defined' <<<"$output" &&
+      fail "This release runs the app's commands on a newer one: $(cmd "nicetrybot update")"
+    [[ -n $output ]] || output="The app didn't answer: $(cmd "nicetrybot logs app")"
+    fail "$output"
+  }
+  printf '%s\n' "$output" | grep '^{' | tail -n 1
+}
+
+# Call a tool and print what it answered (structured, as JSON); a tool's error stops the command.
+mcp_tool() {
+  local tool=$1 arguments=${2:-'{}'} answer message
+  if [[ -n $app_remote ]]; then
+    if [[ -n $app_team ]]; then
+      arguments=$(jq -c --arg team "$app_team" '{team: $team} + .' <<<"$arguments")
+    elif [[ $(remote_get "$app_remote" all_teams) == yes && $tool != whoami ]]; then
+      fail "$app_remote's token works on all your teams: pick one with $(cmd "nicetrybot team use SLUG") ($(cmd "nicetrybot teams") lists them), or add $(cmd --team=SLUG)"
+    fi
+  fi
+  answer=$(mcp_request tools/call "$(jq -nc --arg name "$tool" --argjson arguments "$arguments" '{name: $name, arguments: $arguments}')" "$tool") || exit 1
+  message=$(jq -r '.error.message // empty' <<<"$answer")
+  if [[ $message == "Tool [$tool] not found." ]]; then
+    fail "${app_remote:-This server}'s NiceTryBot has no $tool tool: it needs a newer release, or the token isn't allowed to ($(cmd "nicetrybot tools"))"
+  fi
+  [[ -n $message ]] && fail "$message"
+  if [[ $(jq -r '.result.isError // false' <<<"$answer") == true ]]; then
+    fail "$(jq -r '[.result.content[]? | .text // empty] | join("\n")' <<<"$answer")"
+  fi
+  jq -c '.result.structuredContent // (.result.content[0].text // "" | (fromjson? // .))' <<<"$answer"
+}
+
+# Any answer, readably: nested keys indented, lists as "- " items, and lists of single words on one line.
+render_jq='
+  def scalar: if . == "" or . == null then "-" elif type == "string" then . elif . == true then "yes" elif . == false then "no" else tojson end;
+  def render($i):
+    if type == "object" then
+      to_entries[] | (.key | gsub("_"; " ")) as $k | .value |
+        if type == "object" and length > 0 then "\($i)\($k):", render($i + "  ")
+        elif (type == "object" or type == "array") and length == 0 then "\($i)\($k): none"
+        elif type == "array" and all(.[]; type != "object" and type != "array" and (tostring | test(" ") | not)) then "\($i)\($k): \(map(scalar) | join(", "))"
+        elif type == "array" then "\($i)\($k):", render($i + "  ")
+        else "\($i)\($k): \(scalar)" end
+    elif type == "array" then
+      .[] | [render("")] | to_entries[] | (if .key == 0 then "\($i)- " else "\($i)  " end) + .value
+    else "\($i)\(scalar)" end;
+  render("")'
+
+show() {
+  if [[ $json_out == true ]]; then jq . <<<"$1"; else jq -r "$render_jq" <<<"$1"; fi
+}
+
+# Call a tool and show its answer. (A failure inside $(…) doesn't stop the script on bash 3.2, hence
+# the || exit after each one that can fail.)
+run_tool() {
+  local answer
+  answer=$(mcp_tool "$@") || exit 1
+  show "$answer"
+}
+
+# Columns of tab-separated lines, as wide as their widest cell.
+# Colors don't count toward a cell's width, and a first line that starts with HEADER: is the bold heading.
+table() {
+  awk -F'\t' -v bold="$c_bold" -v dim="$c_dim" -v reset="$c_reset" '
+    function shown(text) { gsub(/\033\[[0-9;]*m/, "", text); return length(text) }
+    NR == 1 && sub(/^HEADER:/, "") { heading = 1 }
+    { for (i = 1; i <= NF; i++) { cell[NR, i] = $i; if (shown($i) > width[i]) width[i] = shown($i) } if (NF > cols) cols = NF }
+    END {
+      for (r = 1; r <= NR; r++) {
+        line = ""
+        for (i = 1; i <= cols; i++) {
+          line = line cell[r, i]
+          if (i < cols) line = line sprintf("%" (width[i] - shown(cell[r, i]) + 2) "s", "")
+        }
+        sub(/ +$/, "", line)
+        print (r == 1 && heading ? bold line reset : line)
+      }
+    }'
+}
+
+app_command() {
+  need_jq
+  resolve_app_target
+  say_target
+}
+
+cmd_whoami() {
+  app_command
+  run_tool whoami
+}
+
+# teams: the teams the current remote's token works on, * marking the one in use.
+cmd_teams() {
+  app_command
+  [[ -n $app_remote ]] || fail "On this server, name the team with --team=SLUG (the first administrator's when left out)"
+  local answer
+  answer=$(mcp_tool whoami) || exit 1
+  if [[ $json_out == true ]]; then
+    jq '.teams // [.team]' <<<"$answer"
+    return 0
+  fi
+  {
+    printf 'HEADER: \tSLUG\tTEAM\n'
+    jq -r --arg current "$app_team" --arg on "$c_green" --arg off "$c_reset" '(.teams // [.team])[] | [(if .slug == $current then $on + "*" + $off else " " end), .slug, .name] | @tsv' <<<"$answer"
+  } | table
+  if [[ $(jq -r '.all_teams // false' <<<"$answer") != true ]]; then
+    echo
+    echo "This token works on $(jq -r .team.name <<<"$answer") only. For all your teams, make one at $(remote_get "$app_remote" url)/admin/tokens"
+  elif [[ -z $app_team ]]; then
+    echo
+    next_step "pick the team to work on: $(cmd "nicetrybot team use SLUG")"
+  fi
+}
+
+# team: the team the current remote's commands work on; team use SLUG switches, for a token for all teams.
+cmd_team() {
+  local action=${1:-}
+  [[ $# -gt 0 ]] && shift
+  case $action in
+    '')
+      app_command
+      [[ -n $app_remote ]] || fail "On this server, name the team with --team=SLUG (the first administrator's when left out)"
+      echo "$app_remote: $(remote_team "$app_remote")"
+      ;;
+    list | ls) cmd_teams ;;
+    use | switch | *)
+      [[ $action == use || $action == switch ]] || set -- "$action" "$@"
+      [[ $# -eq 1 ]] || fail "$(cmd "nicetrybot team use SLUG") ($(cmd "nicetrybot teams") lists them)"
+      need_jq
+      resolve_app_target
+      [[ -n $app_remote ]] || fail "On this server, name the team with --team=SLUG (the first administrator's when left out)"
+      local url api_token details
+      url=$(remote_get "$app_remote" url)
+      api_token=$(remote_get "$app_remote" token)
+      details=$(token_details "$url" "$api_token" "$1") || exit 1
+      save_remote "$app_remote" "$url" "$api_token" "$details"
+      done_ "$app_remote now works on $(remote_team "$app_remote")."
+      ;;
+  esac
+}
+
+cmd_tools() {
+  app_command
+  local answer
+  answer=$(mcp_request tools/list '{}') || exit 1
+  [[ -n $(jq -r '.error.message // empty' <<<"$answer") ]] && fail "$(jq -r .error.message <<<"$answer")"
+  if [[ $json_out == true ]]; then
+    jq '.result.tools' <<<"$answer"
+    return 0
+  fi
+  jq -r --arg on "$c_cyan" --arg off "$c_reset" '.result.tools[] | [$on + .name + $off, (.description | gsub("\\s+"; " ") | sub("^ "; "") | split(". ")[0] | sub("\\.$"; "") | if length > 100 then .[:99] + "…" else . end)] | @tsv' <<<"$answer" | table
+  echo
+  echo "Run one: $(cmd "nicetrybot call TOOL key=value…")   (add $(cmd --json) for its whole answer)"
+}
+
+# call TOOL key=value… or call TOOL '{"key": …}': a value that reads as JSON (a number, true, a list)
+# goes as that, anything else as a string.
+cmd_call() {
+  [[ $# -gt 0 ]] || fail "$(cmd "nicetrybot call TOOL [key=value…]") ($(cmd "nicetrybot tools") lists them)"
+  local tool=$1 arguments='{}' pair
+  shift
+  for pair in "$@"; do
+    if [[ $pair == '{'* ]]; then
+      arguments=$(jq -c --argjson more "$pair" '. + $more' <<<"$arguments" 2>/dev/null) || fail "That isn't JSON: $pair"
+    elif [[ $pair == *=* ]]; then
+      arguments=$(jq -c --arg key "${pair%%=*}" --arg value "${pair#*=}" '. + {($key): ($value | fromjson? // $value)}' <<<"$arguments")
+    else
+      fail "Give the tool's arguments as key=value (got $pair)"
+    fi
+  done
+  app_command
+  run_tool "$tool" "$arguments"
+}
+
+domains_usage() {
+  color_help >&2 <<'USAGE'
+nicetrybot domains                     the team's domains
+nicetrybot domains add HOST ORIGIN     put HOST behind the edge, forwarding to ORIGIN (like docs-origin.example.com)
+    --www                              serve www.HOST too
+    --host-header=rewrite              send the origin its own Host (Vapor, Vercel, CloudFront…), not the visitor's
+    --origin-host-header=HOST          with rewrite: send this Host instead
+    --forwarded-host-header=NAME[,…]   headers that carry the visitor's host, like X-Forwarded-Host
+nicetrybot domains check HOST          ownership (verified once its TXT record shows up), the origin lock, DNS, and what's next
+nicetrybot domains verify HOST         check its ownership TXT record
+nicetrybot domains mode HOST off|observe|enforce
+nicetrybot domains secret HOST         the origin secret header the edge sends
+nicetrybot domains remove HOST         take it out of NiceTryBot (its request history goes too)
+USAGE
+  exit 1
+}
+
+# DNS records (a JSON list of {type, name, value}) as an indented table.
+domain_records() {
+  jq -r '.[] | [.type, .name, .value] | @tsv' <<<"$1" | table | sed 's/^/     /'
+}
+
+# The origin secret header, and how to lock the origin to it: HOST ORIGIN_URL HEADER VALUE [INDENT].
+origin_lock_advice() {
+  local hostname=$1 origin=$2 header=$3 value=$4 i=${5:-} origin_host
+  origin_host=${origin#*://}
+  origin_host=${origin_host%%/*}
+  [[ -n $origin_host ]] || origin_host="the origin"
+  echo "${i}The edge sends this header with every request to $origin_host:"
+  echo
+  printf '%s  %s%s%s: %s%s\n' "$i" "$c_yellow" "$c_bold" "$header" "$value" "$c_reset"
+  echo
+  echo "${i}Put the secret in the origin's environment (like NICETRY_ORIGIN_SECRET, never in git) and have"
+  echo "${i}it refuse any request without the header, with a 403. Compare in constant time (hash_equals in"
+  echo "${i}PHP, crypto.timingSafeEqual in Node). Until then, anyone who finds the origin can go around the"
+  echo "${i}edge, and its rules and gym, to reach the site directly."
+  echo
+  echo "${i}Then: $(cmd "nicetrybot domains check $hostname") (the origin should refuse a request without the header)"
+}
+
+# What domains add answered, as the steps to go live, the origin secret among them.
+domain_added() {
+  local answer=$1 hostname origin
+  if [[ $json_out == true ]]; then
+    jq . <<<"$answer"
+    return
+  fi
+  hostname=$(jq -r .hostname <<<"$answer")
+  origin=$(jq -r .origin_url <<<"$answer")
+  done_ "Added $(link_to "https://$hostname"), forwarding to $origin, in $(jq -r .protection_mode <<<"$answer") mode: $(link_to "$(jq -r .page_url <<<"$answer")")"
+  echo
+  echo "${c_coral}${c_bold}1.${c_reset} ${c_bold}Prove it's yours:${c_reset} add this record, then run $(cmd "nicetrybot domains check $hostname")"
+  echo
+  domain_records "$(jq -c '[.ownership_record]' <<<"$answer")"
+  echo
+  echo "${c_coral}${c_bold}2.${c_reset} ${c_bold}Lock the origin to the edge${c_reset}, so nobody can reach the site around it."
+  echo
+  origin_lock_advice "$hostname" "$origin" "$(jq -r .origin_secret.header <<<"$answer")" "$(jq -r .origin_secret.value <<<"$answer")" "   "
+  echo
+  echo "${c_coral}${c_bold}3.${c_reset} ${c_bold}Then point DNS at the edge:${c_reset}"
+  echo
+  domain_records "$(jq -c .edge_records <<<"$answer")"
+}
+
+# A green tick or a red cross, for true or anything else.
+mark() {
+  if [[ $1 == true ]]; then printf '%s✓%s' "$c_green" "$c_reset"; else printf '%s✗%s' "$c_red" "$c_reset"; fi
+}
+
+# What domains check answered, as a checklist: ownership, the origin lock and DNS, with what to do next.
+domain_checked() {
+  local answer=$1 hostname verified locked pointed preview
+  if [[ $json_out == true ]]; then
+    jq . <<<"$answer"
+    return
+  fi
+  hostname=$(jq -r .hostname <<<"$answer")
+  verified=$(jq -r .ownership.verified <<<"$answer")
+  locked=$(jq -r .origin.locked <<<"$answer")
+  pointed=$(jq -r .dns.pointed_at_edge <<<"$answer")
+  preview=$(jq -r '.preview_url // empty' <<<"$answer")
+  echo "${c_bold}$(link_to "https://$hostname")${c_reset} → $(jq -r .origin_url <<<"$answer"), in $(jq -r .protection_mode <<<"$answer") mode"
+  echo "  ${c_dim}Panel:${c_reset} $(link_to "$(jq -r .page_url <<<"$answer")")"
+  [[ -n $preview ]] && echo "  ${c_dim}Preview, through the edge:${c_reset} $(link_to "$preview")"
+  echo
+  echo "$(mark "$verified") ${c_bold}Ownership:${c_reset} $(jq -r '.ownership.summary // (if .ownership.verified then "Verified." else "Not verified yet." end)' <<<"$answer")"
+  if [[ $verified != true ]]; then
+    domain_records "$(jq -c '[.ownership | {type, name, value}]' <<<"$answer")"
+  fi
+  echo "$(mark "$locked") ${c_bold}Origin locked to the edge:${c_reset} $(jq -r .origin.summary <<<"$answer")"
+  if [[ $locked != true ]]; then
+    echo "     The header, and how to lock the origin: $(cmd "nicetrybot domains secret $hostname")"
+  fi
+  echo "$(mark "$pointed") ${c_bold}DNS at the edge:${c_reset} $(jq -r .dns.summary <<<"$answer")"
+  if [[ $pointed != true ]]; then
+    domain_records "$(jq -c .dns.records <<<"$answer")"
+    echo "     Change DNS last, once the domain is verified and its origin locked: visitors then go through the edge."
+  fi
+  echo
+  if [[ $verified != true ]]; then
+    next_step "add the TXT record, then $(cmd "nicetrybot domains check $hostname")"
+  elif [[ $locked != true ]]; then
+    next_step "lock the origin ($(cmd "nicetrybot domains secret $hostname")), then $(cmd "nicetrybot domains check $hostname")"
+  elif [[ $pointed != true ]]; then
+    next_step "point DNS at the edge with the records above, then $(cmd "nicetrybot domains check $hostname")"
+  elif [[ $(jq -r .protection_mode <<<"$answer") != enforce ]]; then
+    echo "${c_green}${c_bold}All set:${c_reset} $(link_to "https://$hostname") goes through the edge."
+    next_step "watch its traffic for a while, then $(cmd "nicetrybot domains mode $hostname enforce")"
+  else
+    echo "${c_green}${c_bold}All set:${c_reset} $(link_to "https://$hostname") goes through the edge, which enforces your rules."
+  fi
+}
+
+cmd_domains() {
+  local action=${1:-list}
+  [[ $# -gt 0 ]] && shift
+  case $action in
+    list | ls)
+      app_command
+      local answer
+      answer=$(mcp_tool list-domains) || exit 1
+      if [[ $json_out == true ]]; then
+        jq . <<<"$answer"
+      elif [[ $(jq '.domains | length' <<<"$answer") == 0 ]]; then
+        echo "No domains on $(jq -r .team <<<"$answer") yet. Add one: $(cmd "nicetrybot domains add www.example.com www-origin.example.com")"
+      else
+        {
+          printf 'HEADER:HOSTNAME\tMODE\tSTATUS\tDNS\tORIGIN\n'
+          jq -r --arg green "$c_green" --arg yellow "$c_yellow" --arg dim "$c_dim" --arg off "$c_reset" '
+            def paint($color): $color + . + $off;
+            .domains[] | [.hostname + (if .serves_www then " (+www)" else "" end),
+              (.protection_mode | paint({enforce: $green, observe: $yellow}[.] // $dim)),
+              (.status | paint(if . == "active" then $green else $yellow end)),
+              (if .dns_pointed_at_edge then "edge" | paint($green) else "-" end),
+              .origin_url] | @tsv' <<<"$answer"
+        } | table
+      fi
+      ;;
+    add)
+      local hostname='' origin='' www=false host_header='' origin_host_header='' forwarded='' arg
+      for arg in "$@"; do
+        case $arg in
+          --www) www=true ;;
+          --host-header=*) host_header=${arg#*=} ;;
+          --rewrite | --rewrite-host | --rewrite-to-origin-host) host_header=rewrite ;;
+          --origin-host-header=*) origin_host_header=${arg#*=} ;;
+          --forwarded-host-header=* | --fwd-host-header=*) forwarded="${forwarded:+$forwarded,}${arg#*=}" ;;
+          -*) fail "domains add doesn't know $arg ($(cmd "nicetrybot domains help"))" ;;
+          *)
+            if [[ -z $hostname ]]; then
+              hostname=$arg
+            elif [[ -z $origin ]]; then
+              origin=$arg
+            else
+              fail "domains add HOST ORIGIN (got another: $arg)"
+            fi
+            ;;
+        esac
+      done
+      [[ -n $hostname && -n $origin ]] || domains_usage
+      [[ $origin == *://* ]] || origin="https://$origin"
+      host_header=$(printf '%s' "$host_header" | tr '-' '_')
+      app_command
+      local answer
+      answer=$(mcp_tool add-domain "$(jq -nc --arg hostname "$hostname" --arg origin "$origin" --argjson www "$www" \
+        --arg host_header "$host_header" --arg origin_host_header "$origin_host_header" --arg forwarded "$forwarded" \
+        '{hostname: $hostname, origin_url: $origin, serves_www: $www}
+          + (if $host_header != "" then {host_header_mode: $host_header} else {} end)
+          + (if $origin_host_header != "" then {origin_host_header: $origin_host_header} else {} end)
+          + (if $forwarded != "" then {forwarded_host_header: $forwarded} else {} end)')") || exit 1
+      domain_added "$answer"
+      ;;
+    secret)
+      [[ $# -eq 1 ]] || domains_usage
+      app_command
+      local answer
+      answer=$(mcp_tool get-origin-secret "$(jq -nc --arg hostname "$1" '{hostname: $hostname}')") || exit 1
+      if [[ $json_out == true ]]; then
+        jq . <<<"$answer"
+      else
+        origin_lock_advice "$1" "$(jq -r '.origin_url // empty' <<<"$answer")" "$(jq -r .header <<<"$answer")" "$(jq -r .value <<<"$answer")"
+      fi
+      ;;
+    check | show)
+      [[ $# -eq 1 ]] || domains_usage
+      app_command
+      local answer
+      answer=$(mcp_tool check-domain "$(jq -nc --arg hostname "$1" '{hostname: $hostname}')") || exit 1
+      domain_checked "$answer"
+      ;;
+    verify | remove | rm | delete)
+      [[ $# -eq 1 ]] || domains_usage
+      local tool
+      case $action in
+        verify) tool=verify-domain ;;
+        *) tool=remove-domain ;;
+      esac
+      app_command
+      if [[ $tool == remove-domain ]]; then
+        confirm "Remove $1${app_remote:+ on $app_remote}? The edge stops serving it, and its request history is deleted." || fail "Nothing removed."
+      fi
+      run_tool "$tool" "$(jq -nc --arg hostname "$1" '{hostname: $hostname}')"
+      ;;
+    mode | protection)
+      [[ $# -eq 2 ]] || domains_usage
+      app_command
+      run_tool set-protection-mode "$(jq -nc --arg hostname "$1" --arg mode "$2" '{hostname: $hostname, mode: $mode}')"
+      ;;
+    help | --help | -h) domains_usage ;;
+    *) domains_usage ;;
+  esac
+}
+
+# rules|gyms [list] [ID], rules|gyms remove ID: the area's list and delete tools.
+cmd_listed() {
+  local noun=$1 singular=$2 action=${3:-list}
+  [[ $# -ge 3 ]] && shift 3 || shift 2
+  case $action in
+    list | ls)
+      app_command
+      run_tool "list-$noun"
+      ;;
+    remove | rm | delete)
+      [[ $# -eq 1 && $1 =~ ^[0-9]+$ ]] || fail "nicetrybot $noun remove ID (the id from nicetrybot $noun)"
+      app_command
+      confirm "Delete $singular $1${app_remote:+ on $app_remote}?" || fail "Nothing deleted."
+      run_tool "delete-$singular" "{\"id\": $1}"
+      ;;
+    [0-9]*)
+      [[ $noun == rules ]] || fail "nicetrybot $noun [list|remove ID]"
+      app_command
+      run_tool list-rules "{\"id\": $action}"
+      ;;
+    *) fail "nicetrybot $noun [list|remove ID]" ;;
+  esac
+}
+
+# --- Remotes ------------------------------------------------------------------------------------
+
+# Ask the panel who a token is (whoami, or list-domains on a release before it), on TEAM (a slug) when
+# given. Prints, tab-separated: the team's name, when the token expires (seconds since 1970, or empty
+# for never), the team's slug, yes for a token for all teams, and those teams' slugs.
+token_details() {
+  local url=$1 api_token=$2 team=${3:-} arguments='{}' answer
+  [[ -n $team ]] && arguments=$(jq -nc --arg team "$team" '{team: $team}')
+  answer=$(mcp_post "$url" "$api_token" tools/call whoami "$(mcp_body tools/call "$(jq -nc --argjson arguments "$arguments" '{name: "whoami", arguments: $arguments}')")") || exit 1
+  if [[ $(jq -r '.error.message // empty' <<<"$answer") == *'not found'* ]]; then
+    answer=$(mcp_post "$url" "$api_token" tools/call list-domains "$(mcp_body tools/call '{"name": "list-domains", "arguments": {}}')") || exit 1
+  fi
+  [[ -n $(jq -r '.error.message // empty' <<<"$answer") ]] && fail "$url: $(jq -r .error.message <<<"$answer")"
+  [[ $(jq -r '.result.isError // false' <<<"$answer") == true ]] && fail "$(jq -r '[.result.content[]? | .text // empty] | join("\n")' <<<"$answer")"
+  jq -r '.result.structuredContent
+    | [(.team | if type == "object" then .name elif . == null then "" else . end),
+       (.expires_at // "" | if . == "" then "" else (capture("^(?<at>.{19})(?<sign>[+-])(?<h>\\d\\d):?(?<m>\\d\\d)$") as $t
+          | ($t.at + "Z" | fromdateiso8601) - ($t.sign + "1" | tonumber) * (($t.h | tonumber) * 3600 + ($t.m | tonumber) * 60)) end),
+       (.team | if type == "object" then .slug else "" end),
+       (if .all_teams then "yes" else "no" end),
+       ((.teams // []) | map(.slug) | join(", "))]
+    | @tsv' <<<"$answer"
+}
+
+# For a token for all teams with no team picked yet: the details on PREVIOUS (the team the remote used
+# before) while the token still reaches it, or on the only team there is. Prints the details to use.
+settle_team() {
+  local url=$1 api_token=$2 details=$3 previous=${4:-} teams
+  teams=$(cut -f5 <<<"$details")
+  if [[ $(cut -f4 <<<"$details") != yes || -n $(cut -f3 <<<"$details") ]]; then
+    printf '%s\n' "$details"
+  elif [[ -n $previous && ", $teams, " == *", $previous, "* ]]; then
+    token_details "$url" "$api_token" "$previous"
+  elif [[ -n $teams && $teams != *,* ]]; then
+    token_details "$url" "$api_token" "$teams"
+  else
+    printf '%s\n' "$details"
+  fi
+}
+
+# After saving a token for all teams with no team picked: say how to pick one.
+say_pick_team() {
+  [[ $(remote_get "$1" all_teams) == yes && -z $(remote_get "$1" team_slug) ]] || return 0
+  echo "Its token works on all your teams ($2)."
+  next_step "pick the one to work on: $(cmd "nicetrybot team use SLUG")"
+}
+
+# The token for a remote: --token, or asked for (hidden) on the terminal.
+read_api_token() {
+  local url=$1 value=$token
+  if [[ -z $value ]]; then
+    [[ -r /dev/tty ]] || fail "Give the API token with --token=ntb_… (no terminal to ask on)"
+    echo "Make a token at $(link_to "${url%/}/admin/tokens") (pick its abilities and how long it lasts)." >&2
+    read -r -s -p "API token: " value </dev/tty || fail "No token given."
+    echo >&2
+  fi
+  value=$(printf '%s' "$value" | tr -d '[:space:]')
+  looks_like_api_token "$value" || fail "An API token starts with ntb_ and has 48 letters and digits after it."
+  printf '%s' "$value"
+}
+
+save_remote() {
+  local name=$1 url=$2 api_token=$3 details=$4
+  mkdir -p "$remotes"
+  chmod 700 "$config_dir" "$remotes"
+  (
+    umask 077
+    printf 'url=%s\ntoken=%s\nteam=%s\nteam_slug=%s\nall_teams=%s\nexpires=%s\n' "$url" "$api_token" \
+      "$(cut -f1 <<<"$details")" "$(cut -f3 <<<"$details")" "$(cut -f4 <<<"$details")" "$(cut -f2 <<<"$details")" >"$remotes/$name.tmp"
+  )
+  mv -f "$remotes/$name.tmp" "$remotes/$name"
+}
+
+use_remote() {
+  mkdir -p "$config_dir"
+  printf '%s\n' "$1" >"$current_remote_file"
+}
+
+expiry() {
+  local expires=$1 left
+  [[ -n $expires ]] || {
+    echo "never expires"
+    return 0
+  }
+  left=$((expires - $(date +%s)))
+  if ((left <= 0)); then
+    echo "${c_red}expired:${c_reset} $(cmd "nicetrybot remote auth")"
+  elif ((left < 3600)); then
+    echo "expires in $((left / 60)) min"
+  elif ((left < 172800)); then
+    echo "expires in $(((left + 1800) / 3600)) h"
+  else
+    echo "expires in $(((left + 43200) / 86400)) days"
+  fi
+}
+
+remote_add() {
+  local name url api_token details
+  case $# in
+    1)
+      url=$(panel_url "$1") || exit 1
+      name=${url#*://} name=${name%%:*}
+      ;;
+    2)
+      name=$1
+      url=$(panel_url "$2") || exit 1
+      ;;
+    *) fail "$(cmd "nicetrybot remote add [NAME] URL"), like: $(cmd "nicetrybot remote add prod app.example.com")" ;;
+  esac
+  valid_remote_name "$name" || fail "A remote's name is letters, digits, dots, dashes and underscores (got $name)"
+  [[ -f $remotes/$name ]] && fail "There's already a remote called $name ($(remote_get "$name" url)): $(cmd "nicetrybot remote auth $name") gives it a new token"
+  api_token=$(read_api_token "$url") || exit 1
+  details=$(token_details "$url" "$api_token") || exit 1
+  details=$(settle_team "$url" "$api_token" "$details") || exit 1
+  save_remote "$name" "$url" "$api_token" "$details"
+  use_remote "$name"
+  done_ "Saved $name ($url), $(remote_team "$name"), $(expiry "$(cut -f2 <<<"$details")"). It's the current remote."
+  say_pick_team "$name" "$(cut -f5 <<<"$details")"
+}
+
+cmd_remote() {
+  local action=${1:-}
+  [[ $# -gt 0 ]] && shift
+  case $action in
+    '')
+      if [[ -s $current_remote_file && -f $remotes/$(cat "$current_remote_file") ]]; then
+        local name
+        name=$(cat "$current_remote_file")
+        echo "Current remote: $name ($(remote_get "$name" url)), $(remote_team "$name"), $(expiry "$(remote_get "$name" expires)")"
+      elif [[ -f $dir/compose.yml ]]; then
+        echo "No current remote: the app's commands run on this server ($dir)."
+      else
+        echo "No remote yet. Add your panel: $(cmd "nicetrybot remote add app.example.com")"
+      fi
+      ;;
+    add) need_jq && remote_add "$@" ;;
+    list | ls)
+      if ! ls "$remotes"/* >/dev/null 2>&1; then
+        echo "No remotes yet. Add your panel: $(cmd "nicetrybot remote add app.example.com")"
+        return 0
+      fi
+      local file name team current=''
+      [[ -s $current_remote_file ]] && current=$(cat "$current_remote_file")
+      {
+        printf 'HEADER: \tNAME\tURL\tTEAM\tTOKEN\n'
+        for file in "$remotes"/*; do
+          [[ -f $file ]] || continue
+          name=${file##*/}
+          team=$(remote_get "$name" team)
+          if [[ $(remote_get "$name" all_teams) == yes ]]; then
+            team="${team:--} (all teams)"
+          fi
+          printf '%s\t%s\t%s\t%s\t%s\n' "$([[ $name == "$current" ]] && echo "${c_green}*${c_reset}" || echo ' ')" "$name" "$(remote_get "$name" url)" "$team" "$(expiry "$(remote_get "$name" expires)")"
+        done
+      } | table
+      ;;
+    use | switch)
+      if [[ $use_local == true ]]; then
+        rm -f "$current_remote_file"
+        done_ "The app's commands run on this server again."
+        return 0
+      fi
+      [[ $# -eq 1 ]] || fail "$(cmd "nicetrybot remote use NAME") (or $(cmd --local), for this server)"
+      [[ -f $remotes/$1 ]] || fail "No remote called $1 ($(cmd "nicetrybot remote list"))"
+      use_remote "$1"
+      done_ "Using $1 ($(remote_get "$1" url)), $(remote_team "$1")."
+      ;;
+    auth | login | token)
+      need_jq
+      local name=${1:-}
+      [[ -n $name ]] || name=$(cat "$current_remote_file" 2>/dev/null || true)
+      [[ -n $name && -f $remotes/$name ]] || fail "$(cmd "nicetrybot remote auth NAME") ($(cmd "nicetrybot remote list"))"
+      local url api_token details
+      url=$(remote_get "$name" url)
+      api_token=$(read_api_token "$url") || exit 1
+      details=$(token_details "$url" "$api_token") || exit 1
+      details=$(settle_team "$url" "$api_token" "$details" "$(remote_get "$name" team_slug)") || exit 1
+      save_remote "$name" "$url" "$api_token" "$details"
+      done_ "$name has its new token: $(remote_team "$name"), $(expiry "$(cut -f2 <<<"$details")")."
+      say_pick_team "$name" "$(cut -f5 <<<"$details")"
+      ;;
+    remove | rm | forget)
+      [[ $# -eq 1 ]] || fail "$(cmd "nicetrybot remote remove NAME")"
+      [[ -f $remotes/$1 ]] || fail "No remote called $1 ($(cmd "nicetrybot remote list"))"
+      local url
+      url=$(remote_get "$1" url)
+      rm -f "$remotes/$1"
+      [[ $(cat "$current_remote_file" 2>/dev/null || true) == "$1" ]] && rm -f "$current_remote_file"
+      done_ "Forgot $1. Its token still works until it expires: delete it at $(link_to "${url%/}/admin/tokens") to stop it now."
+      ;;
+    help | --help | -h) fail "$(cmd "nicetrybot remote [add [NAME] URL | list | use NAME | auth [NAME] | remove NAME | URL]")" ;;
+    *)
+      # nicetrybot remote NAME|URL: switch to a saved remote, or save a new one.
+      [[ $# -eq 0 ]] || fail "$(cmd "nicetrybot remote [add [NAME] URL | list | use NAME | auth [NAME] | remove NAME | URL]")"
+      if [[ -f $remotes/$action ]]; then
+        use_remote "$action"
+        done_ "Using $action ($(remote_get "$action" url)), $(remote_team "$action")."
+        return 0
+      fi
+      local url file
+      url=$(panel_url "$action") || exit 1
+      for file in "$remotes"/*; do
+        [[ -f $file && $(remote_get "${file##*/}" url) == "$url" ]] || continue
+        use_remote "${file##*/}"
+        done_ "Using ${file##*/} ($url), $(remote_team "${file##*/}")."
+        return 0
+      done
+      need_jq
+      remote_add "$url"
+      ;;
+  esac
+}
+
+# --- The command itself -------------------------------------------------------------------------
+
+# The file this command runs from, through any symlinks (macOS's readlink has no -f).
+cli_path() {
+  local path=${BASH_SOURCE[0]} link
+  while [[ -L $path ]]; do
+    link=$(readlink "$path")
+    if [[ $link == /* ]]; then path=$link; else path="$(dirname "$path")/$link"; fi
+  done
+  printf '%s/%s' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+
+cli_show_version() {
+  local latest
+  if [[ $cli_version == dev ]]; then
+    echo "nicetrybot command: a development copy, not from a release ($(cli_path))"
+  else
+    echo "nicetrybot command v$cli_version"
+  fi
+  latest=$(latest_version || true)
+  if [[ -z $latest ]]; then
+    echo "Couldn't reach $NICETRY_RELEASE_BASE to find the newest release."
+  elif [[ $latest == "$cli_version" ]]; then
+    echo "That's the newest release."
+  elif [[ $cli_version == dev ]]; then
+    echo "The newest release is v$latest. This copy follows its repository: git pull keeps it current."
+  else
+    echo "${c_yellow}v$latest is out:${c_reset} $(link_to "$(notes_url "$latest")")   Update this command: $(cmd "nicetrybot cli update")"
+  fi
+}
+
+# Swap this file for the release's copy: downloaded beside it, checked to be a whole script that
+# parses, then moved over it in one step (the running copy keeps reading the old file).
+cli_update() {
+  local path folder wanted work
+  path=$(cli_path)
+  folder=$(dirname "$path")
+  if [[ -n $target ]]; then
+    valid_version "$target" || fail "--version takes a release like v1.2.0 (got $target)"
+    wanted=$(bare "$target")
+  else
+    wanted=$(latest_version) || fail "Couldn't find the newest release at $NICETRY_RELEASE_BASE"
+  fi
+  if [[ $cli_version == "$wanted" ]]; then
+    done_ "The nicetrybot command is already v$wanted."
+    return 0
+  fi
+  [[ $cli_version != dev || $assume_yes == true ]] ||
+    fail "$path is a development copy, not from a release. --yes replaces it with v$wanted anyway."
+  [[ -w $folder && (! -e $path || -w $path) ]] || fail "Can't write to $path: $(cmd "sudo nicetrybot cli update")"
+
+  say "Downloading the nicetrybot command from v$wanted"
+  work="$folder/.nicetrybot.download.$$"
+  if ! curl -fsSL --retry 3 -o "$work" "$NICETRY_RELEASE_BASE/download/v$wanted/nicetrybot"; then
+    rm -f "$work"
+    fail "Couldn't download it from $NICETRY_RELEASE_BASE/download/v$wanted/nicetrybot (releases before 0.2.0 don't have it)"
+  fi
+  if [[ $(head -n 1 "$work") != '#!/usr/bin/env bash' ]] || ! grep -q '^# nicetrybot: ' "$work" || ! bash -n "$work" 2>/dev/null; then
+    rm -f "$work"
+    fail "What came back for v$wanted isn't the nicetrybot command, so nothing changed."
+  fi
+  chmod 755 "$work"
+  mv -f "$work" "$path"
+  local from="v$cli_version"
+  [[ $cli_version == dev ]] && from="a development copy"
+  done_ "Updated the nicetrybot command: $from → v$wanted ($path)"
+  [[ -f $dir/compose.yml ]] && echo "On this server, $(cmd "nicetrybot update") brings NiceTryBot itself up to date too."
+  return 0
+}
+
+cmd_cli() {
+  local action=${1:-version}
+  case $action in
+    version | --version | -v) cli_show_version ;;
+    update | upgrade | self-update) cli_update ;;
+    *) fail "$(cmd "nicetrybot cli [version | update [--version=vX.Y.Z]]")" ;;
+  esac
+}
+
 # --- Main ---------------------------------------------------------------------------------------
 
 command=${1:-help}
@@ -935,6 +1848,10 @@ for arg in "$@"; do
     --no-backup) backup=false ;;
     --version=*) target=${arg#*=} ;;
     --token=*) token=${arg#*=} ;;
+    --remote=*) remote_opt=${arg#*=} ;;
+    --local) use_local=true ;;
+    --team=*) team_opt=${arg#*=} ;;
+    --json) json_out=true ;;
     *) args+=("$arg") ;;
   esac
 done
@@ -948,8 +1865,25 @@ case $command in
   doctor | health | check) cmd_doctor ;;
   status) cmd_status ;;
   version | --version | -v) cmd_version ;;
+  cli) cmd_cli "$@" ;;
+  self-update) cli_update ;;
   logs | log) cmd_logs "$@" ;;
   artisan) cmd_artisan "$@" ;;
+  remote | remotes) cmd_remote "$@" ;;
+  whoami) cmd_whoami ;;
+  teams) cmd_teams ;;
+  team) cmd_team "$@" ;;
+  domains | domain) cmd_domains "$@" ;;
+  rules | rule) cmd_listed rules rule "$@" ;;
+  gyms | gym) cmd_listed gyms gym "$@" ;;
+  tools) cmd_tools ;;
+  call) cmd_call "$@" ;;
+  # nicetrybot add domain … / remove domain …, as well as domains add / remove.
+  add | remove | rm)
+    [[ ${1:-} == domain || ${1:-} == domains ]] || fail "$(cmd "nicetrybot $command domain …") (or $(cmd "nicetrybot help"))"
+    shift
+    cmd_domains "$command" "$@"
+    ;;
   help | --help | -h) usage ;;
-  *) fail "Unknown command: $command (try: nicetrybot help)" ;;
+  *) fail "Unknown command: $command (try: $(cmd "nicetrybot help"))" ;;
 esac

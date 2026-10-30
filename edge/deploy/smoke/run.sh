@@ -1,7 +1,7 @@
 #!/bin/sh
 # Smoke test for the two images on their own, no app needed. It builds them, then runs a stub app
-# (stub_app.py), a whoami origin, the edge (NICETRY_ACME=internal) and Vector (direct mode) on a private
-# network. It passes when the panel and a site answer through the edge with Server: nginx, and their lines
+# (stub_app.py), a whoami origin, the edge (NICETRY_ACME=internal, and NICETRY_ALLOW_PRIVATE_ORIGINS=true
+# since whoami is a container on the same network) and Vector (direct mode) on a private network. It passes when the panel and a site answer through the edge with Server: nginx, and their lines
 # reach the stub's /caddy/ingest, redacted, after two refused batches. It cleans up after itself.
 #
 #   deploy/smoke/run.sh [https-port]     default 18443, on 127.0.0.1
@@ -37,7 +37,7 @@ docker run -d --name "$p-app" --network "$p" --network-alias app -e NICETRY_EDGE
   -e STUB_FAIL_FIRST_INGESTS=2 -v "$here:/stub:ro" python:3.13-alpine python -u /stub/stub_app.py >/dev/null
 docker run -d --name "$p-edge" --network "$p" -p "127.0.0.1:$port:443" \
   -e NICETRY_ACME=internal -e NICETRY_PANEL_HOST=panel.localhost -e NICETRY_APP_URL=http://app:8080 \
-  -e NICETRY_EDGE_TOKEN="$token" -v "$p-data:/data" -v "$p-logs:/var/log/caddy" -v "$p-dbip:/opt/dbip" \
+  -e NICETRY_EDGE_TOKEN="$token" -e NICETRY_ALLOW_PRIVATE_ORIGINS=true -v "$p-data:/data" -v "$p-logs:/var/log/caddy" -v "$p-dbip:/opt/dbip" \
   nicetry-edge:smoke >/dev/null
 
 step "waiting for the edge (a first start downloads DB-IP, about 65 MB)"

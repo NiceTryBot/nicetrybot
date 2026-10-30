@@ -20,6 +20,7 @@ x-app-env: &app-env
   # A stranger's panel: sign-up by invitation only (see .env.example).
   NICETRY_REGISTRATION: ${NICETRY_REGISTRATION:-invitations}
   NICETRY_VERIFY_DNS: ${NICETRY_VERIFY_DNS:-true}
+  NICETRY_ALLOW_PRIVATE_ORIGINS: ${NICETRY_ALLOW_PRIVATE_ORIGINS:-false}
   # Database: Postgres, bundled or managed.
   DB_CONNECTION: pgsql
   DB_HOST: ${DB_HOST:-postgres}
@@ -82,6 +83,7 @@ services:
       NICETRY_ACME: ${NICETRY_ACME:-letsencrypt}
       NICETRY_ACME_EMAIL: ${NICETRY_ACME_EMAIL:-}
       NICETRY_BLOCK_MULTIPART: ${NICETRY_BLOCK_MULTIPART:-off}
+      NICETRY_ALLOW_PRIVATE_ORIGINS: ${NICETRY_ALLOW_PRIVATE_ORIGINS:-false}
       # Certificates: file (the edge-data volume) or redis (shared by several edge nodes). Redis
       # means the app's REDIS_* below, or a store of its own in NICETRY_CERT_REDIS_URL.
       NICETRY_CERT_STORAGE: ${NICETRY_CERT_STORAGE:-file}

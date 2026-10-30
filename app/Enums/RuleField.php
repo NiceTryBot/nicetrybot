@@ -40,11 +40,12 @@ enum RuleField: string implements RuleFieldDefinition
 
     /**
      * The values the client field takes: what a client's own parts give away (ClientTrait's families),
-     * and whether it sits behind a corporate security gateway (InspectingProxy).
+     * whether it sits behind a corporate security gateway (InspectingProxy), and whether it picked up
+     * a visit another IP started (request_path_refs).
      *
      * @var list<string>
      */
-    public const array CLIENT_VALUES = ['spoofed', 'outdated', 'corporate'];
+    public const array CLIENT_VALUES = ['spoofed', 'outdated', 'corporate', 'hopped'];
 
     /**
      * Get the SQL expression the field reads, against edge_requests and its joined lookup tables. The
@@ -152,7 +153,7 @@ enum RuleField: string implements RuleFieldDefinition
                 : (string) $literal],
             self::Client => [in_array(strtolower((string) $literal), self::CLIENT_VALUES, true)
                 ? strtolower((string) $literal)
-                : throw new InvalidArgumentException(__('client is \'spoofed\', \'outdated\' or \'corporate\'.'))],
+                : throw new InvalidArgumentException(__('client is \'spoofed\', \'outdated\', \'corporate\' or \'hopped\'.'))],
             self::Country => [strlen((string) $literal) === 2 ? strtoupper((string) $literal) : throw new InvalidArgumentException(__('country takes a two-letter code, like \'US\'.'))],
             default => [is_string($literal) ? $literal : (string) $literal],
         };
@@ -250,7 +251,7 @@ enum RuleField: string implements RuleFieldDefinition
             self::Ja4Alpn => __("'00' means no ALPN: a script, not a browser"),
             self::Ja4h => __('JA4H-style: method, version, cookie/referer, header count, language, then hashes'),
             self::ClientHints => __("Sec-CH-UA | platform, e.g. LIKE '%HeadlessChrome%'"),
-            self::Client => __("'spoofed', 'outdated' or 'corporate' (behind a corporate security gateway)"),
+            self::Client => __("'spoofed', 'outdated', 'corporate' (behind a corporate security gateway) or 'hopped' (took over another IP's visit)"),
             self::Language => __("e.g. 'en-US,en;q=0.9'; missing is a script tell"),
             self::Category => __("a family like 'probe' or a slug like 'probe/creds'"),
             self::NetworkKind => __("'hosting' for cloud and datacenter networks"),

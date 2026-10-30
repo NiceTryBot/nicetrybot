@@ -7,6 +7,7 @@ use App\Mcp\Tools\Domains\DomainTools;
 use App\Mcp\Tools\Gym\GymTools;
 use App\Mcp\Tools\Rules\RuleTools;
 use App\Mcp\Tools\Traffic\TrafficTools;
+use App\Mcp\Tools\Whoami;
 use Laravel\Mcp\Server;
 use Laravel\Mcp\Server\Attributes\Instructions;
 use Laravel\Mcp\Server\Attributes\Name;
@@ -21,7 +22,9 @@ use Laravel\Mcp\Server\Attributes\Version;
 #[Version('1.0.0')]
 #[Instructions(<<<'MARKDOWN'
     NiceTryBot sits in front of websites (the "edge") and tells real people from bots. You're working on
-    one team's sites, the team the API token belongs to.
+    one team's sites, the team the API token belongs to. A token for all of its user's teams says so in
+    whoami, which lists them: every other tool then takes the team's slug as "team". Check with the
+    person which team they mean before changing anything.
 
     - Domains are the hostnames visitors type. Each one forwards to an origin URL where the app really
       lives, like https://www-origin.example.com. A domain needs its ownership TXT record checked, then
@@ -41,6 +44,7 @@ class NiceTryBotServer extends Server
      * @var array<int, class-string<Server\Tool>|Server\Tool>
      */
     protected array $tools = [
+        Whoami::class,
         ...DomainTools::TOOLS,
         ...TrafficTools::TOOLS,
         ...RuleTools::TOOLS,

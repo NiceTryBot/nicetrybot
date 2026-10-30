@@ -13,10 +13,11 @@ use App\Http\Controllers\Edge\ListSiteHeadersController;
 use App\Http\Controllers\Edge\ListTarpitsController;
 use App\Http\Controllers\Edge\ResolveOriginController;
 use App\Http\Middleware\AuthenticateEdge;
+use App\Http\Middleware\CompressEdgeFeeds;
 use Illuminate\Support\Facades\Route;
 
 Route::get('caddy/ask', AuthorizeCertificateController::class)->name('edge.certificates.authorize');
-Route::middleware(AuthenticateEdge::class)->group(function () {
+Route::middleware([AuthenticateEdge::class, CompressEdgeFeeds::class])->group(function () {
     Route::get('caddy/response-captures', ListResponseCapturesController::class)->middleware('cache.headers:no_cache;etag')->name('edge.captures.index');
     Route::get('caddy/gym-triggers', ListGymTriggersController::class)->middleware('cache.headers:no_cache;etag')->name('edge.gym.triggers');
     Route::get('caddy/gym-check', GymCheckController::class)->name('edge.gym.check');

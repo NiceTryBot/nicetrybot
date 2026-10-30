@@ -15,3 +15,10 @@ services:
   app:
     ports:
       - 127.0.0.1:${NICETRY_APP_TEST_PORT:-8080}:8080
+    environment:
+      # whoami is a container on the stack's own network.
+      NICETRY_ALLOW_PRIVATE_ORIGINS: "true"
+
+  edge:
+    environment:
+      NICETRY_ALLOW_PRIVATE_ORIGINS: "true"

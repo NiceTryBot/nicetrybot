@@ -227,3 +227,25 @@ test('a rule can pick clients by what their parts give away', function (string $
     'outdated, not behind a corporate gateway' => ["TAG ip AS 'x' FOR 1 DAY WHERE client = 'outdated' AND client != 'corporate'", ['203.0.113.1', '203.0.113.2', '203.0.113.5']],
     'either kind' => ["TAG ip AS 'x' FOR 1 DAY WHERE client IN ('spoofed', 'corporate')", ['203.0.113.1', '203.0.113.3', '203.0.113.4']],
 ]);
+
+test('a rule can pick the IPs that took over a visit another IP started on the same site', function () {
+    $form = 'a20a2ddd-49fd-4df5-864c-a0c388e62db5';
+    $contact = 'a315e926-12fc-47ec-a592-4616d5243e7f';
+    $claim = 'a315e938-9177-4882-b1eb-d010cd786fbf';
+    $staleClaim = 'a3160afb-ab17-4246-8101-e38914fad0fc';
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+    $otherSite = Domain::factory()->for($user->currentTeam)->create();
+    $rule = watchingRule($user, "TAG ip AS 'claim-hop' FOR 1 DAY WHERE client = 'hopped'");
+    $visit = fn (Domain $on, string $ip, string $path, int $minutesAgo) => EdgeRequest::factory()->for($on)->create(['client_ip' => $ip, 'path' => $path, 'occurred_at' => now()->subMinutes($minutesAgo)]);
+    $visit($domain, '203.0.113.1', "/sign/{$form}/{$contact}/{$claim}", 20);
+    $visit($domain, '203.0.113.2', "/sign/{$form}/{$claim}/thank-you?step=done", 10);
+    $visit($domain, '203.0.113.3', "/sign/{$form}", 5);
+    $visit($otherSite, '203.0.113.4', "/sign/{$form}/{$claim}/thank-you", 5);
+    $visit($domain, '203.0.113.5', "/sign/{$form}/{$contact}/{$staleClaim}", 180);
+    $visit($domain, '203.0.113.6', "/sign/{$form}/{$staleClaim}/thank-you", 1);
+
+    app(EvaluateRule::class)->handle($rule);
+
+    expect(Verdict::pluck('client_ip')->all())->toBe(['203.0.113.2']);
+});

@@ -1,10 +1,13 @@
 <?php
 
 use App\Enums\ApiAbility;
+use App\Enums\DomainStatus;
 use App\Enums\GymExit;
 use App\Enums\ProtectionMode;
 use App\Enums\TeamRole;
 use App\Models\AddonSwitch;
+use App\Models\Administrator;
+use App\Models\ApiToken;
 use App\Models\Domain;
 use App\Models\EdgeRule;
 use App\Models\GymRoutine;
@@ -92,7 +95,7 @@ function bundleFromElsewhere(Origin $origin): array
  */
 function destinationAdmin(): User
 {
-    return User::factory()->create();
+    return Administrator::factory()->create()->user;
 }
 
 /**
@@ -140,6 +143,15 @@ test('a token that may not transfer, and every request without one, gets the 404
 
     $this->withHeaders($headers)->getJson('/transfer/v1/origins')->assertNotFound()->assertDontSee('Fleet');
 })->with(['none', 'made up', 'read only']);
+
+test('a token for all teams, rather than the origin\'s one, gets 404', function () {
+    [$user, $origin] = originToMove();
+    apiToken([], $user);
+    [, $everywhere] = ApiToken::issue($user->fresh(), null, 'Everywhere', [ApiAbility::ManageDomains]);
+
+    $this->withToken($everywhere)->getJson('/transfer/v1/origins')->assertNotFound()->assertDontSee('Fleet');
+    $this->withToken($everywhere)->getJson("/transfer/v1/origins/{$origin->id}")->assertNotFound();
+});
 
 test('a token lists its own team\'s origins and pulls one, and never another team\'s', function () {
     [$user, $origin] = originToMove();
@@ -460,4 +472,25 @@ test('Team stays a team: the bundle source names the panel, not the team', funct
 
     expect(app(ExportOrigin::class)->handle($origin)['source'])->toBe(parse_url(config('app.url'), PHP_URL_HOST))
         ->and(Team::query()->count())->toBe(1);
+});
+
+test('a team owner who isn\'t an installation administrator imports sites unverified, without the authorize URL', function () {
+    [, $origin] = originToMove();
+    $json = json_encode(app(ExportOrigin::class)->handle($origin));
+    bundleFromElsewhere($origin);
+    $owner = User::factory()->create();
+
+    $this->actingAs($owner);
+
+    Livewire::test('transfer::import')
+        ->set('file', UploadedFile::fake()->createWithContent('fleet.json', $json))
+        ->call('upload')
+        ->assertHasNoErrors()
+        ->assertSet('summary.sitesAdded', 3);
+
+    $moved = Origin::query()->where('team_id', $owner->currentTeam->id)->sole();
+
+    expect($moved->authorize_url)->toBeNull()
+        ->and($moved->domains()->pluck('status')->unique()->all())->toBe([DomainStatus::PendingVerification])
+        ->and($moved->domains()->whereNotNull('verified_at')->count())->toBe(0);
 });

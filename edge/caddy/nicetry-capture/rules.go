@@ -94,7 +94,14 @@ func (e *ruleExpr) compile() {
 		e.value, e.number, e.isNum = rawValue(e.Value)
 	case "like":
 		quoted := regexp.QuoteMeta(strings.ToLower(e.Pattern))
-		e.like = regexp.MustCompile("(?s)^" + strings.NewReplacer("%", ".*", "_", ".").Replace(quoted) + "$")
+		like, err := compilePattern("(?s)^" + strings.NewReplacer("%", ".*", "_", ".").Replace(quoted) + "$")
+		if err != nil {
+			// Too large a pattern; a panic here would take Caddy down from the poller.
+			skippedPattern("rule", e.Pattern, err)
+			e.Kind = "false"
+			return
+		}
+		e.like = like
 	case "in":
 		e.set = map[string]bool{}
 		for _, raw := range e.Values {
@@ -149,10 +156,12 @@ func optionalText(s string) fact {
 // requestFacts is a request as rules see it. Fields are worked out when first asked for.
 type requestFacts struct {
 	method, host, path, ip, ja4, ua, lang, tag string
-	located                                     bool
-	place                                       geoRecord
-	env                                         *ruleEnv
-	category                                    *fact
+	located                                    bool
+	place                                      geoRecord
+	env                                        *ruleEnv
+	category                                   *fact
+	// otherPaths are the request's other judged paths (see judgedPaths), after path.
+	otherPaths []string
 }
 
 // factsFor describes a live request: the method, the domain's own hostname, the path, the client, its
@@ -164,14 +173,16 @@ func factsFor(r *http.Request, env *ruleEnv, geo *geoDB) *requestFacts {
 			host = canonical
 		}
 	}
+	paths := judgedPaths(r)
 	f := &requestFacts{
-		method: r.Method,
-		host:   host,
-		path:   r.URL.Path,
-		ip:     requestIP(r),
-		ua:     r.UserAgent(),
-		lang:   r.Header.Get("Accept-Language"),
-		env:    env,
+		method:     r.Method,
+		host:       host,
+		path:       paths[0],
+		otherPaths: paths[1:],
+		ip:         requestIP(r),
+		ua:         r.UserAgent(),
+		lang:       r.Header.Get("Accept-Language"),
+		env:        env,
 	}
 	if repl, ok := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer); ok {
 		f.ja4 = repl.ReplaceAll("{tls.ja4}", "")
@@ -264,6 +275,22 @@ func (f *requestFacts) categoryFact() fact {
 	}
 	f.category = &result
 	return result
+}
+
+// holds reports whether a rule is surely true of the request on any of the paths it's judged by, so
+// /index.php/login can't slip past a rule about /login.
+func (f *requestFacts) holds(e *ruleExpr) bool {
+	if v := e.eval(f); v != nil && *v {
+		return true
+	}
+	for _, p := range f.otherPaths {
+		other := *f
+		other.path, other.category, other.otherPaths = p, nil, nil
+		if v := e.eval(&other); v != nil && *v {
+			return true
+		}
+	}
+	return false
 }
 
 // eval judges a node against a request: true, false, or nil when it hinges on something unknown.
@@ -405,9 +432,15 @@ func ruleEnvFrom(payload map[string]json.RawMessage) *ruleEnv {
 			for _, p := range c.Patterns {
 				alternatives = append(alternatives, strings.ReplaceAll(regexp.QuoteMeta(p), `\*`, ".*"))
 			}
-			if len(alternatives) > 0 {
-				env.categories = append(env.categories, pathCategory{ID: c.ID, pattern: regexp.MustCompile("(?is)^(?:" + strings.Join(alternatives, "|") + ")$")})
+			if len(alternatives) == 0 {
+				continue
 			}
+			pattern, err := compilePattern("(?is)^(?:" + strings.Join(alternatives, "|") + ")$")
+			if err != nil {
+				skippedPattern("path category", strconv.Itoa(c.ID), err)
+				continue
+			}
+			env.categories = append(env.categories, pathCategory{ID: c.ID, pattern: pattern})
 		}
 	}
 
@@ -446,7 +479,7 @@ func (t *target) matchingRules(r *http.Request) []int {
 	facts := factsFor(r, t.env, sharedGeo())
 	var ids []int
 	for _, rule := range t.Rules {
-		if v := rule.Expr.eval(facts); v != nil && *v {
+		if facts.holds(rule.Expr) {
 			ids = append(ids, rule.ID)
 		}
 	}

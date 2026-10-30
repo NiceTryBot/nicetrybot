@@ -24,7 +24,8 @@ Environment, one `.env` for all services:
   `NICETRY_ACME`, `NICETRY_ACME_EMAIL`, `NICETRY_CERT_STORAGE`. With `redis` storage it also reads the app's own
   `REDIS_URL` or `REDIS_HOST`/`REDIS_PORT`/`REDIS_USERNAME`/`REDIS_PASSWORD`/`REDIS_DB`/`REDIS_SCHEME`, plus the
   optional `NICETRY_CERT_REDIS_URL`, `NICETRY_CERT_REDIS_CA` and `NICETRY_CERT_REDIS_TLS`. Also optional:
-  `NICETRY_BLOCK_MULTIPART` and the `NICETRY_DBIP*` settings. Passing the whole `.env` with `env_file` is fine:
+  `NICETRY_BLOCK_MULTIPART`, `NICETRY_ALLOW_PRIVATE_ORIGINS` (the same value as the app's, which checks origins
+  when they're saved) and the `NICETRY_DBIP*` settings. Passing the whole `.env` with `env_file` is fine:
   unknown keys are ignored, and Laravel's `null` counts as empty.
 - vector: `NICETRY_EDGE_TOKEN`, `NICETRY_APP_URL`, `EDGE_LOGS_BUCKET`, `EDGE_LOGS_REGION`, `EDGE_LOGS_ENDPOINT`,
   `EDGE_LOGS_PATH_STYLE`, `EDGE_LOGS_KEY`, `EDGE_LOGS_SECRET`.
@@ -45,7 +46,8 @@ Environment, one `.env` for all services:
 ## What the edge calls on the app
 
 All calls go to `$NICETRY_APP_URL`, i.e. `http://app:8080`, straight over the compose network, not through the
-edge. All of them except `ask` carry `Authorization: Bearer $NICETRY_EDGE_TOKEN`.
+edge. All of them carry `Authorization: Bearer $NICETRY_EDGE_TOKEN`, `ask` included (the edge's `nicetry_ask`
+permission module sends it as a header, so the token is never in a URL or in Caddy's logs).
 
 | Call | When | Answer the edge expects |
 |---|---|---|
@@ -55,7 +57,7 @@ edge. All of them except `ask` carry `Authorization: Bearer $NICETRY_EDGE_TOKEN`
 | `GET /caddy/site-headers` | every 30 s | `{"sites":[...]}` |
 | `GET /caddy/response-captures` | every 30 s, ETag | `{"captures":[...]}` |
 | `GET /caddy/gym-triggers` | every 30 s, ETag | `{"triggers":[...]}` |
-| `GET /caddy/gym-check`, `GET /caddy/gym-report` | per request on a trigger | as now (3 s timeout; the request goes through if the app fails) |
+| `GET /caddy/gym-check`, `GET /caddy/gym-report` | per request on a trigger | as now (3 s timeout; the request goes through if the app fails). `X-NiceTry-Uri` is the path the trigger matched: cleaned, or without a leading `*.php` segment (`/index.php/login` is sent as `/login`), when that's what matched. |
 | `GET /caddy/live-tail` | every 10 s | `{"hosts":[...]}` |
 | `GET /caddy/lockdowns` | every 10 s, ETag | `{"lockdowns":[...]}` (must name the key) |
 | `GET /caddy/tarpit-feed` | every 10 s, ETag | `{"tarpits":[...]}` (must name the key) |
@@ -69,13 +71,26 @@ Polls that fail keep the last list, so sites stay up while the app restarts.
   `X-Forwarded-For`, `X-Forwarded-Proto: https` and `X-Forwarded-Host` itself and overwrites whatever the visitor
   sent. The app's TrustProxies must trust the edge's address on the compose network for these.
 - **Except** `/caddy/*` on the panel host, which the edge answers itself with nginx's 404. Those endpoints are
-  only for the edge and Vector, which call `$NICETRY_APP_URL` directly; `/caddy/ask` has no token at all. On
-  other hosts `/caddy/*` is just a path on that site's origin. Production's Caddyfile is unchanged.
+  only for the edge and Vector, which call `$NICETRY_APP_URL` directly, with the token. On other hosts
+  `/caddy/*` is just a path on that site's origin. Production's Caddyfile is unchanged.
 - **Gym**: `/_q/*` on any host, panel included, goes to the app with `Host: $NICETRY_PANEL_HOST`, `X-Forwarded-Host:`
   the site's host, `Authorization: Bearer <token>`, `X-NiceTry-Client-Ip` and `X-NiceTry-JA4`. Cookies are
   stripped. These requests are not logged. This matches production, where the Host is the app's own.
 - The `/up` health route is just a panel path through the edge (`https://panel.localhost/up`). Compose's own
   healthcheck for the app should call `http://localhost:8080/up` inside the app container.
+
+## Requests the edge proxies to origins
+
+- Only to public addresses: the `nicetry_origin` transport resolves the origin's hostname when it opens a
+  connection and refuses private, loopback, link-local (169.254.169.254), unique-local, carrier-grade NAT,
+  benchmarking, multicast and reserved addresses (IPv4-mapped too) with nginx's 502. Set
+  `NICETRY_ALLOW_PRIVATE_ORIGINS=true` on both the app and the edge when origins really are on the private
+  network (a container on the compose network, say).
+- Every one carries `X-NiceTry-Hop`, a hash of `NICETRY_EDGE_TOKEN`. A request that arrives with this
+  installation's value came from the edge itself (an origin pointing back at a site or preview the edge
+  serves) and gets nginx's 508 Loop Detected. A visitor's own `X-NiceTry-Hop` is dropped.
+- A path with `.` or `..` segments (after decoding) gets nginx's 400 before anything else, origins and the gym
+  included.
 
 ## Ingest body
 

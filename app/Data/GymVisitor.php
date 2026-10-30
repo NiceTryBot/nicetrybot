@@ -13,6 +13,8 @@ readonly class GymVisitor
 {
     /**
      * @param  list<int>  $verdictRuleIds  Rules with an active verdict on the visitor's IP or TLS fingerprint.
+     * @param  string|null  $knownJa4  The fingerprint the visitor's gym session recorded, which a browser's
+     *                                 resumed TLS connections change: verdicts on it still count.
      */
     public function __construct(
         public string $ip,
@@ -24,6 +26,7 @@ readonly class GymVisitor
         public ?int $asn = null,
         public ?string $tag = null,
         public array $verdictRuleIds = [],
+        public ?string $knownJa4 = null,
     ) {
         //
     }
@@ -55,7 +58,18 @@ readonly class GymVisitor
      */
     public function withVerdicts(array $ruleIds): self
     {
-        return new self($this->ip, $this->host, $this->path, $this->userAgent, $this->ja4, $this->countryCode, $this->asn, $this->tag, $ruleIds);
+        return new self($this->ip, $this->host, $this->path, $this->userAgent, $this->ja4, $this->countryCode, $this->asn, $this->tag, $ruleIds, $this->knownJa4);
+    }
+
+    /**
+     * Get the visitor's TLS fingerprints: the one this request came with, and the one their session
+     * recorded when it differs.
+     *
+     * @return list<string>
+     */
+    public function ja4s(): array
+    {
+        return array_values(array_unique(array_filter([$this->ja4, $this->knownJa4])));
     }
 
     /**

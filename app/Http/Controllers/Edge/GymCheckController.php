@@ -18,9 +18,12 @@ use App\Http\Controllers\Controller;
 use App\Models\ClientHint;
 use App\Models\Domain;
 use App\Models\EdgeRule;
+use App\Models\GymRoutine;
 use App\Models\GymSession;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use stdClass;
 use Symfony\Component\HttpFoundation\Response;
@@ -32,6 +35,12 @@ class GymCheckController extends Controller
      * token matches it, so it only gets the reload asked about.
      */
     private const string RELOAD_MARKER = 'reload';
+
+    /**
+     * How many networks (/24 for IPv4, /48 for IPv6) one pass may come from before it's taken for a pass
+     * being shared around a crowd of clients. A real visitor moves between a few: home, mobile data, work.
+     */
+    private const int MAX_PASS_NETWORKS = 4;
 
     public function __construct(private GymPipeline $pipeline, private MatchGymRoutines $matchGymRoutines, private ReachLiveVerdicts $reachLiveVerdicts)
     {
@@ -81,11 +90,14 @@ class GymCheckController extends Controller
 
         $this->reachLiveVerdicts->handle($domain->team, $this->liveRequest($request, $domain, $visitor), $this->flaggedRules($request));
 
-        if ($this->matchGymRoutines->handle($domain->team, $visitor)->isEmpty()) {
+        $routines = $this->matchGymRoutines->handle($domain->team, $visitor);
+
+        if ($routines->isEmpty()) {
             return response()->noContent();
         }
 
-        if ($passSession !== null && ($allowed = $this->honourPass($passSession, $request, $domain, $visitor)) !== null) {
+        if ($passSession !== null && $this->passCovers($passSession, $domain, $routines, $visitor)
+            && ($allowed = $this->honourPass($passSession, $request, $domain, $visitor)) !== null) {
             return $allowed;
         }
 
@@ -116,6 +128,58 @@ class GymCheckController extends Controller
         $response->headers->setCookie(cookie(GymSession::SESSION_COOKIE, $session->token, (int) config('gym.idle_minutes'), secure: $request->isSecure(), sameSite: 'lax'));
 
         return $response;
+    }
+
+    /**
+     * Determine if a pass may let this visitor past these routines. It must have been earned on this
+     * site, and on every routine that wants the visitor now, so a pass from an easy routine never gets
+     * anyone past a stricter one (or a ban). And it mustn't be turning up from more networks than one
+     * person uses, which is what a pass solved once and handed around a bot farm looks like.
+     *
+     * @param  Collection<int, GymRoutine>  $routines
+     */
+    private function passCovers(GymSession $session, Domain $domain, Collection $routines, GymVisitor $visitor): bool
+    {
+        if ($session->domain_id !== null && $session->domain_id !== $domain->id) {
+            return false;
+        }
+
+        if ($routines->modelKeys() !== array_intersect($routines->modelKeys(), $session->routines()->pluck('gym_routines.id')->all())) {
+            return false;
+        }
+
+        return ! $this->passIsShared($session, $visitor->ip);
+    }
+
+    /**
+     * Note the network a pass came from, and determine if it has now come from too many.
+     */
+    private function passIsShared(GymSession $session, string $ip): bool
+    {
+        $key = 'gym-pass-networks:'.$session->token;
+        $networks = Cache::get($key, []);
+        $network = self::network($ip);
+
+        if (! in_array($network, $networks, true)) {
+            $networks[] = $network;
+            Cache::put($key, $networks, now()->addDay());
+        }
+
+        return count($networks) > self::MAX_PASS_NETWORKS;
+    }
+
+    /**
+     * The network an address is on: its /24 for IPv4, its /48 for IPv6.
+     */
+    private static function network(string $ip): string
+    {
+        $packed = (string) @inet_pton($ip);
+
+        return match (strlen($packed)) {
+            4 => inet_ntop(substr($packed, 0, 3)."\0").'/24',
+            16 => inet_ntop(substr($packed, 0, 6).str_repeat("\0", 10)).'/48',
+            default => $ip,
+        };
     }
 
     /**
@@ -273,10 +337,13 @@ class GymCheckController extends Controller
             host: $domain->hostname,
             path: (string) parse_url($uri, PHP_URL_PATH),
             userAgent: $request->userAgent(),
-            ja4: $known?->ja4 ?? ($request->header('X-NiceTry-JA4') ?: null),
+            // The client's own fingerprint, which a pass carried by someone else mustn't stand in for; the
+            // session's still counts for verdicts (a resumed TLS connection changes a browser's).
+            ja4: ($request->header('X-NiceTry-JA4') ?: null) ?? $known?->ja4,
             countryCode: $this->described($request, 'X-NiceTry-Country'),
             asn: is_numeric($asn) ? (int) $asn : null,
             tag: $this->described($request, 'X-NiceTry-Tag'),
+            knownJa4: $known?->ja4,
         );
     }
 

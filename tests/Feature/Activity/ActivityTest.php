@@ -204,6 +204,20 @@ test('the activity log can be narrowed to one network', function () {
         ->assertDontSee('/from-comcast');
 });
 
+test('the activity log can be narrowed to an IP range', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+    EdgeRequest::factory()->for($domain)->create(['client_ip' => '58.187.123.9', 'path' => '/from-the-range']);
+    EdgeRequest::factory()->for($domain)->create(['client_ip' => '58.187.124.9', 'path' => '/from-next-door']);
+
+    $this->actingAs($user);
+
+    Livewire::test('pages::activity.index')
+        ->set('search', "ip = '58.187.123.0/24'")
+        ->assertSee('/from-the-range')
+        ->assertDontSee('/from-next-door');
+});
+
 test('the activity log can be narrowed to one country', function () {
     $user = User::factory()->create();
     $domain = Domain::factory()->for($user->currentTeam)->create();

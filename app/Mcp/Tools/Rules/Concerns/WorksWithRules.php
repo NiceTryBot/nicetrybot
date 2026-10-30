@@ -84,7 +84,7 @@ trait WorksWithRules
             return null;
         }
 
-        if (! app(ApiContext::class)->token()->canOnTeam(ApiAbility::ManageGym)) {
+        if (! app(ApiContext::class)->token()->canOnTeam(ApiAbility::ManageGym, $this->team())) {
             return ['linked' => false, 'reason' => __('The rule was saved, but not sent to a gym: this token can\'t change gyms. It needs the "Create and change gyms" ability, and its user the team permission to manage the gym.')];
         }
 

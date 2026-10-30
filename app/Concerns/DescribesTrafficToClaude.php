@@ -61,7 +61,7 @@ trait DescribesTrafficToClaude
             - method: {$methods}.
             - network.kind: 'hosting' for cloud and datacenter networks (AWS, Google Cloud, DigitalOcean, OVH…), 'unknown' for everything else, like home and mobile ISPs.
             - country: a two-letter ISO code in capitals, like 'US', 'CN', 'RU'.
-            - client: 'spoofed' for clients that aren't the browser they claim to be (a user agent its TLS handshake or client hints contradict), 'outdated' for a Chrome or Firefox many versions behind the one people run now, 'corporate' for clients behind a corporate security gateway (Zscaler, Netskope, iboss, Cisco Umbrella). Only =, != and IN; a client can be several at once, so "spoofed and outdated" is client = 'spoofed' AND client = 'outdated'.
+            - client: 'spoofed' for clients that aren't the browser they claim to be (a user agent its TLS handshake or client hints contradict), 'outdated' for a Chrome or Firefox many versions behind the one people run now, 'corporate' for clients behind a corporate security gateway (Zscaler, Netskope, iboss, Cisco Umbrella), 'hopped' for a request that carries on a visit another IP started on the same site within the hour (the same claim, order or account record in a path like /sign/{form}/{claim}/…), as rotating proxies do. Only =, != and IN; a client can be several at once, so "spoofed and outdated" is client = 'spoofed' AND client = 'outdated'.
             - ip: one address, or a CIDR range like '66.249.64.0/19', with =, != or IN.
             - status: the HTTP status. A class like 4xx is status >= 400 AND status < 500; "errors" means status >= 400.
             - duration: milliseconds. "Slow" with no number means duration > 1000.

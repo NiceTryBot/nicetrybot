@@ -3,7 +3,8 @@
 # nicetry-capture module (nicetry_capture for response captures, nicetry_gym for the Bot gym hand-off,
 # nicetry_headers for per-domain Server headers, nicetry_ja4h for header fingerprints, nicetry_tail
 # for live tail, nicetry_origins for routing each domain to its origin, nicetry_php_guard for refusing
-# PHP's session upload progress field).
+# PHP's session upload progress field, nicetry_guard for proxy loops and dot-segment paths, the
+# nicetry_origin transport that only dials public addresses, and nicetry_ask for on-demand TLS).
 # Run on the edge node (arm64) from this folder. Then validate with the env loaded and swap the binary:
 #
 #   sudo bash -c 'set -a; . /etc/caddy/nicetry.env; set +a; ./caddy-nicetry validate --config Caddyfile --adapter caddyfile'
