@@ -127,6 +127,8 @@ transforms:
         if log.request_body != null { .request_body = log.request_body }
         if log.request_bytes != null { .request_bytes = log.request_bytes }
         if log.signals != null { .signals = log.signals }
+        # Flag Watch: the flags (team patterns) found in the response, [{id, value}].
+        if log.flags != null { .flags = log.flags }
       }
 
       # Someone is watching this host live (nicetry_tail); in bucket mode this routes the line to the

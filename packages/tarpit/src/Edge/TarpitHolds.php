@@ -18,6 +18,12 @@ use NiceTry\Tarpit\Models\TarpitHold;
 class TarpitHolds implements EdgeLineAddon
 {
     /**
+     * The most tries tarpit_holds.try can hold: Postgres has no unsigned smallint. A client past it stays
+     * there, because one value the column refuses would stop the whole import.
+     */
+    private const int MAX_TRY = 32767;
+
+    /**
      * @param  array<string, mixed>  $line
      * @return Hold|null
      */
@@ -37,7 +43,7 @@ class TarpitHolds implements EdgeLineAddon
             'tarpit_id' => $tarpitId,
             'reason' => (TarpitReason::fromSlug(is_string($line['tarpit_why'] ?? null) ? $line['tarpit_why'] : null) ?? TarpitReason::Client)->value,
             'outcome' => $outcome->value,
-            'try' => $try === false ? 1 : min($try, 65535),
+            'try' => $try === false ? 1 : min($try, self::MAX_TRY),
             'held_ms' => $heldMs === false ? 0 : min($heldMs, 4_294_967_295),
         ];
     }

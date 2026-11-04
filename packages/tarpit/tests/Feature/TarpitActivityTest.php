@@ -57,6 +57,20 @@ test('what a tarpit did is kept beside the request, only when the tarpit is the 
         ->and($hold->edgeRequest->path)->toBe('/phpmyadmin/');
 });
 
+test('a client past the most tries the column can hold still imports, at that most', function () {
+    Storage::fake('edge-logs');
+    $domain = Domain::factory()->verified()->enforcing()->create(['hostname' => 'shop.example']);
+    $tarpit = Tarpit::factory()->for($domain->team)->create();
+
+    Storage::disk('edge-logs')->put('raw/dt=2026-10-27/hh=21/node-1.ndjson.gz', gzencode(json_encode(
+        tarpitLogLine(['tarpit' => $tarpit->id, 'tarpit_why' => 'rule', 'tarpit_try' => 32768, 'tarpit_ms' => 0, 'tarpit_outcome' => 'full']),
+    )));
+
+    app(ImportEdgeLogFile::class)->handle('raw/dt=2026-10-27/hh=21/node-1.ndjson.gz');
+
+    expect(TarpitHold::sole()->try)->toBe(32767);
+});
+
 test('Activity shows Tarpit in place of Passed, and beside In the gym when a routine took the request after', function () {
     $user = User::factory()->create();
     $domain = Domain::factory()->for($user->currentTeam)->verified()->enforcing()->create();

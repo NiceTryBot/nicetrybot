@@ -29,6 +29,18 @@ if [ "$(id -u)" = 0 ]; then
     mkdir -p "$dir"
     [ "$(stat -c %u "$dir")" = "$(id -u caddy)" ] || chown -R caddy:caddy "$dir"
   done
+  # The Blackhole add-on's agent, while the stack gives this container NET_ADMIN (compose.addons.yml).
+  # Root keeps it for the agent alone: su-exec drops it for Caddy. Its table lives in this container's
+  # own network namespace, where clients still have their own addresses. It answers 404 and stays idle
+  # without the add-on, and if it stops, it's started again.
+  if [ "${1:-run}" = run ] && [ "${NICETRY_BLACKHOLE:-off}" = on ]; then
+    (
+      while :; do
+        nicetry-blackhole run || true
+        sleep 5
+      done
+    ) &
+  fi
   exec su-exec caddy "$0" "${1:-run}"
 fi
 

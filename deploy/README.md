@@ -111,6 +111,7 @@ Everything is in `.env` next to `compose.yml`; `.env.example` explains each key.
 | `COMPOSE_PROFILES` | Which data stores run here: `postgres,valkey` by default. |
 | `APP_KEY`, `DB_*`, `REDIS_*`, `CACHE_STORE`, `QUEUE_CONNECTION`, `SESSION_DRIVER`, `FILESYSTEM_DISK`, `AWS_*`, `MAIL_*` | The usual Laravel settings. Any other Laravel or `PHP_*` setting can be added too. |
 | `NICETRY_VERSION` | The release to run, without the v (`1.2.0` for v1.2.0; also the images' tag), or `latest`. |
+| `NICETRY_BLACKHOLE` | With add-ons, `on` (the default) runs the Blackhole add-on's agent in the edge's container, which gets `NET_ADMIN` for its own network namespace. It sits idle without the add-on. `off` stops it. |
 | `NICETRY_ADDONS`, `NICETRY_COMPOSER_TOKEN` | Add-ons from the marketplace, built into the app's image here (see [Add-ons](#add-ons)). |
 
 After editing `.env`, apply it with `nicetrybot apply` (or `docker compose up -d`).

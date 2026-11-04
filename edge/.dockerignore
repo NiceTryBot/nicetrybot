@@ -1,4 +1,4 @@
-# The images need caddy/nicetry-capture and deploy/ only.
+# The images need caddy/nicetry-capture, blackhole/ and deploy/ only.
 .git
 *.env
 caddy/caddy-nicetry

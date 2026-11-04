@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/traffic-map",
+    "description": "Traffic Map: a live treemap of your edge traffic, grouped by domain, team, bot tag, country, path or client profile, sized by volume and coloured by suspect share, as a view mode on Activity and a page of its own.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\TrafficMap\\": "src/",
+            "NiceTry\\TrafficMap\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Traffic Map",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\TrafficMap\\TrafficMapServiceProvider"
+            ]
+        }
+    }
+}

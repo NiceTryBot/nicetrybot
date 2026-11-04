@@ -21,10 +21,13 @@
         "livewire/blaze": "^1.0",
         "livewire/flux": "^2.13.1",
         "livewire/livewire": "^4.1",
+        "nicetry/dynamic-subdomains": "^1.0",
         "nicetry/lockdown": "^1.0",
         "nicetry/privacy-mode": "^1.0",
+        "nicetry/rewrites": "^1.0",
         "nicetry/rule-packs": "^1.0",
         "nicetry/tarpit": "^1.0",
+        "nicetry/traffic-map": "^1.0",
         "nicetry/transfer": "^1.0"
     },
     "require-dev": {

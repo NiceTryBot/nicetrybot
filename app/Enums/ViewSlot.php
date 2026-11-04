@@ -72,4 +72,25 @@ enum ViewSlot: string
      * that do something with its clients. Its views get the $team and the $rule.
      */
     case RulePanels = 'rule-panels';
+
+    /**
+     * The Activity page's list, in place of the request list, when its Map view is picked: a view of
+     * the filtered traffic. Its views get the $team, the $period, the filtered $domainId, the parsed
+     * search $where and the $dimension picked.
+     */
+    case ActivityMap = 'activity-map';
+
+    /**
+     * The Activity page's right-click menu on a client, after the core's items: menu items. Its views
+     * get the $team, and draw in the menu's Alpine scope, with the client's kind (ip or ja4), value and,
+     * for an IP, its asn if known.
+     * The menu is hidden until opened, so what an item opens goes in ActivityModals.
+     */
+    case ActivityClientMenu = 'activity-client-menu';
+
+    /**
+     * The end of the Activity page, after its own modals: modals, and whatever else its menu items
+     * open. Its views get the $team.
+     */
+    case ActivityModals = 'activity-modals';
 }

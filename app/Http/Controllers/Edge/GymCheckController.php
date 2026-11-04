@@ -12,6 +12,7 @@ use App\Enums\GymExit;
 use App\Enums\GymPassState;
 use App\Enums\GymSessionStatus;
 use App\Enums\ProtectionMode;
+use App\Gym\GymCheckHandlers;
 use App\Gym\GymPipeline;
 use App\Gym\GymVisit;
 use App\Http\Controllers\Controller;
@@ -74,9 +75,15 @@ class GymCheckController extends Controller
      * client too (language, place, network, edge tag) and names the rules it saw the request match
      * (X-NiceTry-Rules). Those that truly match reach their verdicts here, before routines are matched,
      * so a rule's gym takes the client in on the very request that earned the verdict.
+     *
+     * Add-ons answer first (GymCheckHandlers), on any domain: a visitor carrying one's own cookie is its.
      */
-    public function __invoke(Request $request, EnterGym $enterGym): Response
+    public function __invoke(Request $request, EnterGym $enterGym, GymCheckHandlers $handlers): Response
     {
+        if (($answer = $handlers->answer($request)) !== null) {
+            return $answer;
+        }
+
         $domain = $this->enforcingDomain(Str::lower((string) $request->header('X-NiceTry-Host')));
 
         if ($domain === null) {

@@ -48,6 +48,7 @@ Redis settings first. Anything else runs as given, e.g. `docker compose exec edg
 | `NICETRY_BLOCK_MULTIPART` | `off` | `on` refuses every multipart upload with nginx's 403 (bot_tag `php_multipart`): the emergency switch for a PHP upload CVE. |
 | `NICETRY_ALLOW_PRIVATE_ORIGINS` | `false` | `true` lets sites' origins be on a private network (10.x, 192.168.x, a container's name). Off, the edge only connects to origins on public addresses, so nobody who can add a domain can make it reach the cloud's metadata service or the stack's other containers (they get nginx's 502). Set the app's to the same value. |
 | `NICETRY_DBIP` | `on` | `off` never fetches DB-IP. |
+| `NICETRY_BLACKHOLE` | `off` | `on` runs the Blackhole add-on's agent (`nicetry-blackhole`) beside Caddy; it needs `cap_add: [NET_ADMIN]`. It keeps an nftables table, `inet nicetry_blackhole`, in this container's network namespace, and sits idle until the add-on answers. `docker compose exec edge nicetry-blackhole flush` removes the table in an emergency. |
 | `NICETRY_DBIP_WAIT` | `300` | How many seconds a start waits for the first DB-IP download before Caddy starts without it. |
 | `NICETRY_DBIP_URL` | `https://download.db-ip.com/free` | Where `dbip-fetch` looks for `dbip-{city,asn}-lite-YYYY-MM.mmdb.gz`, e.g. a mirror. |
 | `NICETRY_DBIP_MAX_AGE` | `35` | Days before the files are fetched again. |

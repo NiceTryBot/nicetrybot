@@ -34,6 +34,27 @@
 #   nicetrybot domains mode HOST off|observe|enforce
 #   nicetrybot rules [ID]          the team's rules; rules remove ID deletes one
 #   nicetrybot gyms                the team's gyms; gyms remove ID deletes one
+#   nicetrybot activity --ask="wordpress probes over the last 36 hours"
+#                                  a chart of the requests a question asks for, then the newest of them
+#                                  (Claude writes the search with your Anthropic key from Settings → AI);
+#                                  --where=SEARCH searches in the rule language instead, and --period=36h,
+#                                  --interval=1h, --limit=10 and --page=1 pick what's shown
+#   nicetrybot activity --saved="speed audit"
+#                                  the same for a search saved on the Activity page, by its name (or
+#                                  part of it); --saved on its own lists them
+#   nicetrybot farms --saved="acme public completions" --period=7d
+#                                  the bot farms behind a search (or --ask=…, --where=…): every client held
+#                                  against your trusted known faces, each farm with its tells and clients;
+#                                  --control=contacts,users picks the buckets, --min-ips=5 and
+#                                  --max-control=0.5 (percent) tune it, --ips prints IP, farm and reasons
+#                                  a line, --save (or --save-as=NAME) keeps them for farm = 'NAME' searches
+#   nicetrybot farms list | show NAME [--ips] | delete NAME
+#                                  the saved farms
+#   nicetrybot known-faces         the buckets of known faces, with their trust and size
+#   nicetrybot known-faces trust BUCKET trusted|probably-clean|watch|fraud
+#   nicetrybot known-faces import FILE --bucket=NAME [--trust=LEVEL] [--host=HOSTNAME]
+#                                  import fingerprints you hold (JSON objects: external_id, seen_at, ip,
+#                                  screen_width, viewport_width, cpu_cores…), 250 a call
 #   nicetrybot tools               every tool the token may use, which any of these call
 #   nicetrybot call TOOL [key=value…]  call one, like: nicetrybot call query-traffic group_by=country
 #
@@ -56,6 +77,9 @@
 #   --team=SLUG    the team to work on: on a remote with a token for all teams, for this command only;
 #                  on this server, the first administrator's when left out
 #   --json         print the app's answer as JSON
+#   --private      for a shared screen (activity, farms): the team's domains as their privacy-mode stand-ins
+#                  (hidden.domain without the add-on), the words in Settings → Privacy hidden, IPs as
+#                  193.148.x.x, and the panel as nicetrybot.edge
 #
 # The stack lives in /opt/nicetrybot, or NICETRY_DIR (set in /etc/default/nicetrybot by the installer
 # when it was put somewhere else). Each update keeps what it replaced in <dir>/.updates and the
@@ -1017,6 +1041,8 @@ remote_opt=
 use_local=false
 team_opt=
 json_out=false
+private_out=false
+privacy_map='{}'
 app_remote=
 app_team=
 
@@ -1078,7 +1104,9 @@ resolve_app_target() {
 # Who the commands act as, on stderr and on a terminal only, so a change never lands somewhere unexpected.
 say_target() {
   [[ -t 2 ]] || return 0
-  if [[ -n $app_remote ]]; then
+  if [[ $private_out == true ]]; then
+    printf '%s→ nicetrybot.edge%s\n' "$c_dim" "$c_reset" >&2
+  elif [[ -n $app_remote ]]; then
     local team
     team=$(remote_team "$app_remote")
     [[ -n $team_opt ]] && team="team $team_opt"
@@ -1544,6 +1572,459 @@ cmd_listed() {
   esac
 }
 
+# Columns of counts (one a line, oldest first), eight rows tall in eighths of a block and as wide as
+# the terminal, with FIRST and LAST under the ends. Neighbouring counts are added together when there
+# are more than fit.
+draw_chart() {
+  local first=$1 last=$2 width=80
+  [[ -t 1 ]] && width=$(tput cols 2>/dev/null || echo 80)
+  awk -v width="$width" -v first="$first" -v last="$last" -v bar="$c_coral" -v dim="$c_dim" -v reset="$c_reset" '
+    function commas(n,   s, out) {
+      s = sprintf("%d", n); out = ""
+      while (length(s) > 3) { out = "," substr(s, length(s) - 2) out; s = substr(s, 1, length(s) - 3) }
+      return s out
+    }
+    { value[++n] = $1 + 0; total += $1 }
+    END {
+      if (n == 0) exit
+      gutter = length(commas(total)) + 2
+      room = width - gutter - 1
+      per = 1
+      while (n / per > room) per++
+      for (i = 1; i <= n; i += per) {
+        sum = 0
+        for (j = i; j < i + per && j <= n; j++) sum += value[j]
+        col[++cols] = sum
+        if (sum > max) max = sum
+      }
+      fit = int(room / cols)
+      if (fit >= 3) { wide = 2; gap = 1 } else if (fit == 2) { wide = 1; gap = 1 } else { wide = 1; gap = 0 }
+      split("▁ ▂ ▃ ▄ ▅ ▆ ▇ █", block, " ")
+      rows = 8
+      for (c = 1; c <= cols; c++) {
+        eighths[c] = max == 0 ? 0 : int(col[c] / max * rows * 8 + 0.5)
+        if (col[c] > 0 && eighths[c] == 0) eighths[c] = 1
+      }
+      for (r = rows; r >= 1; r--) {
+        printf "%s%" (gutter - 2) "s %s%s%s", dim, (r == rows ? commas(max) : ""), (r == rows ? "┤" : "│"), reset, bar
+        for (c = 1; c <= cols; c++) {
+          left = eighths[c] - (r - 1) * 8
+          cell = left >= 8 ? block[8] : (left > 0 ? block[left] : " ")
+          printf "%s%s", (wide == 2 ? cell cell : cell), (gap ? " " : "")
+        }
+        printf "%s\n", reset
+      }
+      plot = cols * (wide + gap)
+      printf "%s%" (gutter - 2) "s └", dim, "0"
+      for (i = 0; i < plot; i++) printf "─"
+      pad = plot - length(first) - length(last)
+      if (pad < 1) pad = 1
+      printf "\n%" gutter "s%s%" pad "s%s%s\n", "", first, "", last, reset
+    }'
+}
+
+# Redacts an answer for a shared screen (--private), in every string: the hosts privacy mode hides
+# (privacy_map, from get-privacy-map) as their stand-ins, its hidden words as theirs, and IPs to their
+# first two octets (193.148.x.x, or 2001:db8:x:x), as the panel's privacy mode does. A request's host
+# with no stand-in is hidden.domain, and the Activity link is on nicetrybot.edge without its search.
+redact_jq='
+  def escaped: gsub("(?<c>[.*+?^${}()|\\[\\]\\\\/])"; "\\\(.c)");
+  ($privacy.hostnames // {} | with_entries(.key |= ascii_downcase)) as $hosts
+  | ($privacy.words // {} | with_entries(.key |= ascii_downcase)) as $words
+  | ($hosts | keys | sort_by(-length) | map(escaped) | join("|")) as $hostPattern
+  | ($words | keys | sort_by(-length) | map(escaped) | join("|")) as $wordPattern
+  | [$hosts[]] as $standIns
+  | def hide:
+      (if $hostPattern == "" then . else gsub("(?<![a-z0-9-])(?<host>" + $hostPattern + ")(?![a-z0-9-])"; $hosts[.host | ascii_downcase]; "i") end)
+      | (if $wordPattern == "" then . else gsub("(?<word>" + $wordPattern + ")"; $words[.word | ascii_downcase]; "i") end)
+      | gsub("(?<![\\w.])(?<keep>\\d{1,3}\\.\\d{1,3})\\.\\d{1,3}\\.\\d{1,3}(?!\\w|\\.\\d)"; "\(.keep).x.x")
+      | gsub("(?<![\\w:])(?<keep>[0-9a-fA-F]{1,4}:[0-9a-fA-F]{0,4}):(?:[0-9a-fA-F]{0,4}:){1,6}[0-9a-fA-F]{0,4}(?![\\w:])"; "\(.keep):x:x");
+    walk(if type == "string" then hide elif type == "object" and has("activity_url") then .activity_url |= (sub("^https?://[^/?#]+"; "https://nicetrybot.edge") | sub("[?#].*$"; "")) else . end)
+    | if type == "object" and has("requests") then .requests |= map(.host |= (. as $host | if any($standIns[]; . == $host) then . else "hidden.domain" end)) else . end'
+
+# An answer as it may be shown: redacted with --private, as it came otherwise.
+redact() {
+  if [[ $private_out == true ]]; then jq -c --argjson privacy "$privacy_map" "$redact_jq" <<<"$1"; else printf '%s\n' "$1"; fi
+}
+
+# The saved search a name picks, as JSON: the one called that (any case), or else the only one with it
+# in its name.
+find_saved_search() {
+  local all match
+  all=$(mcp_tool list-saved-searches) || exit 1
+  match=$(jq -c --arg name "$1" '.saved_searches | (map(select(.name | ascii_downcase == ($name | ascii_downcase)))
+    | if length > 0 then . else empty end) // map(select(.name | ascii_downcase | contains($name | ascii_downcase)))' <<<"$all")
+  case $(jq length <<<"$match") in
+    0) fail "No saved search called \"$1\": $(cmd "nicetrybot activity --saved") lists them" ;;
+    1) ;;
+    *) fail "\"$1\" is in more than one saved search's name: $(redact "$match" | jq -r 'map(.name) | join(", ")')" ;;
+  esac
+  jq -c '.[0]' <<<"$match"
+}
+
+# activity [QUESTION] [--ask=QUESTION | --where=SEARCH] [--period=P] [--interval=I] [--limit=N] [--page=N]:
+# the requests a question or a search asks for, as a chart over the period and then a page of them,
+# newest first. Claude turns a question into the search, with the user's own Anthropic key.
+cmd_activity() {
+  local ask='' where='' saved='' list_saved=false saved_name='' period='' interval='' limit=10 page=1 translated='null' note='' counts listed total pages format
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --ask=*) ask=${1#*=} ;;
+      --saved=*) saved=${1#*=} ;;
+      --saved) list_saved=true ;;
+      --where=*) where=${1#*=} ;;
+      --period=*) period=${1#*=} ;;
+      --interval=*) interval=${1#*=} ;;
+      --limit=*) limit=${1#*=} ;;
+      --page=*) page=${1#*=} ;;
+      -*) fail "Unknown option for activity: $1 ($(cmd "nicetrybot help"))" ;;
+      *) ask=${ask:+$ask }$1 ;;
+    esac
+    shift
+  done
+  [[ $(((${#ask} > 0) + (${#where} > 0) + (${#saved} > 0))) -gt 1 ]] && fail "Ask a question, give a search with --where or pick one with --saved: just one."
+  [[ $limit =~ ^[1-9][0-9]*$ ]] || fail "--limit is a number of requests, like --limit=25"
+  [[ $page =~ ^[1-9][0-9]*$ ]] || fail "--page is a page number, like --page=2"
+  app_command
+  # Without the privacy-mode add-on there are no stand-ins: every domain shows as hidden.domain.
+  if [[ $private_out == true ]]; then
+    privacy_map=$(mcp_tool get-privacy-map 2>/dev/null) || privacy_map='{}'
+  fi
+
+  if [[ $list_saved == true ]]; then
+    saved=$(mcp_tool list-saved-searches) || exit 1
+    if [[ $json_out == true ]]; then redact "$saved" | jq .saved_searches; return; fi
+    saved=$(redact "$saved")
+    if [[ $(jq '.saved_searches | length' <<<"$saved") == 0 ]]; then
+      echo "No saved searches yet: save one on the Activity page."
+      return
+    fi
+    jq -r --arg dim "$c_dim" --arg off "$c_reset" '"HEADER:NAME\tPERIOD\tSEARCH",
+      (.saved_searches[] | [.name, .period, $dim + (if .where == "" then "every request" else .where | gsub("\\s*\\n\\s*"; " ") | if length > 70 then .[:69] + "…" else . end end) + $off] | @tsv)' <<<"$saved" | table
+    echo
+    next_step "$(cmd "nicetrybot activity --saved=\"NAME\"")"
+    return
+  fi
+
+  if [[ -n $saved ]]; then
+    local found
+    found=$(find_saved_search "$saved") || exit 1
+    saved_name=$(redact "$(jq -c '.name' <<<"$found")" | jq -r .)
+    where=$(jq -r '.where' <<<"$found")
+    [[ -n $period ]] || period=$(jq -r '.period' <<<"$found")
+    [[ -n $interval ]] || interval=$(jq -r '.interval // empty' <<<"$found")
+  fi
+
+  if [[ -n $ask ]]; then
+    translated=$(mcp_tool translate-question "$(jq -nc --arg question "$ask" '{question: $question}')") || exit 1
+    where=$(jq -r .where <<<"$translated")
+    [[ -n $period ]] || period=$(jq -r '.period // empty' <<<"$translated")
+  fi
+  period=${period:-24h}
+
+  counts=$(mcp_tool query-traffic "$(jq -nc --arg where "$where" --arg period "$period" --arg interval "$interval" \
+    '{where: $where, period: $period, group_by: "time"} + (if $interval == "" then {} else {interval: $interval} end)')") || exit 1
+  listed=$(mcp_tool list-requests "$(jq -nc --arg where "$where" --arg period "$period" --argjson limit "$limit" --argjson page "$page" \
+    '{where: $where, period: $period, limit: $limit, page: $page}')") || exit 1
+  [[ $translated == null ]] || translated=$(redact "$translated")
+  counts=$(redact "$counts") listed=$(redact "$listed")
+  note=$(jq -r '.note // empty' <<<"$translated")
+
+  if [[ $json_out == true ]]; then
+    jq -n --argjson translated "$translated" --argjson counts "$counts" --argjson listed "$listed" \
+      --arg saved "$saved_name" '{saved: (if $saved == "" then null else $saved end), question: $translated.question, note: $translated.note, where: $counts.where, period: $counts.period, interval: $counts.interval,
+        totals: $counts.totals, buckets: $counts.buckets, page: $listed.page, limit: $listed.limit, has_more: $listed.has_more,
+        requests: $listed.requests, activity_url: $counts.activity_url}'
+    return
+  fi
+
+  [[ -n $saved_name ]] && echo "${c_bold}Saved:${c_reset} $saved_name"
+  echo "${c_bold}Search:${c_reset} $(jq -r 'if .where == "" then "every request" else .where | gsub("\\s*\\n\\s*"; " ") end' <<<"$counts")"
+  [[ -n $note ]] && echo "${c_yellow}$note${c_reset}"
+  total=$(jq -r .totals.requests <<<"$counts")
+  jq -r 'def commas: tostring | if length > 3 then (.[:-3] | commas) + "," + .[-3:] else . end;
+    "\(.totals.requests | commas) requests from \(.totals.unique_ips | commas) IPs · \(.period_label), per \(.interval)"' <<<"$counts"
+  if [[ $total == 0 ]]; then
+    echo "${c_dim}Nothing matched.${c_reset}"
+    return
+  fi
+
+  echo
+  case $(jq -r .interval <<<"$counts") in
+    *s) format='%H:%M:%S' ;;
+    *d | *w) format='%b %d' ;;
+    *) format='%b %d %H:%M' ;;
+  esac
+  jq -r '.buckets[].requests' <<<"$counts" | draw_chart \
+    "$(jq -r --arg format "$format" '.buckets[0].start | fromdateiso8601 | strflocaltime($format)' <<<"$counts")" \
+    "$(jq -r --arg format "$format" '.buckets[-1].start | fromdateiso8601 | strflocaltime($format)' <<<"$counts")"
+
+  echo
+  if [[ $(jq '.requests | length' <<<"$listed") == 0 ]]; then
+    echo "${c_dim}No requests on page $page.${c_reset}"
+  else
+    jq -r --arg red "$c_red" --arg yellow "$c_yellow" --arg green "$c_green" --arg off "$c_reset" '
+      "HEADER:TIME\tIP\tCOUNTRY\tSTATUS\tACTION\tREQUEST",
+      (.requests[] | [
+        (.occurred_at | fromdateiso8601 | strflocaltime("%b %d %H:%M:%S")),
+        .ip,
+        (.country // "-"),
+        (.status | tostring),
+        ((if .action == "blocked" then $red elif .action == "diverted" then $yellow elif .action == "passed" then $green else "" end) + .action + $off),
+        (.method + " " + .host + ((.path // "") | if length > 80 then .[:79] + "…" else . end))
+      ] | @tsv)' <<<"$listed" | table
+  fi
+  pages=$(((total + limit - 1) / limit))
+  echo
+  if [[ $(jq -r .has_more <<<"$listed") == true ]]; then
+    echo "${c_dim}Page $page of $pages:${c_reset} $(cmd "--page=$((page + 1))") for the next $limit"
+  else
+    echo "${c_dim}Page $page of $pages${c_reset}"
+  fi
+  echo "Open in Activity: $(link_to "$(jq -r .activity_url <<<"$counts")")"
+}
+
+# A share as a percentage, in jq: 0.3214 is 32.1%.
+percent_jq='def pct: (. * 1000 | round / 10 | tostring) + "%"; def commas: tostring | if length > 3 then (.[:-3] | commas) + "," + .[-3:] else . end;'
+
+# farms [QUESTION] [--ask=… | --where=… | --saved=NAME] [--period=P] [--control=BUCKETS] [--min-ips=N]
+# [--max-control=PERCENT] [--save | --save-as=NAME] [--ips]: the bot farms behind a search, each client
+# held against the known faces the team trusts. farms list|show NAME|delete NAME: the saved ones.
+cmd_farms() {
+  case ${1:-} in
+    list | ls) shift; farms_list "$@"; return ;;
+    show) shift; farms_show "$@"; return ;;
+    delete | remove | rm) shift; farms_delete "$@"; return ;;
+    help) usage; return ;;
+  esac
+  local ask='' where='' saved='' saved_name='' period='' control='' min_ips='' max_control='' save=false save_as='' ips=false translated='null' found args result
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --ask=*) ask=${1#*=} ;;
+      --saved=*) saved=${1#*=} ;;
+      --where=*) where=${1#*=} ;;
+      --period=*) period=${1#*=} ;;
+      --control=*) control=${1#*=} ;;
+      --min-ips=*) min_ips=${1#*=} ;;
+      --max-control=*) max_control=${1#*=} ;;
+      --save) save=true ;;
+      --save-as=*) save_as=${1#*=} ;;
+      --ips) ips=true ;;
+      -*) fail "Unknown option for farms: $1 ($(cmd "nicetrybot help"))" ;;
+      *) ask=${ask:+$ask }$1 ;;
+    esac
+    shift
+  done
+  [[ $(((${#ask} > 0) + (${#where} > 0) + (${#saved} > 0))) -gt 1 ]] && fail "Ask a question, give a search with --where or pick one with --saved: just one."
+  [[ -z $min_ips || $min_ips =~ ^[1-9][0-9]*$ ]] || fail "--min-ips is a number of clients, like --min-ips=10"
+  [[ -z $max_control || $max_control =~ ^[0-9]+(\.[0-9]+)?$ ]] || fail "--max-control is a percentage of known faces, like --max-control=0.5"
+  app_command
+  if [[ $private_out == true ]]; then
+    privacy_map=$(mcp_tool get-privacy-map 2>/dev/null) || privacy_map='{}'
+  fi
+
+  if [[ -n $saved ]]; then
+    found=$(find_saved_search "$saved") || exit 1
+    saved_name=$(redact "$(jq -c '.name' <<<"$found")" | jq -r .)
+    where=$(jq -r '.where' <<<"$found")
+    [[ -n $period ]] || period=$(jq -r '.period' <<<"$found")
+  fi
+  if [[ -n $ask ]]; then
+    translated=$(mcp_tool translate-question "$(jq -nc --arg question "$ask" '{question: $question}')") || exit 1
+    where=$(jq -r .where <<<"$translated")
+    [[ -n $period ]] || period=$(jq -r '.period // empty' <<<"$translated")
+  fi
+  period=${period:-24h}
+
+  args=$(jq -nc --arg where "$where" --arg period "$period" --arg control "$control" --arg min "$min_ips" --arg max "$max_control" \
+    --arg save_as "$save_as" --argjson save "$save" --argjson limit "$([[ $ips == true ]] && echo 20000 || echo 3)" '
+    {where: $where, period: $period, ips_limit: $limit}
+    + (if $control == "" then {} else {control: ($control | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))} end)
+    + (if $min == "" then {} else {min_ips: ($min | tonumber)} end)
+    + (if $max == "" then {} else {max_control: (($max | tonumber) / 100)} end)
+    + (if $save_as != "" then {save_as: $save_as} elif $save then {save: true} else {} end)')
+  [[ $json_out == true || $ips == true ]] || echo "${c_dim}Holding every client against your known faces…${c_reset}" >&2
+  result=$(mcp_tool find-farms "$args") || exit 1
+  result=$(redact "$result")
+
+  if [[ $json_out == true ]]; then
+    jq --arg saved "$saved_name" '{saved: (if $saved == "" then null else $saved end)} + .' <<<"$result"
+    return
+  fi
+  if [[ $ips == true ]]; then
+    jq -r '.farms[] as $farm | $farm.members[] | [.ip, ($farm.name // "farm-\($farm.rank)"), (.reasons | join("; "))] | @tsv' <<<"$result"
+    return
+  fi
+
+  [[ -n $saved_name ]] && echo "${c_bold}Saved search:${c_reset} $saved_name"
+  echo "${c_bold}Search:${c_reset} $(jq -r 'if .search == "" then "every request" else .search | gsub("\\s*\\n\\s*"; " ") end' <<<"$result")"
+  jq -r --arg dim "$c_dim" --arg off "$c_reset" "$percent_jq"'
+    "\(.target.ips | commas) clients made \(.target.requests | commas) requests · \(.period)",
+    "Held against \(.control.buckets | map(.name + " (" + (.trust | gsub("-"; " ")) + ")") | join(", ")): \(.control.faces | commas) known faces"
+      + (if .target.known_faces > 0 then " · \(.target.known_faces | commas) of the clients are known faces" else "" end),
+    (if .control.pending > 0 then "\($dim)\(.control.pending | commas) known faces are still being matched to the client the edge saw: run it again in a few minutes to count them\($off)" else empty end),
+    (if (.control.not_judged | length) > 0 then "\($dim)Not enough known faces to judge: \(.control.not_judged | join(", "))\($off)" else empty end),
+    (if .target.truncated then "\($dim)The search had more clients than were read: narrow it, or shorten the period.\($off)" else empty end)' <<<"$result"
+
+  if [[ $(jq '.farms | length' <<<"$result") == 0 ]]; then
+    echo
+    echo "No farms: no value at least $(jq -r .min_ips <<<"$result") clients share that your known faces don't."
+    return
+  fi
+
+  echo
+  jq -r --arg dim "$c_dim" --arg off "$c_reset" --arg coral "$c_coral" "$percent_jq"'
+    "HEADER:#\tFARM\tCLIENTS\tREQUESTS\tCONFIRMED\tSEARCH vs KNOWN",
+    (.farms[] | [
+      (.rank | tostring),
+      ((.name // .label) | if length > 56 then .[:55] + "…" else . end),
+      (.ips | commas), (.requests | commas),
+      (if .confirmed > 0 then (.confirmed | commas) else $dim + "-" + $off end),
+      "\(.tells[0].share | pct) vs \(.tells[0].control_share | pct)"
+    ] | @tsv),
+    (["", $dim + "Not in a farm" + $off, (.unassigned.ips | commas), (.unassigned.requests | commas), "", ""] | @tsv)' <<<"$result" | table
+
+  jq -r --arg dim "$c_dim" --arg off "$c_reset" --arg bold "$c_bold" --arg cyan "$c_cyan" "$percent_jq"'
+    .farms[] |
+      "",
+      "\($bold)\(.rank). \(.label)\($off)" + (if .name then "  \($dim)saved as\($off) \(.name)" else "" end),
+      (.tells[] | "   · \(.label | if length > 100 then .[:99] + "…" else . end) \($dim)— \(.farm_share | pct) of the farm, \(.share | pct) of the search, \(.control_share | pct) of known faces\($off)"),
+      (if .suggested_where then "   \($dim)Search:\($off) \($cyan)\(.suggested_where | gsub("\\n"; " "))\($off)" else empty end),
+      "   \($dim)Busiest:\($off) \(.members | map("\(.ip) (\(.requests | commas))") | join(", "))"' <<<"$result"
+  echo
+  if jq -e '.farms[0].name' <<<"$result" >/dev/null; then
+    next_step "$(cmd "nicetrybot activity --where=\"farm = '$(jq -r '.farms[0].name' <<<"$result")'\"") shows a farm's traffic; $(cmd "nicetrybot farms show NAME --ips") lists its clients"
+  else
+    next_step "$(cmd "--ips") lists every farm client with its reasons; $(cmd "--save") (or $(cmd "--save-as=NAME")) keeps the farms, so $(cmd "farm = 'NAME'") searches their traffic"
+  fi
+}
+
+farms_list() {
+  local farms
+  app_command
+  farms=$(mcp_tool list-farms) || exit 1
+  if [[ $json_out == true ]]; then jq .farms <<<"$farms"; return; fi
+  if [[ $(jq '.farms | length' <<<"$farms") == 0 ]]; then
+    echo "No saved farms: find some with $(cmd "nicetrybot farms --saved=\"NAME\" --save")"
+    return
+  fi
+  jq -r --arg dim "$c_dim" --arg off "$c_reset" "$percent_jq"'"HEADER:NAME\tCLIENTS\tREQUESTS\tCONFIRMED\tFOUND\tFIRST TELL",
+    (.farms[] | [.name, (.ips | commas), (.requests | commas), (.confirmed | commas),
+      (.found_at | fromdateiso8601 | strflocaltime("%b %d %H:%M")), $dim + (.label | if length > 60 then .[:59] + "…" else . end) + $off] | @tsv)' <<<"$farms" | table
+}
+
+farms_show() {
+  local name='' ips=false limit=50 farm
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --ips) ips=true ;;
+      --limit=*) limit=${1#*=} ;;
+      -*) fail "Unknown option for farms show: $1" ;;
+      *) name=$1 ;;
+    esac
+    shift
+  done
+  [[ -n $name ]] || fail "nicetrybot farms show NAME (the names: nicetrybot farms list)"
+  [[ $limit =~ ^[1-9][0-9]*$ ]] || fail "--limit is a number of clients, like --limit=500"
+  [[ $ips == true ]] && limit=20000
+  app_command
+  if [[ $private_out == true ]]; then
+    privacy_map=$(mcp_tool get-privacy-map 2>/dev/null) || privacy_map='{}'
+  fi
+  farm=$(mcp_tool get-farm "$(jq -nc --arg name "$name" --argjson limit "$limit" '{name: $name, limit: $limit}')") || exit 1
+  farm=$(redact "$farm")
+  if [[ $json_out == true ]]; then jq . <<<"$farm"; return; fi
+  if [[ $ips == true ]]; then
+    jq -r '.members[] | [.ip, (.requests | tostring), (.reasons | join("; "))] | @tsv' <<<"$farm"
+    return
+  fi
+  jq -r --arg dim "$c_dim" --arg off "$c_reset" --arg bold "$c_bold" --arg cyan "$c_cyan" "$percent_jq"'
+    "\($bold)\(.name)\($off): \(.label)",
+    "\(.ips | commas) clients, \(.requests | commas) requests, \(.confirmed | commas) confirmed fraud · found \(.found_at | fromdateiso8601 | strflocaltime("%b %d %H:%M")) in \(.period)",
+    "\($dim)Search:\($off) \(.search | if . == "" then "every request" else gsub("\\s*\\n\\s*"; " ") end)",
+    "",
+    (.tells[] | "· \(.label) \($dim)— \(.farm_share | pct) of the farm, \(.share | pct) of the search, \(.control_share | pct) of known faces\($off)"),
+    (if .suggested_where then "\($dim)Its traffic:\($off) \($cyan)\(.suggested_where | gsub("\\n"; " "))\($off)" else empty end),
+    ""' <<<"$farm"
+  jq -r '"HEADER:IP\tREQUESTS\tWHY", (.members[] | [.ip, (.requests | tostring), (.reasons | join("; ") | if length > 110 then .[:109] + "…" else . end)] | @tsv)' <<<"$farm" | table
+  if [[ $(jq -r .has_more <<<"$farm") == true ]]; then
+    echo
+    echo "${c_dim}The busiest $limit:${c_reset} $(cmd "--ips") lists them all"
+  fi
+  echo "Open in Activity: $(link_to "$(jq -r .activity_url <<<"$farm")")"
+}
+
+farms_delete() {
+  [[ $# -eq 1 ]] || fail "nicetrybot farms delete NAME"
+  app_command
+  confirm "Delete farm $1${app_remote:+ on $app_remote}?" || fail "Nothing deleted."
+  mcp_tool delete-farm "$(jq -nc --arg name "$1" '{name: $name}')" >/dev/null || exit 1
+  done_ "Deleted farm $1"
+}
+
+# known-faces [list] | trust BUCKET LEVEL | import FILE --bucket=NAME [--trust=LEVEL] [--host=HOSTNAME]
+cmd_known_faces() {
+  local sub=${1:-list}
+  [[ $# -gt 0 ]] && shift
+  case $sub in
+    list | ls) known_faces_list ;;
+    trust)
+      [[ $# -eq 2 ]] || fail "nicetrybot known-faces trust BUCKET trusted|probably-clean|watch|fraud"
+      app_command
+      run_tool set-bucket-trust "$(jq -nc --arg bucket "$1" --arg trust "$2" '{bucket: $bucket, trust: $trust}')"
+      ;;
+    import) known_faces_import "$@" ;;
+    *) fail "nicetrybot known-faces [list | trust BUCKET LEVEL | import FILE --bucket=NAME]" ;;
+  esac
+}
+
+known_faces_list() {
+  local buckets
+  app_command
+  buckets=$(mcp_tool list-known-face-buckets) || exit 1
+  if [[ $json_out == true ]]; then jq .buckets <<<"$buckets"; return; fi
+  if [[ $(jq '.buckets | length' <<<"$buckets") == 0 ]]; then
+    echo "No known faces yet: tag visitors from your app (Remote tagging), or $(cmd "nicetrybot known-faces import FILE --bucket=NAME")"
+    return
+  fi
+  jq -r --arg green "$c_green" --arg red "$c_red" --arg off "$c_reset" "$percent_jq"'"HEADER:BUCKET\tTRUST\tFACES\tWITH TRAITS\tWITH CLIENT\tNEWEST",
+    (.buckets[] | [.name,
+      (if .control then $green elif .trust == "fraud" then $red else "" end) + .trust + $off,
+      (.faces | commas), (.with_traits | commas), (.with_client | commas),
+      (.last_seen_at // "-" | if . == "-" then . else fromdateiso8601 | strflocaltime("%b %d %H:%M") end)] | @tsv)' <<<"$buckets" | table
+  echo
+  next_step "$(cmd "nicetrybot known-faces trust BUCKET probably-clean") makes a bucket a control for $(cmd "nicetrybot farms")"
+}
+
+# Faces from a file of JSON objects (one a line, or one array), 250 a call.
+known_faces_import() {
+  local file='' bucket='' trust='' host='' chunk answer imported=0 skipped=0 queued=0
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --bucket=*) bucket=${1#*=} ;;
+      --trust=*) trust=${1#*=} ;;
+      --host=*) host=${1#*=} ;;
+      -*) fail "Unknown option for known-faces import: $1" ;;
+      *) file=$1 ;;
+    esac
+    shift
+  done
+  [[ -n $file && -n $bucket ]] || fail "nicetrybot known-faces import FILE --bucket=NAME [--trust=LEVEL] [--host=HOSTNAME]"
+  [[ -r $file ]] || fail "Can't read $file"
+  app_command
+  while IFS= read -r chunk; do
+    answer=$(mcp_tool import-known-faces "$(jq -nc --arg bucket "$bucket" --arg trust "$trust" --arg host "$host" --argjson rows "$chunk" \
+      '{bucket: $bucket, rows: $rows} + (if $trust == "" then {} else {trust: $trust} end) + (if $host == "" then {} else {hostname: $host} end)')") || exit 1
+    imported=$((imported + $(jq .imported <<<"$answer"))) skipped=$((skipped + $(jq .skipped <<<"$answer"))) queued=$((queued + $(jq '.queued // 0' <<<"$answer")))
+    printf '\r%s imported, %s skipped' "$imported" "$skipped" >&2
+  done < <(jq -cs 'if length == 1 and (.[0] | type) == "array" then .[0] else . end | _nwise(250)' "$file")
+  echo >&2
+  done_ "Imported $imported faces into $bucket ($skipped skipped)"
+  if [[ $queued -gt 0 ]]; then
+    echo "${c_dim}$queued are being matched to the client the edge saw, in the background: $(cmd "nicetrybot known-faces") counts them as WITH CLIENT${c_reset}"
+  fi
+}
+
 # --- Remotes ------------------------------------------------------------------------------------
 
 # Ask the panel who a token is (whoami, or list-domains on a release before it), on TEAM (a slug) when
@@ -1852,6 +2333,7 @@ for arg in "$@"; do
     --local) use_local=true ;;
     --team=*) team_opt=${arg#*=} ;;
     --json) json_out=true ;;
+    --private) private_out=true ;;
     *) args+=("$arg") ;;
   esac
 done
@@ -1876,6 +2358,9 @@ case $command in
   domains | domain) cmd_domains "$@" ;;
   rules | rule) cmd_listed rules rule "$@" ;;
   gyms | gym) cmd_listed gyms gym "$@" ;;
+  activity) cmd_activity "$@" ;;
+  farms | farm) cmd_farms "$@" ;;
+  known-faces | faces) cmd_known_faces "$@" ;;
   tools) cmd_tools ;;
   call) cmd_call "$@" ;;
   # nicetrybot add domain … / remove domain …, as well as domains add / remove.

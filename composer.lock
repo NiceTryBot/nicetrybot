@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "4eb6c1382e25f1f47c19a1b30ccd0812",
+    "content-hash": "8ea37a51a9e7faf6bf478474c8ee6cb2",
     "packages": [
         {
             "name": "aws/aws-crt-php",
@@ -3670,6 +3670,41 @@
             "time": "2026-07-17T23:02:45+00:00"
         },
         {
+            "name": "nicetry/dynamic-subdomains",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/dynamic-subdomains",
+                "reference": "4d8061e435114376543c4a4c0b224a466f9b6227"
+            },
+            "type": "nicetry-addon",
+            "extra": {
+                "nicetry": {
+                    "name": "Dynamic Subdomains",
+                    "edition": "free"
+                },
+                "laravel": {
+                    "providers": [
+                        "NiceTry\\DynamicSubdomains\\DynamicSubdomainsServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "NiceTry\\DynamicSubdomains\\": "src/",
+                    "NiceTry\\DynamicSubdomains\\Database\\Factories\\": "database/factories/"
+                }
+            },
+            "license": [
+                "Elastic-2.0"
+            ],
+            "description": "Dynamic subdomains: a visit to any name under a domain, like foo.example.com, adds it as a domain of its own, live straight away, whose origin is the domain's with the same name in front (foo.origin.example).",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
             "name": "nicetry/lockdown",
             "version": "1.0.0",
             "dist": {
@@ -3740,6 +3775,41 @@
             }
         },
         {
+            "name": "nicetry/rewrites",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/rewrites",
+                "reference": "8454ac4f6c9640534a0e78dab6799e0a9a347a6d"
+            },
+            "type": "nicetry-addon",
+            "extra": {
+                "nicetry": {
+                    "name": "Rewrites",
+                    "edition": "free"
+                },
+                "laravel": {
+                    "providers": [
+                        "NiceTry\\Rewrites\\RewritesServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "NiceTry\\Rewrites\\": "src/",
+                    "NiceTry\\Rewrites\\Database\\Factories\\": "database/factories/"
+                }
+            },
+            "license": [
+                "Elastic-2.0"
+            ],
+            "description": "Response rewrites: change text in what your origins send, at the edge. Every \"foo\" becomes \"bar\" on every domain of the team, or on one domain, in HTML pages or in any text response.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
             "name": "nicetry/rule-packs",
             "version": "1.0.0",
             "dist": {
@@ -3804,6 +3874,41 @@
                 "Elastic-2.0"
             ],
             "description": "Tarpits: make the worst bots wait. Clients a rule puts in a tarpit, gym no-shows, and clients the edge catches collecting 404s or sending bursts get a free try, then wait longer each request (2 s, 8 s, 24 s… up to 30 s) at the edge, with a cap on how many are held at once.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "nicetry/traffic-map",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/traffic-map",
+                "reference": "c663e5af74ec4ee8f404b5fba879673b3ba4d28f"
+            },
+            "type": "nicetry-addon",
+            "extra": {
+                "nicetry": {
+                    "name": "Traffic Map",
+                    "edition": "free"
+                },
+                "laravel": {
+                    "providers": [
+                        "NiceTry\\TrafficMap\\TrafficMapServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "NiceTry\\TrafficMap\\": "src/",
+                    "NiceTry\\TrafficMap\\Database\\Factories\\": "database/factories/"
+                }
+            },
+            "license": [
+                "Elastic-2.0"
+            ],
+            "description": "Traffic Map: a live treemap of your edge traffic, grouped by domain, team, bot tag, country, path or client profile, sized by volume and coloured by suspect share, as a view mode on Activity and a page of its own.",
             "transport-options": {
                 "symlink": true,
                 "relative": true

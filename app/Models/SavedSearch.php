@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
 
 /**
- * An Activity search a team saved under a name, like "Vesync public forms". It keeps the page's query
+ * An Activity search a team saved under a name, like "Acme public forms". It keeps the page's query
  * string (the WHERE, the question it was asked as, the period and the other filters), so opening it
  * brings the page back as it was.
  *

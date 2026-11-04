@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/dynamic-subdomains",
+    "description": "Dynamic subdomains: a visit to any name under a domain, like foo.example.com, adds it as a domain of its own, live straight away, whose origin is the domain's with the same name in front (foo.origin.example).",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\DynamicSubdomains\\": "src/",
+            "NiceTry\\DynamicSubdomains\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Dynamic Subdomains",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\DynamicSubdomains\\DynamicSubdomainsServiceProvider"
+            ]
+        }
+    }
+}

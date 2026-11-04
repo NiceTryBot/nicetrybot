@@ -65,6 +65,15 @@ services:
         FROM addons
         COPY --chown=www-data:www-data --from=assets /app/public/build ./public/build
 
+  # The Blackhole add-on's agent runs in the edge's container, inside its own network namespace, where
+  # visitors still have their own addresses. NET_ADMIN only reaches that namespace, and Caddy doesn't
+  # keep it. Without the add-on the agent gets a 404 and sits idle; NICETRY_BLACKHOLE=off stops it.
+  edge:
+    cap_add:
+      - NET_ADMIN
+    environment:
+      NICETRY_BLACKHOLE: ${NICETRY_BLACKHOLE:-on}
+
   # The same image; only the app builds it.
   worker:
     <<: *addons-image

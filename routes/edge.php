@@ -9,6 +9,7 @@ use App\Http\Controllers\Edge\ListLiveTailsController;
 use App\Http\Controllers\Edge\ListLockdownsController;
 use App\Http\Controllers\Edge\ListOriginsController;
 use App\Http\Controllers\Edge\ListResponseCapturesController;
+use App\Http\Controllers\Edge\ListRewritesController;
 use App\Http\Controllers\Edge\ListSiteHeadersController;
 use App\Http\Controllers\Edge\ListTarpitsController;
 use App\Http\Controllers\Edge\ResolveOriginController;
@@ -28,5 +29,6 @@ Route::middleware([AuthenticateEdge::class, CompressEdgeFeeds::class])->group(fu
     Route::get('caddy/live-tail', ListLiveTailsController::class)->name('edge.live-tail');
     Route::get('caddy/lockdowns', ListLockdownsController::class)->middleware('cache.headers:no_cache;etag')->name('edge.lockdowns');
     Route::get('caddy/tarpit-feed', ListTarpitsController::class)->middleware('cache.headers:no_cache;etag')->name('edge.tarpits');
+    Route::get('caddy/rewrite-feed', ListRewritesController::class)->middleware('cache.headers:no_cache;etag')->name('edge.rewrites');
     Route::post('caddy/ingest', IngestEdgeLogsController::class)->name('edge.ingest');
 });

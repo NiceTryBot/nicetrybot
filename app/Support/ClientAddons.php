@@ -46,4 +46,23 @@ class ClientAddons
 
         return array_map(fn (string $html) => new HtmlString($html), $cells);
     }
+
+    /**
+     * The IPs any add-on says to strike through, out of a page's.
+     *
+     * @param  list<string>  $ips
+     * @return list<string>
+     */
+    public function struckIps(Team $team, array $ips): array
+    {
+        $struck = [];
+
+        foreach ($ips === [] ? [] : app(AddonSwitchboard::class)->active($this->container->tagged(self::TAG)) as $addon) {
+            if ($addon instanceof ClientStriker) {
+                $struck = [...$struck, ...$addon->struckIps($team, $ips)];
+            }
+        }
+
+        return array_values(array_unique($struck));
+    }
 }

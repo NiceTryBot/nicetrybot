@@ -7,6 +7,7 @@ use App\Data\EdgeRuleEnvironment;
 use App\Data\RuleScript;
 use App\Enums\DomainStatus;
 use App\Enums\ProtectionMode;
+use App\Gym\GymTriggerSources;
 use App\Http\Controllers\Controller;
 use App\Models\Domain;
 use App\Models\EdgeRule;
@@ -41,8 +42,12 @@ class ListGymTriggersController extends Controller
      * verdict there and then. Such a trigger is "limited" (only its clients or rules), and is sent even
      * while nobody holds the verdict. Alongside come what the expressions need: the path categories in
      * the order they're tried, the hosting networks' ASNs, and each domain's other hostnames.
+     *
+     * Such an edge also gets the add-ons' cookie triggers (GymTriggerSources): limited to no client, so it
+     * asks only about requests carrying a gym cookie, or matching one of the trigger's rules, on any
+     * domain, observing or not.
      */
-    public function __invoke(Request $request): JsonResponse
+    public function __invoke(Request $request, GymTriggerSources $triggerSources): JsonResponse
     {
         $judgesRules = in_array(self::RULES_FEATURE, array_map('trim', explode(',', (string) $request->header('X-NiceTry-Features'))), true);
 
@@ -94,8 +99,18 @@ class ListGymTriggersController extends Controller
             return response()->json(['triggers' => $triggers]);
         }
 
+        $cookieTriggers = array_map(fn (array $trigger) => [
+            'id' => 0,
+            'hosts' => $trigger['hosts'],
+            'method' => null,
+            'path' => $trigger['path'],
+            'clients' => [],
+            'limited' => true,
+            'rules' => $trigger['rules'] ?? [],
+        ], $triggerSources->cookieTriggers());
+
         return response()->json([
-            'triggers' => $triggers,
+            'triggers' => [...$triggers, ...$cookieTriggers],
             ...EdgeRuleEnvironment::for($hostnames->flatten()),
         ]);
     }

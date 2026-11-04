@@ -1,6 +1,7 @@
 @props([
     'neighborhood',
     'scale' => 0,
+    'struck' => false,
 ])
 
 {{-- An enriched IPv4 address, octet by octet, each under a bar for how busy the prefix it ends was: its /8, /16, /24, then the address itself. Bars share one log scale across the page, so rows compare. --}}
@@ -12,7 +13,7 @@
 <span {{ $attributes->class('inline-flex items-end font-mono') }} data-test="prefix-ladder">
     @foreach ($neighborhood->rungs() as $rung)
         @if (! $loop->first)
-            <span class="text-zinc-400 dark:text-zinc-500">.</span>
+            <span @class(['text-zinc-400 dark:text-zinc-500', 'line-through decoration-rose-500' => $struck])>.</span>
         @endif
         <span
             tabindex="0"
@@ -31,7 +32,7 @@
                     style="height: {{ max(2, round(log10($rung['count'] + 1) / $logScale * $barArea, 1)) }}px"
                 ></span>
             </span>
-            <span @if ($rung['prefix'] >= 24) data-privacy-mask="x" @endif>{{ $rung['octet'] }}</span>
+            <span @class(['line-through decoration-rose-500' => $struck]) @if ($rung['prefix'] >= 24) data-privacy-mask="x" @endif>{{ $rung['octet'] }}</span>
             <span
                 role="tooltip"
                 class="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 rounded-md border border-line bg-white px-1.5 py-0.5 font-sans text-[0.65rem] whitespace-nowrap text-ink shadow-sm group-hover/rung:block group-focus/rung:block dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"

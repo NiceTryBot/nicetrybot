@@ -6,9 +6,13 @@ use App\Enums\ViewSlot;
 use App\Gym\AttemptListeners;
 use App\Gym\Contracts\AttemptListener;
 use App\Gym\Contracts\GymAddon;
+use App\Gym\Contracts\GymCheckHandler;
+use App\Gym\Contracts\GymTriggerSource;
 use App\Gym\Contracts\Obstacle;
 use App\Gym\Contracts\RoutineTemplateSource;
 use App\Gym\GymAddons;
+use App\Gym\GymCheckHandlers;
+use App\Gym\GymTriggerSources;
 use App\Gym\ObstacleRegistry;
 use App\Gym\RoutineTemplates;
 use App\Http\Middleware\EnsureAddonIsOn;
@@ -16,6 +20,7 @@ use App\Http\Middleware\EnsureTeamMembership;
 use App\Mcp\McpTools;
 use App\Support\ActionAddon;
 use App\Support\ActionAddons;
+use App\Support\AdminNav;
 use App\Support\CaptureFeed;
 use App\Support\CaptureFeedContributor;
 use App\Support\ClientAddon;
@@ -23,6 +28,8 @@ use App\Support\ClientAddons;
 use App\Support\DomainRecords;
 use App\Support\EdgeLineAddon;
 use App\Support\EdgeLineAddons;
+use App\Support\HostnameClaimer;
+use App\Support\HostnameClaimers;
 use App\Support\LivewireComponentSource;
 use App\Support\LivewireComponentSources;
 use App\Support\LockdownFeed;
@@ -31,6 +38,8 @@ use App\Support\Nav;
 use App\Support\NavItem;
 use App\Support\RequestAddon;
 use App\Support\RequestAddons;
+use App\Support\RewriteFeed;
+use App\Support\RewriteFeedContributor;
 use App\Support\RuleFieldDefinition;
 use App\Support\RuleFields;
 use App\Support\RuleTemplates;
@@ -65,15 +74,19 @@ use ReflectionClass;
  * - the route files in $routes, the core's add-on tags in $gymAddons, $clientAddons and
  *   $visitorData, and the sidebar links nav() returns
  * - the views in $slots, drawn in the core's view slots (App\Enums\ViewSlot), the settings menu
- *   links settingsNav() returns, and the cog menu links workspaceMenu() returns
+ *   links settingsNav() returns, the Admin menu links adminNav() returns, and the cog menu links
+ *   workspaceMenu() returns
  * - the gym obstacles in $obstacles, offered after the core's, and the $attemptListeners told about
  *   every attempt a visitor makes. An obstacle lives in gym/obstacles/<Vendor>/<Name>/ as the core's
  *   do, so the gym's stylesheet builds the classes its views use.
+ * - what answers the edge's gym check before the core does ($gymCheckHandlers), and the hosts where
+ *   a visitor carrying a gym cookie is asked about at all ($gymTriggerSources)
  * - the $policies for its models, registered with the Gate rather than left to its guessing
- * - its entries in the edge's capture feed ($captureFeed), lockdown feed ($lockdownFeed) and tarpit
- *   feed ($tarpitFeed), its
- *   models that point at a domain ($domainRecords, moved with it when www. folds), and what names
- *   Livewire components for a team ($livewireComponentSources)
+ * - its entries in the edge's capture feed ($captureFeed), lockdown feed ($lockdownFeed), tarpit
+ *   feed ($tarpitFeed) and rewrite feed ($rewriteFeed), its
+ *   models that point at a domain ($domainRecords, moved with it when www. folds), what names
+ *   Livewire components for a team ($livewireComponentSources), and what adds a domain for a hostname
+ *   the edge hasn't heard of ($hostnameClaimers)
  * - the request fields in $ruleFields, which rule scripts and Activity searches can test after the
  *   core's (each a string-backed enum of App\Support\RuleFieldDefinition cases, joining what it reads
  *   only into the queries that read it)
@@ -130,6 +143,16 @@ abstract class AddonServiceProvider extends ServiceProvider
     protected array $attemptListeners = [];
 
     /**
+     * @var list<class-string<GymCheckHandler>>
+     */
+    protected array $gymCheckHandlers = [];
+
+    /**
+     * @var list<class-string<GymTriggerSource>>
+     */
+    protected array $gymTriggerSources = [];
+
+    /**
      * Policies for the add-on's models, by model.
      *
      * @var array<class-string<Model>, class-string>
@@ -152,6 +175,11 @@ abstract class AddonServiceProvider extends ServiceProvider
     protected array $tarpitFeed = [];
 
     /**
+     * @var list<class-string<RewriteFeedContributor>>
+     */
+    protected array $rewriteFeed = [];
+
+    /**
      * Models with a domain_id whose rows move to site when a www.site domain folds into it.
      *
      * @var list<class-string<Model>>
@@ -162,6 +190,11 @@ abstract class AddonServiceProvider extends ServiceProvider
      * @var list<class-string<LivewireComponentSource>>
      */
     protected array $livewireComponentSources = [];
+
+    /**
+     * @var list<class-string<HostnameClaimer>>
+     */
+    protected array $hostnameClaimers = [];
 
     /**
      * Enums of the request fields rule scripts and Activity searches can test once the add-on is
@@ -227,11 +260,15 @@ abstract class AddonServiceProvider extends ServiceProvider
         $this->app->tag($this->visitorData, VisitorDataHolders::TAG);
         $this->app->tag($this->obstacles, ObstacleRegistry::TAG);
         $this->app->tag($this->attemptListeners, AttemptListeners::TAG);
+        $this->app->tag($this->gymCheckHandlers, GymCheckHandlers::TAG);
+        $this->app->tag($this->gymTriggerSources, GymTriggerSources::TAG);
         $this->app->tag($this->captureFeed, CaptureFeed::TAG);
         $this->app->tag($this->lockdownFeed, LockdownFeed::TAG);
         $this->app->tag($this->tarpitFeed, TarpitFeed::TAG);
+        $this->app->tag($this->rewriteFeed, RewriteFeed::TAG);
         $this->app->tag($this->domainRecords, DomainRecords::TAG);
         $this->app->tag($this->livewireComponentSources, LivewireComponentSources::TAG);
+        $this->app->tag($this->hostnameClaimers, HostnameClaimers::TAG);
         $this->app->tag($this->ruleTemplates, RuleTemplates::TAG);
         $this->app->tag($this->routineTemplates, RoutineTemplates::TAG);
         $this->app->tag($this->edgeLineAddons, EdgeLineAddons::TAG);
@@ -242,7 +279,9 @@ abstract class AddonServiceProvider extends ServiceProvider
 
         $addons->claim($this->addon()->slug, [
             ...$this->gymAddons, ...$this->clientAddons, ...$this->visitorData, ...$this->obstacles, ...$this->attemptListeners,
-            ...$this->captureFeed, ...$this->lockdownFeed, ...$this->tarpitFeed, ...$this->domainRecords, ...$this->livewireComponentSources,
+            ...$this->gymCheckHandlers, ...$this->gymTriggerSources,
+            ...$this->captureFeed, ...$this->lockdownFeed, ...$this->tarpitFeed, ...$this->rewriteFeed, ...$this->domainRecords, ...$this->livewireComponentSources,
+            ...$this->hostnameClaimers,
             ...$this->ruleTemplates, ...$this->routineTemplates, ...$this->edgeLineAddons, ...$this->requestAddons,
             ...$this->actionAddons, ...$this->mcpTools,
         ]);
@@ -274,6 +313,7 @@ abstract class AddonServiceProvider extends ServiceProvider
 
         $this->app->make(Nav::class)->addFromAddon($slug, ...$this->nav());
         $this->app->make(SettingsNav::class)->addFromAddon($slug, ...$this->settingsNav());
+        $this->app->make(AdminNav::class)->addFromAddon($slug, ...$this->adminNav());
         $this->app->make(WorkspaceMenu::class)->addFromAddon($slug, ...$this->workspaceMenu());
 
         foreach ($this->slots as $slot => $views) {
@@ -323,6 +363,16 @@ abstract class AddonServiceProvider extends ServiceProvider
      * @return list<SettingsNavItem>
      */
     protected function settingsNav(): array
+    {
+        return [];
+    }
+
+    /**
+     * The Admin section's menu links the add-on brings.
+     *
+     * @return list<SettingsNavItem>
+     */
+    protected function adminNav(): array
     {
         return [];
     }

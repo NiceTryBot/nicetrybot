@@ -27,6 +27,8 @@ use App\Enums\RequestAction;
 use App\Enums\RuleField;
 use App\Enums\RuleSubject;
 use App\Enums\TrafficPeriod;
+use App\Enums\ViewSlot;
+use App\Support\ViewSlots;
 use App\Gym\HashPuzzle;
 use App\Http\Controllers\Edge\ListLiveTailsController;
 use App\Models\ClientLabel;
@@ -43,6 +45,7 @@ use App\Models\Verdict;
 use App\Support\ActionAddons;
 use App\Support\AnthropicException;
 use App\Support\ClientAddons;
+use App\Support\CurlCommand;
 use App\Support\RequestAddons;
 use App\Support\RuleFieldDefinition;
 use App\Support\RuleFields;
@@ -162,6 +165,18 @@ new #[Title('Activity')] class extends Component {
      */
     #[Url(except: 'requests')]
     public string $view = 'requests';
+
+    /**
+     * What the Traffic Map view (an add-on) groups traffic into tiles by, when that add-on is on.
+     */
+    #[Url(as: 'mapby', except: 'country')]
+    public string $mapDimension = 'country';
+
+    /**
+     * The Traffic Map's secondary dimension (empty for none), when that add-on is on.
+     */
+    #[Url(as: 'mapsplit', except: '')]
+    public string $mapSplit = '';
 
     /**
      * How many rows each page of the list shows: one of the page sizes.
@@ -523,7 +538,9 @@ new #[Title('Activity')] class extends Component {
             $this->range = '';
         }
 
-        if ($property === 'view' && ! in_array($this->view, ['requests', 'clients', 'paths'], true)) {
+        $allowedViews = $this->mapView ? ['requests', 'clients', 'paths', 'ips', 'map'] : ['requests', 'clients', 'paths', 'ips'];
+
+        if ($property === 'view' && ! in_array($this->view, $allowedViews, true)) {
             $this->view = 'requests';
         }
 
@@ -534,6 +551,16 @@ new #[Title('Activity')] class extends Component {
         if (in_array($property, ['search', 'domain', 'status', 'action', 'period', 'chartInterval', 'range', 'client', 'view', 'perPage'], true)) {
             $this->resetPage();
         }
+    }
+
+    /**
+     * Whether the Traffic Map view is available: true when the Traffic Map add-on is installed and on,
+     * so it has put a view in the ActivityMap slot.
+     */
+    #[Computed]
+    public function mapView(): bool
+    {
+        return app(ViewSlots::class)->views(ViewSlot::ActivityMap) !== [];
     }
 
     /**
@@ -1052,7 +1079,7 @@ new #[Title('Activity')] class extends Component {
         }
 
         $shown = match ($this->view) {
-            'clients' => $this->clients->getCollection()->map(fn (object $client) => $client->latest?->client_ip),
+            'clients', 'ips' => $this->clients->getCollection()->map(fn (object $client) => $client->latest?->client_ip),
             'paths' => collect(),
             default => $this->requests->getCollection()->pluck('client_ip'),
         };
@@ -1150,10 +1177,10 @@ new #[Title('Activity')] class extends Component {
 
     /**
      * The search's counts, found in one pass over its requests rather than a query each: how many
-     * requests, to how many websites, for how many distinct paths, and how many of them were suspicious
-     * or came from clients that aren't the browser they claim to be.
+     * requests, to how many websites, for how many distinct paths, from how many IPs, and how many of them
+     * were suspicious or came from clients that aren't the browser they claim to be.
      *
-     * @return array{requests: int, websites: int, paths: int, suspicious: int, spoofed: int}
+     * @return array{requests: int, websites: int, paths: int, ips: int, suspicious: int, spoofed: int}
      */
     #[Computed]
     public function totals(): array
@@ -1166,6 +1193,7 @@ new #[Title('Activity')] class extends Component {
                 'count(*) as requests',
                 'count(distinct edge_requests.domain_id) as websites',
                 'count(distinct edge_requests.path_id) as paths',
+                'count(distinct edge_requests.client_ip) as ips',
                 $suspicious->countAs('suspicious'),
                 $spoofed->countAs('spoofed'),
             ]), [...$suspicious->bindings, ...$spoofed->bindings]);
@@ -1176,6 +1204,7 @@ new #[Title('Activity')] class extends Component {
             'requests' => 'requests',
             'websites' => 'websites',
             'paths' => 'paths',
+            'ips' => 'ips',
             'suspicious' => 'suspicious',
             'spoofed' => 'spoofed',
         ]);
@@ -1213,6 +1242,17 @@ new #[Title('Activity')] class extends Component {
         return $this->inspectedRequestId
             ? $this->team->edgeRequests()->with('domain')->find($this->inspectedRequestId)
             : null;
+    }
+
+    /**
+     * The inspected request as a curl command, with what the visitor sent if an add-on recorded it.
+     */
+    #[Computed]
+    public function inspectedCurl(): ?string
+    {
+        $request = $this->inspectedRequest;
+
+        return $request === null ? null : CurlCommand::for($request, app(RequestAddons::class)->sentBody($this->team, $request));
     }
 
     /**
@@ -1408,13 +1448,25 @@ new #[Title('Activity')] class extends Component {
     }
 
     /**
-     * The clients the search finds, busiest first: one row per client as the search groups them, with
-     * how many of its requests match, on how many sites, and its latest request to show it by.
+     * What the list of clients groups by: the IP alone on the IPs tab, or as the search says.
+     *
+     * @return list<RuleSubject>
+     */
+    #[Computed]
+    public function listedSubjects(): array
+    {
+        return $this->view === 'ips' ? [RuleSubject::Ip] : $this->parsedSearch['subjects'];
+    }
+
+    /**
+     * The clients the search finds, busiest first: one row per client as the search groups them, or per
+     * IP on the IPs tab, with how many of its requests match, on how many sites, and its latest request
+     * to show it by.
      */
     #[Computed]
     public function clients(): LengthAwarePaginator
     {
-        $clients = $this->clientGroups()
+        $clients = $this->clientGroups($this->listedSubjects)
             ->selectRaw(implode(', ', [
                 'count(*) as requests',
                 'count(distinct edge_requests.domain_id) as hosts',
@@ -1426,7 +1478,7 @@ new #[Title('Activity')] class extends Component {
             ]))
             ->orderByDesc('requests')
             ->orderByDesc('last_request_id')
-            ->paginate($this->perPage);
+            ->paginate($this->perPage, total: $this->view === 'ips' ? $this->totals['ips'] : null);
 
         $latest = EdgeRequest::query()->with(['domain:id,hostname', 'clientHintRecord'])->findMany($clients->pluck('last_request_id'))->keyBy('id');
 
@@ -1558,16 +1610,33 @@ new #[Title('Activity')] class extends Component {
     #[Computed]
     public function clientAddons(): array
     {
-        $rows = match ($this->view) {
-            'clients' => $this->clients->getCollection(),
-            'paths' => collect(),
-            default => $this->requests->getCollection(),
-        };
-
-        return app(ClientAddons::class)->render($this->team, $rows->values()->map(fn (object $row) => [
+        return app(ClientAddons::class)->render($this->team, $this->clientRows()->values()->map(fn (object $row) => [
             'ip' => $row->client_ip ?? null,
             'ja4' => isset($row->ja4_id) ? (int) $row->ja4_id : null,
         ])->all());
+    }
+
+    /**
+     * The IPs on the page that packages say to strike through (App\Support\ClientStriker).
+     *
+     * @return list<string>
+     */
+    #[Computed]
+    public function struckIps(): array
+    {
+        return app(ClientAddons::class)->struckIps($this->team, $this->clientRows()->pluck('client_ip')->filter()->unique()->values()->all());
+    }
+
+    /**
+     * The rows on the page that have a client cell.
+     */
+    protected function clientRows(): \Illuminate\Support\Collection
+    {
+        return match ($this->view) {
+            'clients', 'ips' => $this->clients->getCollection(),
+            'paths' => collect(),
+            default => $this->requests->getCollection(),
+        };
     }
 
     /**
@@ -1580,9 +1649,18 @@ new #[Title('Activity')] class extends Component {
             return $this->clients->total();
         }
 
-        $clientGroups = $this->clientGroups();
+        $clientGroups = $this->clientGroups($this->parsedSearch['subjects']);
 
         return $this->rememberCounts('clients', $clientGroups->toRawSql(), fn (): int => DB::query()->fromSub($clientGroups, 'client_groups')->count());
+    }
+
+    /**
+     * How many IPs the search finds, whichever view lists them.
+     */
+    #[Computed]
+    public function ipCount(): int
+    {
+        return $this->totals['ips'];
     }
 
     /**
@@ -1613,16 +1691,18 @@ new #[Title('Activity')] class extends Component {
     }
 
     /**
-     * The search's requests grouped into clients, one row per client as the search groups them (by IP
-     * and fingerprint unless it says GROUP BY), with the subject columns selected.
+     * The search's requests grouped into clients, one row per client by the subjects given, with the
+     * subject columns selected.
+     *
+     * @param  list<RuleSubject>  $subjects
      */
-    protected function clientGroups(): QueryBuilder
+    protected function clientGroups(array $subjects): QueryBuilder
     {
-        $subjects = $this->parsedSearch['subjects'];
         $columns = array_map(fn (RuleSubject $subject) => $subject->column(), $subjects);
 
         return $this->filteredQuery()->toBase()
             ->when($subjects === [RuleSubject::Ja4], fn ($query) => $query->whereNotNull('edge_requests.ja4_id'))
+            ->when($subjects === [RuleSubject::Ip], fn ($query) => $query->whereNotNull('edge_requests.client_ip'))
             ->select($columns)
             ->groupBy($columns);
     }
@@ -1852,7 +1932,7 @@ new #[Title('Activity')] class extends Component {
                         <flux:text class="mt-1">{{ __('The search, its question and its filters are saved for everyone on the team. Saving under a name that’s taken replaces that search.') }}</flux:text>
                     </div>
 
-                    <flux:input wire:model="savedSearchName" :label="__('Name')" :placeholder="__('Vesync public forms')" autofocus data-test="saved-search-name" />
+                    <flux:input wire:model="savedSearchName" :label="__('Name')" :placeholder="__('Acme public forms')" autofocus data-test="saved-search-name" />
 
                     <div class="flex justify-end gap-2">
                         <flux:modal.close>
@@ -2209,27 +2289,38 @@ new #[Title('Activity')] class extends Component {
             [RuleSubject::Ja4] => ['view' => __('Fingerprints'), 'column' => __('Fingerprint'), 'one' => __('fingerprint'), 'many' => __('fingerprints')],
             default => ['view' => __('Clients'), 'column' => __('Client'), 'one' => __('client'), 'many' => __('clients')],
         })
+        {{-- A search that groups by IP alone makes the Clients tab its IPs tab, so there's no second one. --}}
+        @php($clientsAreIps = $parsedSearch['subjects'] === [RuleSubject::Ip])
+        @php($selectedTab = $view === 'ips' && $clientsAreIps ? 'clients' : $view)
+        @php($listNames = $view === 'ips' ? ['column' => __('IP'), 'one' => __('IP')] : $clientNames)
         <div class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 pt-3 text-xs text-zinc-500 dark:text-zinc-400">
             <div class="inline-flex rounded-md border border-line bg-canvas p-0.5 font-medium dark:border-zinc-700 dark:bg-zinc-900" data-privacy-hide role="tablist" aria-label="{{ __('List') }}" data-test="activity-view">
-                @foreach ($countsShown ? [
+                @php($viewTabs = $countsShown ? [
                     'requests' => __(':label (:count)', ['label' => __('Requests'), 'count' => Number::format($this->requestCount)]),
                     'clients' => __(':label (:count)', ['label' => $clientNames['view'], 'count' => Number::format($this->clientCount)]),
                     'paths' => __(':label (:count)', ['label' => __('Paths'), 'count' => Number::format($this->pathCount)]),
+                    'ips' => __(':label (:count)', ['label' => __('IPs'), 'count' => Number::format($this->ipCount)]),
                 ] : [
                     'requests' => __('Requests'),
                     'clients' => $clientNames['view'],
                     'paths' => __('Paths'),
-                ] as $viewOption => $viewLabel)
+                    'ips' => __('IPs'),
+                ])
+                @php($viewTabs = $clientsAreIps ? array_diff_key($viewTabs, ['ips' => true]) : $viewTabs)
+                @if ($this->mapView)
+                    @php($viewTabs['map'] = __('Map'))
+                @endif
+                @foreach ($viewTabs as $viewOption => $viewLabel)
                     <button
                         type="button"
                         role="tab"
                         wire:click="$set('view', '{{ $viewOption }}')"
-                        aria-selected="{{ $view === $viewOption ? 'true' : 'false' }}"
-                        title="{{ match ($viewOption) { 'clients' => __('One row per :client, with its requests counted', ['client' => $clientNames['one']]), 'paths' => __('One row per distinct path, with its requests counted'), default => __('Every request') } }}"
+                        aria-selected="{{ $selectedTab === $viewOption ? 'true' : 'false' }}"
+                        title="{{ match ($viewOption) { 'clients' => __('One row per :client, with its requests counted', ['client' => $clientNames['one']]), 'ips' => __('One row per IP, whatever TLS fingerprints it used, with its requests counted'), 'paths' => __('One row per distinct path, with its requests counted'), 'map' => __('Your filtered traffic as a treemap'), default => __('Every request') } }}"
                         @class([
                             'rounded px-2 py-0.5 transition',
-                            'bg-white text-ink shadow-xs dark:bg-zinc-700 dark:text-white' => $view === $viewOption,
-                            'hover:text-ink dark:hover:text-white' => $view !== $viewOption,
+                            'bg-white text-ink shadow-xs dark:bg-zinc-700 dark:text-white' => $selectedTab === $viewOption,
+                            'hover:text-ink dark:hover:text-white' => $selectedTab !== $viewOption,
                         ])
                         data-test="view-{{ $viewOption }}"
                     >{{ $viewLabel }}@unless ($countsShown)<span class="ms-1 inline-block h-2 w-6 animate-pulse rounded-full bg-zinc-200 align-middle dark:bg-zinc-700" aria-hidden="true"></span>@endunless</button>
@@ -2289,7 +2380,7 @@ new #[Title('Activity')] class extends Component {
         </div>
 
         <div class="px-4 pb-2 transition-opacity" wire:loading.class="opacity-50" wire:target="range">
-            @if ((match ($view) { 'clients' => $this->clients, 'paths' => $this->paths, default => $this->requests })->isEmpty())
+            @if ((match ($view) { 'clients', 'ips' => $this->clients, 'paths' => $this->paths, default => $this->requests })->isEmpty())
                 <div class="py-16 text-center">
                     <flux:icon.magnifying-glass class="mx-auto size-8 text-zinc-300 dark:text-zinc-600" />
                     <p class="mt-3 text-sm font-medium">{{ match (true) { $this->domains->isEmpty() => __('No domains yet'), $parsedSearch['error'] !== null => __('Finish the search to see requests'), default => __('Nothing matches those filters') } }}</p>
@@ -2301,13 +2392,13 @@ new #[Title('Activity')] class extends Component {
                 {{-- Right-click a client to hide it or mark it as yours; right-click elsewhere on a request to categorize its path. --}}
                 <div
                     x-data="{
-                        open: false, mode: 'path', x: 0, y: 0, id: null, path: '', current: '', manual: false, kind: '', value: '', name: '', enriched: false,
+                        open: false, mode: 'path', x: 0, y: 0, id: null, path: '', current: '', manual: false, kind: '', value: '', name: '', enriched: false, asn: '',
                         canCategorize: {{ $this->canManageRules ? 'true' : 'false' }},
                         show(event) {
                             const client = event.target.closest('[data-client-kind]');
                             const row = event.target.closest('tr[data-request-id]');
                             if (client) {
-                                Object.assign(this, { mode: 'client', kind: client.dataset.clientKind, value: client.dataset.clientValue, name: client.dataset.clientName || client.dataset.clientValue, enriched: client.dataset.clientEnriched === '1' });
+                                Object.assign(this, { mode: 'client', kind: client.dataset.clientKind, value: client.dataset.clientValue, name: client.dataset.clientName || client.dataset.clientValue, enriched: client.dataset.clientEnriched === '1', asn: client.dataset.clientAsn || '' });
                             } else if (this.canCategorize && row && row.dataset.path) {
                                 Object.assign(this, { mode: 'path', id: Number(row.dataset.requestId), path: row.dataset.path, current: row.dataset.category, manual: row.dataset.manual === '1' });
                             } else {
@@ -2335,12 +2426,12 @@ new #[Title('Activity')] class extends Component {
                     x-on:keydown.escape.window="open = false"
                     x-on:scroll.window="open = false"
                 >
-                    @if ($view === 'clients')
-                    @php($groupsByIp = in_array(RuleSubject::Ip, $parsedSearch['subjects'], true))
-                    @php($groupsByJa4 = in_array(RuleSubject::Ja4, $parsedSearch['subjects'], true))
+                    @if ($view === 'clients' || $view === 'ips')
+                    @php($groupsByIp = in_array(RuleSubject::Ip, $this->listedSubjects, true))
+                    @php($groupsByJa4 = in_array(RuleSubject::Ja4, $this->listedSubjects, true))
                     <flux:table :paginate="$this->clients" wire:loading.class="opacity-60" wire:target.except="heartbeat" data-test="clients-table">
                         <flux:table.columns>
-                            <flux:table.column>{{ $clientNames['column'] }}</flux:table.column>
+                            <flux:table.column>{{ $listNames['column'] }}</flux:table.column>
                             <flux:table.column align="end">{{ __('Requests') }}</flux:table.column>
                             <flux:table.column class="max-md:hidden">{{ __('Sites') }}</flux:table.column>
                             <flux:table.column class="max-md:hidden">{{ __('First seen') }}</flux:table.column>
@@ -2355,13 +2446,14 @@ new #[Title('Activity')] class extends Component {
                                     :key="'client-'.$client->last_request_id"
                                     class="cursor-pointer hover:bg-canvas dark:hover:bg-zinc-800/50"
                                     wire:click="showClient('{{ $groupsByIp ? $latest?->client_ip : '' }}', '{{ $groupsByJa4 ? $fingerprint?->value : '' }}')"
-                                    title="{{ __('See this :client\'s requests', ['client' => $clientNames['one']]) }}"
+                                    title="{{ __('See this :client\'s requests', ['client' => $listNames['one']]) }}"
                                     data-test="client-row"
                                 >
                                     <flux:table.cell class="font-mono text-xs">
                                         @if ($groupsByIp && $latest)
                                             @php($neighborhood = $this->neighborhoods[$latest->client_ip] ?? null)
-                                            <span data-client-kind="ip" data-client-value="{{ $latest->client_ip }}" data-client-name="{{ app(LabelDirectory::class)->labelFor($this->team->id, LabelKind::Ip, $latest->client_ip)?->name }}" data-client-enriched="{{ $neighborhood ? '1' : '' }}">@if ($neighborhood)<x-ntb.prefix-ladder :$neighborhood :scale="$this->neighborhoodScale" />@else<x-ntb.label kind="ip" :value="$latest->client_ip" />@endif</span>
+                                            @php($struck = in_array($latest->client_ip, $this->struckIps, true))
+                                            <span @class(['line-through decoration-rose-500' => $struck]) data-client-kind="ip" data-client-value="{{ $latest->client_ip }}" data-client-name="{{ app(LabelDirectory::class)->labelFor($this->team->id, LabelKind::Ip, $latest->client_ip)?->name }}" data-client-enriched="{{ $neighborhood ? '1' : '' }}" data-client-asn="{{ $latest->asn }}" @if ($struck) data-client-struck @endif>@if ($neighborhood)<x-ntb.prefix-ladder :$neighborhood :scale="$this->neighborhoodScale" :$struck />@else<x-ntb.label kind="ip" :value="$latest->client_ip" />@endif</span>
                                             <x-ntb.country :code="$latest->country_code" class="ms-1 text-zinc-400" />
                                             @if ($latest->network || $neighborhood?->badge())
                                                 <span class="mt-0.5 flex max-w-64 items-center gap-1 font-sans text-[0.65rem] text-zinc-500 dark:text-zinc-400" title="{{ $latest->network ? 'AS'.$latest->asn.' · '.$latest->network->name : '' }}">
@@ -2465,6 +2557,15 @@ new #[Title('Activity')] class extends Component {
                             @endforeach
                         </flux:table.rows>
                     </flux:table>
+                    @elseif ($view === 'map')
+                    {{ app(ViewSlots::class)->render(ViewSlot::ActivityMap, [
+                        'team' => $this->team,
+                        'period' => TrafficPeriod::tryFrom($this->period) ?? TrafficPeriod::Day,
+                        'domainId' => $this->domains->firstWhere('hostname', $this->domain)?->id,
+                        'where' => $parsedSearch['where'] ?? null,
+                        'dimension' => $this->mapDimension,
+                        'split' => $this->mapSplit,
+                    ]) }}
                     @else
                     <flux:table :paginate="$this->requests" wire:loading.class="opacity-60" wire:target.except="heartbeat">
                         <flux:table.columns>
@@ -2542,7 +2643,8 @@ new #[Title('Activity')] class extends Component {
                                     </flux:table.cell>
                                     <flux:table.cell class="font-mono text-xs max-md:hidden">
                                         @php($neighborhood = $this->neighborhoods[$request->client_ip] ?? null)
-                                        <span data-client-kind="ip" data-client-value="{{ $request->client_ip }}" data-client-name="{{ app(LabelDirectory::class)->labelFor($this->team->id, LabelKind::Ip, $request->client_ip)?->name }}" data-client-enriched="{{ $neighborhood ? '1' : '' }}">@if ($neighborhood)<x-ntb.prefix-ladder :$neighborhood :scale="$this->neighborhoodScale" />@else<x-ntb.label kind="ip" :value="$request->client_ip" />@endif</span>
+                                        @php($struck = in_array($request->client_ip, $this->struckIps, true))
+                                            <span @class(['line-through decoration-rose-500' => $struck]) data-client-kind="ip" data-client-value="{{ $request->client_ip }}" data-client-name="{{ app(LabelDirectory::class)->labelFor($this->team->id, LabelKind::Ip, $request->client_ip)?->name }}" data-client-enriched="{{ $neighborhood ? '1' : '' }}" data-client-asn="{{ $request->asn }}" @if ($struck) data-client-struck @endif>@if ($neighborhood)<x-ntb.prefix-ladder :$neighborhood :scale="$this->neighborhoodScale" :$struck />@else<x-ntb.label kind="ip" :value="$request->client_ip" />@endif</span>
                                         <x-ntb.country :code="$request->country_code" class="ms-1 text-zinc-400" />
                                         @if ($request->network || $neighborhood?->badge())
                                             <span class="mt-0.5 flex max-w-64 items-center gap-1 font-sans text-[0.65rem] text-zinc-500 dark:text-zinc-400" title="{{ $request->network ? 'AS'.$request->asn.' · '.$request->network->name : '' }}">
@@ -2640,6 +2742,7 @@ new #[Title('Activity')] class extends Component {
                                     <flux:icon.tag variant="micro" class="size-3.5 text-zinc-400" /> {{ __('Name it…') }}
                                 </button>
                             @endif
+                            {{ app(ViewSlots::class)->render(ViewSlot::ActivityClientMenu, ['team' => $this->team]) }}
                         </div>
                         @if ($this->canManageRules)
                         <div x-show="mode === 'path'" data-test="categorize-menu">
@@ -2879,6 +2982,18 @@ new #[Title('Activity')] class extends Component {
 
                 <div class="flex flex-wrap justify-end gap-2">
                     {{ app(RequestAddons::class)->actions($this->team, $request) }}
+                    {{-- The command stays in a data attribute, not x-data, so it follows the request Livewire morphs in. --}}
+                    <div
+                        data-curl="{{ $this->inspectedCurl }}"
+                        data-test="copy-curl"
+                        title="{{ __('Rebuilt from what the edge recorded: masked values stay masked, and cookies and most headers aren\'t included.') }}"
+                        x-data="{ copied: false, copy() { navigator.clipboard.writeText(this.$root.dataset.curl); this.copied = true; setTimeout(() => this.copied = false, 1500); } }"
+                    >
+                        <flux:button size="sm" icon="clipboard-document" x-on:click="copy()">
+                            <span x-show="! copied">{{ __('Copy to Curl') }}</span>
+                            <span x-show="copied" x-cloak>{{ __('Copied') }}</span>
+                        </flux:button>
+                    </div>
                     <flux:button size="sm" icon="magnifying-glass" :href="route('activity.index', ['ip' => $request->client_ip, 'period' => '30d'])" wire:navigate>{{ __('Everything from this IP') }}</flux:button>
                     @if ($fingerprint = Ja4Fingerprint::tryFrom($request->ja4))
                         <flux:button size="sm" icon="finger-print" :href="route('activity.index', ['ja4' => $fingerprint->value, 'period' => '30d'])" wire:navigate data-test="ja4-everything">{{ __('Everything with this fingerprint') }}</flux:button>
@@ -2893,4 +3008,5 @@ new #[Title('Activity')] class extends Component {
     @can('create', [App\Models\ClientLabel::class, $this->team])
         <livewire:pages::clients.label-modal />
     @endcan
+    {{ app(ViewSlots::class)->render(ViewSlot::ActivityModals, ['team' => $this->team]) }}
 </div>

@@ -5,15 +5,21 @@ namespace NiceTry\PrivacyMode;
 use App\Addons\AddonServiceProvider;
 use App\Enums\ViewSlot;
 use App\Support\SettingsNavItem;
+use NiceTry\PrivacyMode\Mcp\GetPrivacyMap;
 
 /**
  * Privacy mode, as an add-on: a toggle beside the cog that redacts the page for screen sharing, every
  * real domain and origin host swapped for its made-up stand-in and every word in Settings → Privacy
  * hidden. Its script, style and data blocks go in the core's view slots; the stand-ins themselves
- * are the core's (domains.privacy_hostname).
+ * are the core's (domains.privacy_hostname). Agents and the nicetrybot command (activity --private)
+ * get the same swaps from the MCP server.
  */
 class PrivacyModeServiceProvider extends AddonServiceProvider
 {
+    protected array $mcpTools = [
+        GetPrivacyMap::class,
+    ];
+
     protected array $routes = [
         'team' => 'routes/team.php',
         'web' => 'routes/web.php',

@@ -25,6 +25,11 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
       --with github.com/josuebrunel/caddy-ja3ja4@v0.2.0 \
       --with nicetrybot.com/caddy/capture=/src/nicetry-capture \
       --output /usr/bin/caddy
+# The Blackhole add-on's agent: stdlib only, static, run by compose.blackhole.yml from this same image.
+WORKDIR /src/blackhole
+COPY blackhole/ ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go test ./... && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /usr/bin/nicetry-blackhole .
 
 # Vector, configured by deploy/vector; its entrypoint picks the log mode from EDGE_LOGS_BUCKET.
 FROM timberio/vector:${VECTOR_VERSION}-alpine AS vector
@@ -35,7 +40,7 @@ ENTRYPOINT ["/etc/vector/nicetry/entrypoint.sh"]
 
 # The edge. Caddy runs as caddy (uid 1000); the entrypoint starts as root only to hand it the volumes.
 FROM caddy:${CADDY_VERSION} AS edge
-RUN apk add --no-cache ca-certificates curl su-exec \
+RUN apk add --no-cache ca-certificates curl nftables su-exec \
     && addgroup -S -g 1000 caddy \
     && adduser -S -D -H -u 1000 -G caddy -h /data -s /sbin/nologin caddy
 # Installed and given the low-ports capability in one step, so the image holds the binary once.
@@ -45,6 +50,7 @@ RUN --mount=type=bind,from=builder,source=/usr/bin/caddy,target=/tmp/caddy \
     && caddy list-modules | grep -q '^http.handlers.nicetry_origins$' \
     && caddy list-modules | grep -q '^caddy.storage.redis$' \
     && caddy list-modules | grep -q '^http.handlers.ja3_ja4$'
+COPY --from=builder /usr/bin/nicetry-blackhole /usr/bin/nicetry-blackhole
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY deploy/Caddyfile.d/ /etc/caddy/Caddyfile.d/
 COPY --chmod=0755 deploy/edge-entrypoint.sh /usr/local/bin/nicetry-edge

@@ -23,7 +23,7 @@ func init() {
 }
 
 // gymCookies are the only cookies forwarded to NiceTryBot; the site's own cookies never leave the edge.
-var gymCookies = map[string]bool{"_q_pass": true, "_q_session": true}
+var gymCookies = map[string]bool{"_q_pass": true, "_q_session": true, remoteTagCookie: true}
 
 // gymHeaders are the only headers of the gym's answer passed on to the visitor.
 var gymHeaders = []string{"Content-Type", "Cache-Control", "Set-Cookie", "Location", "X-Robots-Tag", "Retry-After"}

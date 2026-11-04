@@ -20,6 +20,13 @@
 	order nicetry_php_guard after nicetry_tarpit
 	# A locked-down team's hostnames get the maintenance page before anything else (gym, origin) hears of it.
 	order nicetry_lockdown after nicetry_php_guard
+	# A site's NiceTryBot-Tag response header becomes the _q_tag cookie the gym check reads (Remote Tagging).
+	order nicetry_remote_tag after nicetry_lockdown
+	# NiceTryBot's verdict on the client goes to the origin as X-NiceTry-Verdict (a visitor's own copy never does).
+	order nicetry_verdict after nicetry_remote_tag
+	# A team's response rewrites ("foo" becomes "bar") sit inside encode, around reverse_proxy, so they read
+	# what the origin sent and encode compresses what they wrote.
+	order nicetry_rewrite after encode
 	# Where each domain's traffic goes (set in NiceTryBot), handed to reverse_proxy as vars.
 	order nicetry_origins after nicetry_gym
 	# Each domain's chosen Server header wraps the default disguise, so it wins.
@@ -104,6 +111,21 @@
 		token {$NICETRY_EDGE_TOKEN}
 		interval 10s
 		max_held 1000
+	}
+
+	# Remote Tagging: a site's app tags a visitor it knows with a signed NiceTryBot-Tag response header.
+	# The visitor never sees it: the edge takes it off and keeps a well-formed tag as the _q_tag cookie
+	# instead, which the gym check hears about on their next page load, when Known Faces fingerprints
+	# them. Nothing else about the response changes.
+	nicetry_remote_tag
+
+	# Verdicts: NiceTryBot's platform-wide verdicts on client IPs (fraud or suspicious, with a score and
+	# the reasons), polled every 30s. Every request to an origin loses any X-NiceTry-Verdict the visitor
+	# sent and, for a flagged client, gets NiceTryBot's. Never on the response, so visitors don't see it.
+	nicetry_verdict {
+		endpoint {$NICETRY_APP_URL}/caddy/client-verdicts
+		token {$NICETRY_EDGE_TOKEN}
+		interval 30s
 	}
 
 	# Live tail: requests to hostnames someone is watching on Activity get `tail: true` in the access
@@ -271,6 +293,14 @@
 	header @cache_img >Cache-Control "public, max-age=86400"
 	header @cache_static >Cache-Control "public, max-age=604800"
 	encode gzip
+	# Rewrites: text a team set in NiceTryBot to change in its origins' responses (every "foo" becomes
+	# "bar"), on all its domains or one, in HTML pages or any text. On those hostnames the origin is asked
+	# for an uncompressed, whole answer; one that isn't text or is over 4 MB passes untouched.
+	nicetry_rewrite {
+		endpoint {$NICETRY_APP_URL}/caddy/rewrite-feed
+		token {$NICETRY_EDGE_TOKEN}
+		interval 10s
+	}
 }
 
 # A team chooses its origin, so it's only ever reached on a public address: transport nicetry_origin

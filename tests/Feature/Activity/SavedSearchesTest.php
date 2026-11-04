@@ -18,10 +18,10 @@ test('a search is saved with its question and filters, and opening it brings the
         ->set('view', 'clients')
         ->call('startSavingSearch')
         ->assertSet('savedSearchName', 'show me all traffic for the public form thank-yous')
-        ->set('savedSearchName', 'Vesync Public Forms')
+        ->set('savedSearchName', 'Acme Public Forms')
         ->call('saveSearch')
         ->assertHasNoErrors()
-        ->assertSee('Vesync Public Forms');
+        ->assertSee('Acme Public Forms');
 
     $saved = SavedSearch::sole();
     expect($saved->team_id)->toBe($user->currentTeam->id)
@@ -45,15 +45,15 @@ test('a search is saved with its question and filters, and opening it brings the
 
 test('saving under a name the team already uses replaces that search', function () {
     $user = User::factory()->create();
-    SavedSearch::factory()->for($user->currentTeam)->create(['user_id' => $user->id, 'name' => 'Vesync Public Forms']);
+    SavedSearch::factory()->for($user->currentTeam)->create(['user_id' => $user->id, 'name' => 'Acme Public Forms']);
     $this->actingAs($user);
 
     Livewire::test('pages::activity.index')
         ->set('search', 'status = 404')
-        ->set('savedSearchName', 'vesync public forms')
+        ->set('savedSearchName', 'acme public forms')
         ->call('saveSearch');
 
-    expect(SavedSearch::sole())->name->toBe('vesync public forms')
+    expect(SavedSearch::sole())->name->toBe('acme public forms')
         ->parameters->toMatchArray(['q' => 'status = 404']);
 });
 
@@ -71,12 +71,12 @@ test('a saved search needs a name', function () {
 test('the team\'s saved searches are listed by name, without other teams\'', function () {
     $user = User::factory()->create();
     SavedSearch::factory()->for($user->currentTeam)->create(['name' => 'Zebra probes']);
-    SavedSearch::factory()->for($user->currentTeam)->create(['name' => 'Vesync Public Forms']);
+    SavedSearch::factory()->for($user->currentTeam)->create(['name' => 'Acme Public Forms']);
     SavedSearch::factory()->create(['name' => 'Another team\'s search']);
     $this->actingAs($user);
 
     Livewire::test('pages::activity.index')
-        ->assertSeeInOrder(['Vesync Public Forms', 'Zebra probes'])
+        ->assertSeeInOrder(['Acme Public Forms', 'Zebra probes'])
         ->assertDontSee('Another team\'s search');
 });
 

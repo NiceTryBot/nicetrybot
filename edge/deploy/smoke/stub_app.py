@@ -42,6 +42,7 @@ LISTS = {
     "/caddy/live-tail": {"hosts": []},
     "/caddy/lockdowns": {"lockdowns": []},
     "/caddy/tarpit-feed": {"tarpits": []},
+    "/caddy/rewrite-feed": {"rewrites": []},
 }
 
 

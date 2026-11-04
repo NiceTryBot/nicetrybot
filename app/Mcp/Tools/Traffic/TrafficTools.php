@@ -15,5 +15,8 @@ final class TrafficTools
     public const array TOOLS = [
         DescribeTrafficFields::class,
         QueryTraffic::class,
+        ListRequests::class,
+        TranslateQuestion::class,
+        ListSavedSearches::class,
     ];
 }

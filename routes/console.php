@@ -27,7 +27,7 @@ Schedule::command('visitor-data:prune')
 
 Schedule::command('edge:import-logs')
     ->everyMinute()
-    ->withoutOverlapping(5)
+    ->withoutOverlapping(2)
     ->environments('production')
     ->when(ImportEdgeLogs::hasBucket(...))
     ->description('Import request logs shipped by the edge nodes');

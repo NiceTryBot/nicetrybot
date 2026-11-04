@@ -131,6 +131,9 @@ func (c *Capture) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		extra.Add(zap.String("response_type", contentType))
 		extra.Add(zap.String("response_body", Redact(body, contentType, c.MaxBytes)))
 		extra.Add(zap.Int64("response_bytes", rec.total))
+		if flags := findFlags(target.ResponseWatch, r, w.Header(), body); len(flags) > 0 {
+			extra.Add(zap.Any("flags", flags))
+		}
 
 		if sent {
 			extra.Add(zap.String("request_type", requestType))
@@ -265,6 +268,8 @@ type target struct {
 	Component *regexp.Regexp
 	// TagOnly is set on tags: they log the Livewire component a request calls and record nothing.
 	TagOnly bool
+	// ResponseWatch are the flag patterns looked for in what a capture records (flags.go).
+	ResponseWatch []responseWatch
 }
 
 // clientFilter is one tagged visitor; an empty field matches anything.
@@ -399,6 +404,11 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 
 	env := ruleEnvFrom(payload)
 
+	var responseWatches []responseWatch
+	if listKey == "captures" {
+		responseWatches = parseResponseWatch(payload["response_watch"])
+	}
+
 	targets := make([]target, 0, len(entries))
 	for i, c := range entries {
 		hosts := map[string]bool{}
@@ -439,8 +449,9 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 			}
 		}
 		tagOnly := i >= tagsFrom
+		watches := responseWatches
 		if tagOnly {
-			watch = nil
+			watch, watches = nil, nil
 		}
 		var rules []edgeRule
 		for _, rule := range c.Rules {
@@ -449,7 +460,7 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 				rules = append(rules, edgeRule{ID: rule.ID, Expr: rule.Expr})
 			}
 		}
-		targets = append(targets, target{ID: c.ID, Hosts: hosts, Method: method, Path: glob, Clients: clients, Limited: c.Limited, Rules: rules, env: env, Request: c.Request && !tagOnly, Watch: watch, Component: component, TagOnly: tagOnly})
+		targets = append(targets, target{ID: c.ID, Hosts: hosts, Method: method, Path: glob, Clients: clients, Limited: c.Limited, Rules: rules, env: env, Request: c.Request && !tagOnly, Watch: watch, Component: component, TagOnly: tagOnly, ResponseWatch: watches})
 	}
 	return targets, resp.Header.Get("ETag"), nil
 }

@@ -22,6 +22,10 @@
             <flux:navlist.item :href="route('admin.addons')" wire:navigate>{{ __('Add-ons') }}</flux:navlist.item>
             <flux:navlist.item :href="route('admin.administrators')" wire:navigate>{{ __('Administrators') }}</flux:navlist.item>
             <flux:navlist.item :href="route('admin.tokens')" wire:navigate>{{ __('API tokens') }}</flux:navlist.item>
+            {{-- Every add-on's, from App\Support\AdminNav. --}}
+            @foreach (app(\App\Support\AdminNav::class)->items() as $item)
+                <flux:navlist.item :href="route($item->route)" :current="$item->isCurrent()" wire:navigate wire:key="admin-nav-{{ $item->route }}">{{ __($item->label) }}</flux:navlist.item>
+            @endforeach
         </flux:navlist>
     </div>
 

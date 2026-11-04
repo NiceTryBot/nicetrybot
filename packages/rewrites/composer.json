@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/rewrites",
+    "description": "Response rewrites: change text in what your origins send, at the edge. Every \"foo\" becomes \"bar\" on every domain of the team, or on one domain, in HTML pages or in any text response.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\Rewrites\\": "src/",
+            "NiceTry\\Rewrites\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Rewrites",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\Rewrites\\RewritesServiceProvider"
+            ]
+        }
+    }
+}

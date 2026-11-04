@@ -13,9 +13,10 @@ use Illuminate\Console\Command;
 class ImportEdgeLogs extends Command
 {
     /**
-     * Seconds after which no new file is started, leaving headroom in the scheduler's 70-second Lambda timeout.
+     * Seconds after which no new file is started. A full file can take about 45 seconds, and the scheduler's
+     * Lambda is killed at 70, losing the file it was on and leaving the overlap lock behind.
      */
-    private const int TIME_BUDGET_SECONDS = 45;
+    private const int TIME_BUDGET_SECONDS = 20;
 
     /**
      * Determine if the edge ships its logs to a bucket. Without one (EDGE_LOGS_BUCKET empty, as on a

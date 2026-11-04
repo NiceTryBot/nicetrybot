@@ -55,12 +55,15 @@ permission module sends it as a header, so the token is never in a URL or in Cad
 | `GET /caddy/origins` | every 30 s, ETag | `{"origins":[...]}` |
 | `GET /caddy/resolve-origin` | a host missing from the last poll | as now |
 | `GET /caddy/site-headers` | every 30 s | `{"sites":[...]}` |
-| `GET /caddy/response-captures` | every 30 s, ETag | `{"captures":[...]}` |
+| `GET /caddy/response-captures` | every 30 s, ETag | `{"captures":[...]}`, optionally `"tags"` and `"response_watch":[{id, hosts, pattern}]` (Flag Watch: RE2 patterns looked for in captured responses, body and headers) |
 | `GET /caddy/gym-triggers` | every 30 s, ETag | `{"triggers":[...]}` |
 | `GET /caddy/gym-check`, `GET /caddy/gym-report` | per request on a trigger | as now (3 s timeout; the request goes through if the app fails). `X-NiceTry-Uri` is the path the trigger matched: cleaned, or without a leading `*.php` segment (`/index.php/login` is sent as `/login`), when that's what matched. |
 | `GET /caddy/live-tail` | every 10 s | `{"hosts":[...]}` |
 | `GET /caddy/lockdowns` | every 10 s, ETag | `{"lockdowns":[...]}` (must name the key) |
 | `GET /caddy/tarpit-feed` | every 10 s, ETag | `{"tarpits":[...]}` (must name the key) |
+| `GET /caddy/blackhole` (the `nicetry-blackhole` agent, with the Blackhole add-on) | every 30 s, ETag | `{"mode":"observe"\|"enforce","entries":[{"address","expires_at"}],"protect":[...]}` (must name `entries`). `expires_at` is always a time: an entry with no end is sent with one about a day away, moved on each hour, so the kernel always holds a timeout. A 404 means the add-on is off: the agent removes its table. |
+| `POST /caddy/blackhole/report` (the same agent) | every 30 s | Takes `{"edge","version","mode","entries","error","counters":[{"address","packets","bytes"}]}`, answers 204. |
+| `GET /caddy/rewrite-feed` | every 10 s, ETag | `{"rewrites":[...]}` (must name the key) |
 | `POST /caddy/ingest` | Vector, every ~2 s | 2xx. Body below. |
 
 Polls that fail keep the last list, so sites stay up while the app restarts.
@@ -92,6 +95,27 @@ Polls that fail keep the last list, so sites stay up while the app restarts.
 - A path with `.` or `..` segments (after decoding) gets nginx's 400 before anything else, origins and the gym
   included.
 
+A response from an origin never carries `NiceTryBot-Tag` to the visitor: `nicetry_remote_tag` strips it,
+and when it's a well-formed tag (`v1.<payload>.<signature>`, URL-safe base64) sets it as the `_q_tag`
+cookie (Path=/, a day, HttpOnly, Secure, SameSite=Lax). `_q_tag` is one of the gym's cookies: the gym
+check gets it, and a cookie trigger (`limited`, no clients, no rules) has the edge ask about any request
+carrying one on that trigger's hosts. The app checks the tag's signature, not the edge.
+
+Every request to an origin loses any `X-NiceTry-Verdict` the visitor sent. For a client IP NiceTryBot has
+flagged (`GET /caddy/client-verdicts`, polled every 30 s with the edge token: `{"verdicts":[{"ip","header"}]}`),
+`nicetry_verdict` sets it to NiceTryBot's value, like `fraud; score=15.53; reasons=<URL-encoded, | separated>`.
+The value is plain printable ASCII, at most 1024 bytes; anything else in the list is skipped.
+
+A response from an origin on a hostname with rewrites (`GET /caddy/rewrite-feed`:
+`{"rewrites":[{"id","hosts","find","replace","ignore_case","in","headers"}]}`) has every `find` in its body replaced by
+`replace`, in the order listed, ignoring case when `ignore_case` is set. `in` is `html` (text/html and
+application/xhtml+xml only) or `text` (any text/*, JavaScript, JSON and XML; never text/event-stream). The
+origin is asked with `Accept-Encoding: identity` and no `Range`; a compressed response, a 204 or 304, a HEAD or
+upgrade, and a body over 4 MB pass untouched. A rewritten response gets its new `Content-Length` and loses
+`Accept-Ranges` and `Content-MD5`. With `headers` set, the same replacement also runs on every response's header
+values (HEAD included, whatever the body), except `Content-Length`, `Content-Encoding`, `Content-Type`,
+`Transfer-Encoding`, `Connection` and `Trailer`; line breaks in `replace` become spaces there.
+
 ## Ingest body
 
 `Content-Type: application/x-ndjson`: one JSON object per line, the same shape as the bucket files and
@@ -99,7 +123,8 @@ Polls that fail keep the last list, so sites stay up while the app restarts.
 `client_ip`, `method`, `path` (no query string, PINs masked as `:pin`), `status`, `duration_ms`, `user_agent`,
 `action`, `bot_tag`, `ja3`, `ja4`, `country_code`, `region`, `city`, `latitude`, `longitude`, `asn` and `as_org`.
 Some lines also carry `ja4h`, `via`, `ch_ua`, `ch_platform`, `lang`, `livewire_component`, and the `capture_id` /
-`response_*` / `request_*` / `signals` fields.
+`response_*` / `request_*` / `signals` fields, and on a captured response with a flag, `flags`
+(`[{"id": <pattern>, "value": <the match>}]`, at most 20, each cut to 500 bytes).
 
 - Batches are at most 1,000,000 bytes, so the app's nginx needs `client_max_body_size` of 2m or more. A 413 would
   drop the batch.

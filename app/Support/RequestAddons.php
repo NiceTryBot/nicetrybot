@@ -62,6 +62,22 @@ class RequestAddons
     }
 
     /**
+     * Get what the visitor sent in one request, from the first add-on that recorded it.
+     *
+     * @return array{content_type: string|null, body: string}|null
+     */
+    public function sentBody(Team $team, EdgeRequest $request): ?array
+    {
+        foreach ($this->all() as $addon) {
+            if ($addon instanceof RequestBodyAddon && ($sent = $addon->sentBody($team, $request)) !== null) {
+                return $sent;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @return list<RequestAddon>
      */
     private function all(): array
