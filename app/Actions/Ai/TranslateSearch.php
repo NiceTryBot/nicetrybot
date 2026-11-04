@@ -27,7 +27,7 @@ class TranslateSearch
     /**
      * Bumped whenever the instructions change, so translations cached under the old ones aren't reused.
      */
-    private const int PROMPT_VERSION = 9;
+    private const int PROMPT_VERSION = 10;
 
     /**
      * Worked examples for the instructions. Each must parse; a test holds them to it.
@@ -36,6 +36,7 @@ class TranslateSearch
      */
     public const array EXAMPLES = [
         ['question' => '404s from hosting networks', 'search' => "status = 404 AND network.kind = 'hosting'", 'period' => '', 'client' => '', 'view' => 'requests', 'note' => ''],
+        ['question' => 'what are universities and government networks asking for', 'search' => "network.category IN ('education', 'government')", 'period' => '', 'client' => '', 'view' => 'paths', 'note' => ''],
         ['question' => 'who was looking for .env files this week', 'search' => "path LIKE '%.env%'", 'period' => '7d', 'client' => '', 'view' => 'requests', 'note' => ''],
         ['question' => 'blocked requests from outside the US in the last hour', 'search' => "action = 'blocked' AND country != 'US'", 'period' => '1h', 'client' => '', 'view' => 'requests', 'note' => ''],
         ['question' => 'anything from digitalocean or ovh', 'search' => "network LIKE '%digitalocean%' OR network LIKE '%ovh%'", 'period' => '', 'client' => '', 'view' => 'requests', 'note' => ''],

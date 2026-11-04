@@ -11,7 +11,8 @@ use Illuminate\Support\Collection;
 /**
  * What the edge needs beside single-request rules (EdgeExpression) to judge them: the path categories
  * in the order they're tried, the hosting networks' ASNs, and each domain's other hostnames, by the
- * hostname rules call it. Sent with every list that carries rule expressions.
+ * hostname rules call it. Sent with every list that carries rule expressions. The network categories
+ * aren't here: 110,000 ASNs is too many to send, and rules reading them never reach the edge.
  */
 final class EdgeRuleEnvironment
 {

@@ -72,7 +72,7 @@ readonly class RuleScript
 
     /**
      * Determine if the rule can be decided from one request as it happens: no counting over a window,
-     * and nothing in WHERE that's only known once the site has answered. The edge checks such rules
+     * and nothing in WHERE that the edge can't know before the site answers. The edge checks such rules
      * live, so their verdict lands on the very request that earns it.
      */
     public function isLive(): bool

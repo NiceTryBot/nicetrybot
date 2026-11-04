@@ -4,9 +4,11 @@ namespace App\Actions\Analytics;
 
 use App\Actions\Rules\BuildRuleQuery;
 use App\Data\RequestQuery;
+use App\Data\RuleScript;
 use App\Data\RuleScriptSyntaxError;
 use App\Enums\ChartInterval;
 use App\Enums\HttpMethod;
+use App\Enums\NetworkCategory;
 use App\Enums\NetworkKind;
 use App\Enums\PathCategory;
 use App\Enums\RequestAction;
@@ -43,7 +45,7 @@ class CountTrafficSearch
     public const array GROUPABLE = [
         'host', 'path', 'category', 'status', 'method', 'action', 'tag', 'client',
         'ip', 'ua', 'ja4', 'ja4.alpn', 'ja3', 'ja4h', 'hints', 'lang',
-        'asn', 'network', 'network.kind', 'country', 'region', 'city',
+        'asn', 'network', 'network.kind', 'network.category', 'country', 'region', 'city',
     ];
 
     public function __construct(private BuildRuleQuery $buildRuleQuery)
@@ -85,7 +87,18 @@ class CountTrafficSearch
         $column = $field === RuleField::Asn ? 'edge_requests.asn' : $field->column();
         $grouping = $field === RuleField::Asn ? "{$column}, networks.name" : $column;
 
-        $query = $this->requests($team, $search, $period, $now)->toBase()
+        $query = $this->requests($team, $search, $period, $now)->toBase();
+
+        // A grouping reads its field whatever the search reads, so what only some searches join comes in here.
+        $parsed = $search->parse();
+
+        if (! in_array($field, RuleScript::fieldsIn($parsed['where'], $parsed['having']), true)) {
+            foreach ($field->joins() as $join) {
+                $join($query);
+            }
+        }
+
+        $query
             ->selectRaw("{$column} as value".($field === RuleField::Asn ? ', networks.name as network_name' : '').', count(*) as requests, count(distinct edge_requests.client_ip) as unique_ips')
             ->groupByRaw($grouping)
             ->orderByDesc('requests')
@@ -216,6 +229,7 @@ class CountTrafficSearch
             RuleField::Action => RequestAction::tryFrom((int) $stored)?->slug(),
             RuleField::Method => HttpMethod::tryFrom((int) $stored)?->label(),
             RuleField::NetworkKind => NetworkKind::tryFrom((int) $stored) === NetworkKind::Hosting ? 'hosting' : 'unknown',
+            RuleField::NetworkCategory => NetworkCategory::tryFrom((int) $stored)?->slug(),
             RuleField::Status, RuleField::Asn => (int) $stored,
             default => (string) $stored,
         } ?? (string) $stored;

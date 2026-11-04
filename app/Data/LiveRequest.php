@@ -17,6 +17,7 @@ use Symfony\Component\HttpFoundation\IpUtils;
  * doesn't know yet, like the status before the origin answers, are unknown, and an expression that
  * depends on them evaluates to null rather than true or false. An edge that describes the client
  * ($described) also tells its language, place, network and edge tag, each of which may be missing.
+ * The network category stays unknown: it's judged from the logs (RuleField::isLive()).
  */
 readonly class LiveRequest
 {

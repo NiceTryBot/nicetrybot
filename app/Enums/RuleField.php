@@ -34,6 +34,7 @@ enum RuleField: string implements RuleFieldDefinition
     case Asn = 'asn';
     case Network = 'network';
     case NetworkKind = 'network.kind';
+    case NetworkCategory = 'network.category';
     case Country = 'country';
     case Region = 'region';
     case City = 'city';
@@ -74,6 +75,7 @@ enum RuleField: string implements RuleFieldDefinition
             self::Asn => 'edge_requests.asn',
             self::Network => 'networks.name',
             self::NetworkKind => 'networks.kind',
+            self::NetworkCategory => 'network_categories.category',
             self::Country => 'locations.country_code',
             self::Region => 'locations.region',
             self::City => 'locations.city',
@@ -82,13 +84,16 @@ enum RuleField: string implements RuleFieldDefinition
 
     /**
      * Get the joins the field reads through: none, since the core's lookups are joined into every rule
-     * query (BuildRuleQuery::constrain()).
+     * query (BuildRuleQuery::constrain()), apart from the network categories, which only the searches
+     * and rules that read them should pay for.
      *
      * @return array<string, Closure(Builder): mixed>
      */
     public function joins(): array
     {
-        return [];
+        return $this === self::NetworkCategory
+            ? ['network_categories' => fn (Builder $query) => $query->leftJoin('network_categories', 'network_categories.asn', '=', 'edge_requests.asn')]
+            : [];
     }
 
     /**
@@ -109,11 +114,13 @@ enum RuleField: string implements RuleFieldDefinition
 
     /**
      * Determine if the field is known while a request is happening, before the site answers: what the
-     * client sent and where it comes from, but not the status, timing or what the edge did.
+     * client sent and where it comes from, but not the status, timing or what the edge did. Nor the network
+     * category: edges only hold the curated hosting list (EdgeRuleEnvironment), and the categories are far
+     * too many to send them, so rules reading one are judged from the logs like the others here.
      */
     public function isLive(): bool
     {
-        return ! in_array($this, [self::Ja3, self::Ja4h, self::ClientHints, self::Client, self::Status, self::Duration, self::Action], true);
+        return ! in_array($this, [self::Ja3, self::Ja4h, self::ClientHints, self::Client, self::Status, self::Duration, self::Action, self::NetworkCategory], true);
     }
 
     /**
@@ -148,6 +155,7 @@ enum RuleField: string implements RuleFieldDefinition
                 'unknown', 'network' => NetworkKind::Unknown->value,
                 default => throw new InvalidArgumentException(__('network.kind is \'hosting\' or \'unknown\'.')),
             }],
+            self::NetworkCategory => [(NetworkCategory::fromSlug((string) $literal) ?? throw new InvalidArgumentException(__('network.category is \'hosting\', \'isp\', \'business\', \'education\' or \'government\'.')))->value],
             self::Ip => [str_contains((string) $literal, '/') && ! self::isIpRange((string) $literal)
                 ? throw new InvalidArgumentException(__(':value isn\'t an IP range. Write one like \'66.249.64.0/19\'.', ['value' => $literal]))
                 : (string) $literal],
@@ -224,6 +232,7 @@ enum RuleField: string implements RuleFieldDefinition
             self::Asn => __('ASN'),
             self::Network => __('network'),
             self::NetworkKind => __('network kind'),
+            self::NetworkCategory => __('network category'),
             self::Country => __('country'),
             self::Region => __('region'),
             self::City => __('city'),
@@ -238,7 +247,7 @@ enum RuleField: string implements RuleFieldDefinition
         return match ($this) {
             self::Ip, self::Ja4, self::Ja4Alpn, self::Ja3, self::UserAgent, self::Ja4h, self::ClientHints, self::Client, self::Language => __('Client'),
             self::Host, self::Path, self::Category, self::Status, self::Method, self::Duration, self::Action, self::Tag => __('Request'),
-            self::Asn, self::Network, self::NetworkKind, self::Country, self::Region, self::City => __('Network & place'),
+            self::Asn, self::Network, self::NetworkKind, self::NetworkCategory, self::Country, self::Region, self::City => __('Network & place'),
         };
     }
 
@@ -255,6 +264,7 @@ enum RuleField: string implements RuleFieldDefinition
             self::Language => __("e.g. 'en-US,en;q=0.9'; missing is a script tell"),
             self::Category => __("a family like 'probe' or a slug like 'probe/creds'"),
             self::NetworkKind => __("'hosting' for cloud and datacenter networks"),
+            self::NetworkCategory => __("'hosting', 'isp', 'business', 'education' or 'government'"),
             self::Status => __('e.g. 404, 429'),
             self::Duration => __('milliseconds'),
             default => '',
@@ -263,10 +273,12 @@ enum RuleField: string implements RuleFieldDefinition
 
     /**
      * Get what Claude should know before writing a rule with the field, beyond its hint: nothing, for
-     * the core's.
+     * most of the core's.
      */
     public function ruleNote(): string
     {
-        return '';
+        return $this === self::NetworkCategory
+            ? 'judged from the logs a minute or so after a request, so a rule reading it can\'t act on a client\'s first request the way one reading network.kind can.'
+            : '';
     }
 }

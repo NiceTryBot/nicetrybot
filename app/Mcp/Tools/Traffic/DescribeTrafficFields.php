@@ -63,6 +63,13 @@ class DescribeTrafficFields extends TeamTool
             'note' => 'Set chart to true for a PNG. The interval defaults to one that suits the period.',
         ],
         [
+            'question' => 'Which kinds of network are probing for credentials?',
+            'where' => "category = 'probe/creds'",
+            'period' => '7d',
+            'group_by' => 'network.category',
+            'note' => 'network.category tells hosting, isp, business, education and government networks apart. Requests from a network nobody has categorised group under none.',
+        ],
+        [
             'question' => 'Which user agents are hitting the WordPress login?',
             'where' => "path LIKE '%/wp-login.php%'",
             'period' => '7d',

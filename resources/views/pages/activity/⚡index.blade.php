@@ -895,6 +895,15 @@ new #[Title('Activity')] class extends Component {
     }
 
     /**
+     * Re-render when an administrator corrects a network's category, so the new badge shows.
+     */
+    #[On('network-category-changed')]
+    public function refreshNetworkCategories(): void
+    {
+        //
+    }
+
+    /**
      * Start a live tail for ten minutes (of the filtered domain, or all of the team's), or stop it.
      */
     public function toggleLive(): void
@@ -1165,6 +1174,7 @@ new #[Title('Activity')] class extends Component {
             ->select('edge_requests.*')
             ->with('domain:id,hostname')
             ->with('clientHintRecord')
+            ->with('network.networkCategory')
             ->latest('occurred_at')
             ->latest('id')
             ->getQuery();
@@ -1240,7 +1250,7 @@ new #[Title('Activity')] class extends Component {
     public function inspectedRequest(): ?EdgeRequest
     {
         return $this->inspectedRequestId
-            ? $this->team->edgeRequests()->with('domain')->find($this->inspectedRequestId)
+            ? $this->team->edgeRequests()->with(['domain', 'network.networkCategory'])->find($this->inspectedRequestId)
             : null;
     }
 
@@ -1480,7 +1490,7 @@ new #[Title('Activity')] class extends Component {
             ->orderByDesc('last_request_id')
             ->paginate($this->perPage, total: $this->view === 'ips' ? $this->totals['ips'] : null);
 
-        $latest = EdgeRequest::query()->with(['domain:id,hostname', 'clientHintRecord'])->findMany($clients->pluck('last_request_id'))->keyBy('id');
+        $latest = EdgeRequest::query()->with(['domain:id,hostname', 'clientHintRecord', 'network.networkCategory'])->findMany($clients->pluck('last_request_id'))->keyBy('id');
 
         $clients->getCollection()->each(function (object $client) use ($latest) {
             $client->latest = $latest->get($client->last_request_id);
@@ -2460,6 +2470,7 @@ new #[Title('Activity')] class extends Component {
                                                     @if ($latest->network)
                                                         <flux:icon.server-stack variant="micro" class="size-3 shrink-0" />
                                                         <span class="truncate">{{ $latest->network->name }}</span>
+                                                        <x-ntb.network-category-badge :network="$latest->network" />
                                                     @endif
                                                     <x-ntb.neighborhood-badge :$neighborhood />
                                                 </span>
@@ -2651,6 +2662,7 @@ new #[Title('Activity')] class extends Component {
                                                 @if ($request->network)
                                                     <flux:icon.server-stack variant="micro" class="size-3 shrink-0" />
                                                     <span class="max-w-40 truncate">{{ $request->network->name }}</span>
+                                                    <x-ntb.network-category-badge :network="$request->network" />
                                                 @endif
                                                 <x-ntb.neighborhood-badge :$neighborhood />
                                             </span>
@@ -2742,6 +2754,14 @@ new #[Title('Activity')] class extends Component {
                                     <flux:icon.tag variant="micro" class="size-3.5 text-zinc-400" /> {{ __('Name it…') }}
                                 </button>
                             @endif
+                            @can('administer')
+                                <div x-show="asn" data-test="network-category-item">
+                                    <div class="my-1 border-t border-line dark:border-zinc-800"></div>
+                                    <button type="button" role="menuitem" x-on:click="open = false; $wire.dispatch('network-category-edit', { asn: Number(asn) })" class="flex w-full items-center gap-2 rounded px-2 py-1 text-start hover:bg-canvas dark:hover:bg-zinc-800" data-test="network-category">
+                                        <flux:icon.server-stack variant="micro" class="size-3.5 text-zinc-400" /> {{ __('Network category…') }} <span class="font-mono text-[0.65rem] text-zinc-400" x-text="'AS' + asn"></span>
+                                    </button>
+                                </div>
+                            @endcan
                             {{ app(ViewSlots::class)->render(ViewSlot::ActivityClientMenu, ['team' => $this->team]) }}
                         </div>
                         @if ($this->canManageRules)
@@ -2872,9 +2892,7 @@ new #[Title('Activity')] class extends Component {
                             <dd>
                                 <a href="{{ route('activity.index', ['asn' => $request->asn, 'period' => '30d']) }}" wire:navigate class="underline decoration-zinc-300 underline-offset-2 hover:decoration-current dark:decoration-zinc-600">{{ $request->network->name }}</a>
                                 <span class="font-mono text-xs text-zinc-400">AS{{ $request->asn }}</span>
-                                @if ($request->network->isHosting())
-                                    <flux:badge size="sm" color="amber" class="ms-1">{{ __('Hosting') }}</flux:badge>
-                                @endif
+                                <x-ntb.network-category-badge :network="$request->network" class="ms-1" />
                             </dd>
                         @else
                             <dd class="text-xs text-zinc-500 dark:text-zinc-400">{{ __('Unknown') }}</dd>
@@ -3007,6 +3025,9 @@ new #[Title('Activity')] class extends Component {
     </flux:modal>
     @can('create', [App\Models\ClientLabel::class, $this->team])
         <livewire:pages::clients.label-modal />
+    @endcan
+    @can('administer')
+        <livewire:pages::activity.network-category-modal />
     @endcan
     {{ app(ViewSlots::class)->render(ViewSlot::ActivityModals, ['team' => $this->team]) }}
 </div>
