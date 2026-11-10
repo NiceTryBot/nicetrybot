@@ -272,19 +272,53 @@ func sharedOrigins(endpoint, token string, interval time.Duration) *originMap {
 	return m
 }
 
+// originKnown reports whether the edge currently routes a hostname to an origin.
+func originKnown(name string) bool {
+	originMapsMu.Lock()
+	defer originMapsMu.Unlock()
+
+	for _, m := range originMaps {
+		if _, ok := (*m.current.Load())[strings.ToLower(name)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// restore starts routing from the last good origins, reporting how many sites that gave.
+func (m *originMap) restore(store *lastGood) (int, bool) {
+	logger := caddy.Log().Named("nicetry_origins")
+
+	body, age, ok := store.restore("origins")
+	if !ok {
+		return 0, false
+	}
+	origins, err := parseOrigins(body)
+	if err != nil {
+		logger.Warn("couldn't use the stored origins", zap.Error(err))
+		return 0, false
+	}
+	m.current.Store(&origins)
+	logger.Info("origins restored", zap.Int("sites", len(origins)), zap.Duration("last_changed", age))
+	return len(origins), true
+}
+
 func (m *originMap) poll(endpoint, token string, interval time.Duration) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	logger := caddy.Log().Named("nicetry_origins")
 	etag := ""
 
+	m.restore(sharedLastGood())
+
 	for {
-		origins, newEtag, err := fetchOrigins(client, endpoint, token, etag)
+		origins, newEtag, body, err := fetchOrigins(client, endpoint, token, etag)
 		switch {
 		case err != nil:
 			logger.Warn("keeping the last origins", zap.Error(err))
 		case origins != nil:
 			m.current.Store(&origins)
 			etag = newEtag
+			sharedLastGood().save("origins", body)
 			logger.Info("origins updated", zap.Int("sites", len(origins)))
 		}
 		time.Sleep(interval)
@@ -293,11 +327,12 @@ func (m *originMap) poll(endpoint, token string, interval time.Duration) {
 
 var headerName = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 
-// fetchOrigins asks for the current origins. An unchanged list (304) comes back as nil, nil.
-func fetchOrigins(client *http.Client, endpoint, token, etag string) (map[string]originRoute, string, error) {
+// fetchOrigins asks for the current origins, and also returns the body they came in. An unchanged list
+// (304) comes back as nil, nil.
+func fetchOrigins(client *http.Client, endpoint, token, etag string) (map[string]originRoute, string, []byte, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
@@ -307,25 +342,38 @@ func fetchOrigins(client *http.Client, endpoint, token, etag string) (map[string
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
-		return nil, etag, nil
+		return nil, etag, nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("origins returned %d", resp.StatusCode)
+		return nil, "", nil, fmt.Errorf("origins returned %d", resp.StatusCode)
 	}
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, "", nil, err
+	}
+	origins, err := parseOrigins(body)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return origins, resp.Header.Get("ETag"), body, nil
+}
+
+// parseOrigins reads the origins as the app sends them, dropping any that aren't valid.
+func parseOrigins(body []byte) (map[string]originRoute, error) {
 	var payload struct {
 		Origins []struct {
 			Host string `json:"host"`
 			originRoute
 		} `json:"origins"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&payload); err != nil {
-		return nil, "", err
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
 	}
 
 	origins := make(map[string]originRoute, len(payload.Origins))
@@ -334,7 +382,7 @@ func fetchOrigins(client *http.Client, endpoint, token, etag string) (map[string
 			origins[strings.ToLower(site.Host)] = site.originRoute
 		}
 	}
-	return origins, resp.Header.Get("ETag"), nil
+	return origins, nil
 }
 
 // validOrigin drops anything that could break the proxy or smuggle headers. The app checks too, but

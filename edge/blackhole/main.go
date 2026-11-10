@@ -9,7 +9,8 @@
 //   - Every address has a timeout in the kernel, so nothing outlives its expiry if this agent dies.
 //   - A 404 from the app means the add-on is off, unlicensed or gone: the whole table is removed.
 //   - An unreachable app changes nothing: the last list stands until its timeouts run out.
-//   - Until the first good answer it touches nothing.
+//   - Until the first good answer it touches nothing, unless Redis holds a last good list (lastgood.go),
+//     which it applies only while the app can't be reached. Expired entries in it are left out as ever.
 //
 // In Observe mode the same rules count packets without dropping them, so the list can be tried safely.
 //
@@ -76,6 +77,7 @@ type agent struct {
 	nft      runner
 	client   *http.Client
 	now      func() time.Time
+	last     *lastGood
 
 	etag      string
 	feed      *Feed
@@ -131,8 +133,12 @@ func (a *agent) poll(ctx context.Context) error {
 		return fmt.Errorf("the feed answered %d", resp.StatusCode)
 	}
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return fmt.Errorf("reading the feed: %w", err)
+	}
 	var feed Feed
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&feed); err != nil {
+	if err := json.Unmarshal(body, &feed); err != nil {
 		return fmt.Errorf("reading the feed: %w", err)
 	}
 	if feed.Entries == nil {
@@ -140,7 +146,24 @@ func (a *agent) poll(ctx context.Context) error {
 	}
 	a.feed = &feed
 	a.etag = resp.Header.Get("ETag")
+	a.last.save(body)
 	return nil
+}
+
+// restore starts from the last good list, which stands only until the app answers.
+func (a *agent) restore() bool {
+	body, age, ok := a.last.restore()
+	if !ok {
+		return false
+	}
+	var feed Feed
+	if err := json.Unmarshal(body, &feed); err != nil || feed.Entries == nil {
+		log.Printf("ignoring a stored list that doesn't parse")
+		return false
+	}
+	a.feed = &feed
+	log.Printf("restored the last good list: %d entries, last changed %s ago", len(feed.Entries), age.Round(time.Second))
+	return true
 }
 
 // current reads what the kernel holds, or nothing if the table isn't there yet.
@@ -382,6 +405,8 @@ func run(nft runner) {
 	ports := env("NICETRY_BLACKHOLE_PORTS", "80, 443")
 
 	a := newAgent(endpoint, token, env("NICETRY_BLACKHOLE_EDGE", host), ports, nft)
+	a.last = lastGoodFromEnv()
+	a.restore()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

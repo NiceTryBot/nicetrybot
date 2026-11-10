@@ -66,7 +66,7 @@ new #[Title('Tags & bans')] class extends Component
     public string $tag = '';
 
     /**
-     * Look at bans (BAN rules' verdicts, which carry no tag) instead of a tag.
+     * Look at bans (BLOCK rules' verdicts, which carry no tag) instead of a tag.
      */
     #[Url(except: false)]
     public bool $bans = false;
@@ -246,7 +246,7 @@ new #[Title('Tags & bans')] class extends Component
         $rules = $this->team->edgeRules()->get(['id', 'name', 'enabled'])->keyBy('id');
         $routines = $this->team->gymRoutines()->where('enabled', true)->orderBy('position')->get();
         $requests = $this->requestsByGroup();
-        $groupKey = fn (object $row): string => (int) $row->action === RuleAction::Ban->value ? '' : (string) $row->tag;
+        $groupKey = fn (object $row): string => (int) $row->action === RuleAction::Block->value ? '' : (string) $row->tag;
 
         // Counted by the database: a busy team holds tens of thousands of verdicts.
         $ruleIdsByGroup = $this->team->verdicts()->active()->toBase()
@@ -425,7 +425,7 @@ new #[Title('Tags & bans')] class extends Component
             ->groupBy('verdicts.action', 'verdicts.tag')
             ->selectRaw('verdicts.action, verdicts.tag, count(distinct edge_requests.id) as requests')
             ->get()
-            ->groupBy(fn (object $row) => (int) $row->action === RuleAction::Ban->value ? '' : (string) $row->tag)
+            ->groupBy(fn (object $row) => (int) $row->action === RuleAction::Block->value ? '' : (string) $row->tag)
             ->map(fn (SupportCollection $rows) => (int) $rows->sum('requests'));
     }
 
@@ -507,8 +507,8 @@ new #[Title('Tags & bans')] class extends Component
 
         return $this->team->verdicts()
             ->active()
-            ->when($search === '' && $this->bans, fn (Builder $query) => $query->where('action', RuleAction::Ban))
-            ->when($search === '' && ! $this->bans, fn (Builder $query) => $query->where('action', RuleAction::Tag)->where('tag', $this->tag))
+            ->when($search === '' && $this->bans, fn (Builder $query) => $query->where('action', RuleAction::Block))
+            ->when($search === '' && ! $this->bans, fn (Builder $query) => $query->where('action', '!=', RuleAction::Block)->where('tag', $this->tag))
             ->when($search !== '', function (Builder $query) use ($search) {
                 $query->where(function (Builder $query) use ($search) {
                     if (IpRange::isRange($search)) {
@@ -686,7 +686,7 @@ new #[Title('Tags & bans')] class extends Component
                                         </flux:table.cell>
                                         @if ($searching)
                                             <flux:table.cell>
-                                                <flux:badge size="sm" :color="$verdict->action === RuleAction::Ban ? 'red' : 'amber'">{{ $verdict->action === RuleAction::Ban ? __('Banned') : $verdict->tag }}</flux:badge>
+                                                <flux:badge size="sm" :color="$verdict->action === RuleAction::Block ? 'red' : 'amber'">{{ $verdict->action === RuleAction::Block ? __('Banned') : $verdict->tag }}</flux:badge>
                                             </flux:table.cell>
                                         @endif
                                         <flux:table.cell class="text-xs">

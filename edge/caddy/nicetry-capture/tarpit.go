@@ -100,6 +100,10 @@ func (t *Tarpit) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	if strings.HasPrefix(cleanedPath(r), tarpitSkipPrefix) {
 		return next.ServeHTTP(w, r)
 	}
+	// An allowed client (nicetry_allow) is never held, even by the edge's own burst and 404 counts.
+	if isAllowed(r) {
+		return next.ServeHTTP(w, r)
+	}
 	pits := t.set.current.Load().byHost[strings.ToLower(hostOnly(r.Host))]
 	if len(pits) == 0 {
 		return next.ServeHTTP(w, r)
@@ -521,8 +525,23 @@ func newTarpitSet(endpoint, token string, maxHeld int) *tarpitSet {
 	return s
 }
 
+// restore starts the tarpits from their last good copy.
+func (s *tarpitSet) restore(store *lastGood) bool {
+	var raw []byte
+	list, ok := restoreList(store, "tarpit", func(body []byte) (*tarpitList, error) {
+		raw = body
+		return s.parse(body)
+	})
+	if ok {
+		s.current.Store(list)
+		s.raw = raw
+	}
+	return ok
+}
+
 func (s *tarpitSet) poll(interval time.Duration) {
 	client := &http.Client{Timeout: 10 * time.Second}
+	s.restore(sharedLastGood())
 	for {
 		if err := s.refresh(client); err != nil {
 			caddy.Log().Named("nicetry_tarpit").Warn("keeping the last tarpits", zap.Error(err))
@@ -549,6 +568,7 @@ func (s *tarpitSet) refresh(client *http.Client) error {
 	}
 	s.current.Store(list)
 	s.etag, s.raw = etag, raw
+	sharedLastGood().save("tarpit", raw)
 	caddy.Log().Named("nicetry_tarpit").Info("tarpits updated", zap.Int("hosts", len(list.byHost)), zap.Int("tarpits", len(s.tallies)))
 	return nil
 }

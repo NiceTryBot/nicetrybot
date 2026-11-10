@@ -24,7 +24,7 @@
                 <p class="mb-5 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200" role="status" data-test="gym-notice">{{ $notice }}</p>
             @endif
 
-            @include($obstacleDefinition->view(), ['obstacle' => $obstacle, 'runtime' => $runtime])
+            @include($obstacleDefinition->view(), ['obstacle' => $obstacle, 'runtime' => $runtime, 'site' => $session?->domain?->hostname])
         </div>
     @else
         <div class="w-full max-w-md" data-test="gym-visit" data-obstacle="{{ $obstacleDefinition->key() }}">
@@ -49,7 +49,7 @@
                     <p class="mb-5 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200" role="status" data-test="gym-notice">{{ $notice }}</p>
                 @endif
 
-                @include($obstacleDefinition->view(), ['obstacle' => $obstacle, 'runtime' => $runtime])
+                @include($obstacleDefinition->view(), ['obstacle' => $obstacle, 'runtime' => $runtime, 'site' => $session?->domain?->hostname])
             </div>
         </div>
     @endif

@@ -115,7 +115,7 @@ func TestALimitedTriggerAdmitsItsClientsAndRequestsMatchingItsRules(t *testing.T
 	}))
 	defer feed.Close()
 
-	targets, _, err := fetchTargets(feed.Client(), feed.URL, "t", "triggers", true, "")
+	targets, _, _, err := fetchTargets(feed.Client(), feed.URL, "t", "triggers", true, "")
 	if err != nil {
 		t.Fatal(err)
 	}

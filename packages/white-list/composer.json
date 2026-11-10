@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/white-list",
+    "description": "White List: addresses that never meet an enforcement. An administrator lists IPs and CIDR ranges by hand, under a name and a category, and a visitor on one is never sent to the gym, held in a tarpit, blocked, or dropped in the blackhole — while still showing up in Activity and reports. The one place to keep an office, a partner's scanner, or a crawler you trust out of harm's way.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\WhiteList\\": "src/",
+            "NiceTry\\WhiteList\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "White List",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\WhiteList\\WhiteListServiceProvider"
+            ]
+        }
+    }
+}

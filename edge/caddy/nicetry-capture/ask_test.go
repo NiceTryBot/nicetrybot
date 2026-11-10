@@ -12,6 +12,54 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddytls"
 )
 
+func askingApp(t *testing.T, status int) *AskPermission {
+	t.Helper()
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(app.Close)
+
+	p := &AskPermission{Endpoint: app.URL + "/caddy/ask", Token: "edge-secret"}
+	if err := p.Provision(caddy.Context{}); err != nil {
+		t.Fatal(err)
+	}
+	p.known = func(name string) bool { return name == "routed.example" }
+	return p
+}
+
+func TestARoutedHostnameIsAllowedWhileTheAppIsErroring(t *testing.T) {
+	p := askingApp(t, http.StatusBadGateway)
+
+	if err := p.CertificateAllowed(context.Background(), "routed.example"); err != nil {
+		t.Fatalf("a routed hostname should be allowed while the app is down: %v", err)
+	}
+	if err := p.CertificateAllowed(context.Background(), "stranger.example"); err == nil {
+		t.Fatal("a hostname the edge doesn't route should not be allowed")
+	}
+}
+
+func TestARoutedHostnameIsAllowedWhileTheAppIsUnreachable(t *testing.T) {
+	p := askingApp(t, http.StatusOK)
+	p.endpoint.Host = "127.0.0.1:1"
+
+	if err := p.CertificateAllowed(context.Background(), "routed.example"); err != nil {
+		t.Fatalf("a routed hostname should be allowed while the app is unreachable: %v", err)
+	}
+	if err := p.CertificateAllowed(context.Background(), "stranger.example"); err == nil {
+		t.Fatal("a hostname the edge doesn't route should not be allowed")
+	}
+}
+
+func TestTheAppsRefusalStandsEvenForARoutedHostname(t *testing.T) {
+	p := askingApp(t, http.StatusNotFound)
+
+	err := p.CertificateAllowed(context.Background(), "routed.example")
+
+	if !errors.Is(err, caddytls.ErrPermissionDenied) {
+		t.Fatalf("expected the app's refusal, got %v", err)
+	}
+}
+
 func TestTheAskCarriesTheTokenInAHeaderAndNeverInAnError(t *testing.T) {
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer edge-secret" || r.URL.Query().Has("token") {

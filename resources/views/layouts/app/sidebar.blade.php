@@ -13,15 +13,17 @@
             <livewire:team-switcher />
 
             <flux:sidebar.nav>
-                <flux:sidebar.group :heading="__('Your workspace')" class="grid">
-                    {{-- The core's pages and every add-on's, from App\Support\Nav. --}}
-                    @foreach (app(\App\Support\Nav::class)->items() as $item)
-                        @php($badge = $item->badge === null ? null : ($item->badge)())
-                        <flux:sidebar.item :icon="$item->icon" :href="route($item->route)" :current="request()->routeIs(...$item->currentPatterns())" :badge="$badge" :badge:color="$item->badgeColor" wire:navigate wire:key="nav-{{ $item->route }}" :data-test="$item->test">
-                            {{ __($item->label) }}@if ($item->ai)<x-ntb.ai-sparkle />@endif
-                        </flux:sidebar.item>
-                    @endforeach
-                </flux:sidebar.group>
+                {{-- The core's pages and every add-on's, from App\Support\Nav. --}}
+                @foreach (app(\App\Support\Nav::class)->groups() as $navGroup)
+                    <flux:sidebar.group :heading="$navGroup['group']?->label() ?? __('Your workspace')" class="grid">
+                        @foreach ($navGroup['items'] as $item)
+                            @php($badge = $item->badge === null ? null : ($item->badge)())
+                            <flux:sidebar.item :icon="$item->icon" :href="route($item->route)" :current="request()->routeIs(...$item->currentPatterns())" :badge="$badge" :badge:color="$item->badgeColor" wire:navigate wire:key="nav-{{ $item->route }}" :data-test="$item->test">
+                                {{ __($item->label) }}@if ($item->ai)<x-ntb.ai-sparkle />@endif
+                            </flux:sidebar.item>
+                        @endforeach
+                    </flux:sidebar.group>
+                @endforeach
 
                 <flux:sidebar.group :heading="__('Coming soon')" class="grid">
                     @foreach ([

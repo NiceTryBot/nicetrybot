@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\GymExit;
 use App\Enums\GymSessionStatus;
 use App\Enums\HttpMethod;
 use App\Enums\NetworkKind;
@@ -511,7 +512,7 @@ test('the filters switch clauses of the search on and off, and follow what it sa
         ->assertSet('search', "path LIKE '/%'\nAND host = 'claims.example.com'");
 
     // Writing a clause by hand moves the select to match.
-    $component->set('search', "ACTION IN ('observed', 'diverted', 'blocked') and status=404")
+    $component->set('search', "ACTION IN ('observed', 'diverted', 'blocked', 'bouncer') and status=404")
         ->assertSet('action', 'suspicious')
         ->assertSet('status', '404')
         ->assertSet('domain', '');
@@ -711,6 +712,39 @@ test('a diverted request names the routines its visitor is in', function () {
     Livewire::test('pages::activity.index')
         ->assertSeeHtml('data-test="gym-routines"')
         ->assertSee('Routines: Outside the US wait, Outdated wait');
+});
+
+test('a visit that ends in a block shows as blocked, with the gym line only when there were obstacles first', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+    $blockOnly = GymRoutine::factory()->for($user->currentTeam)->create(['name' => 'Blocked: outside the US', 'obstacles' => [], 'exit_action' => GymExit::Block]);
+    $wait = GymRoutine::factory()->for($user->currentTeam)->create(['name' => 'Outdated wait', 'exit_action' => GymExit::Continue]);
+    $visits = [
+        // Turned away at once by the block-only routine.
+        '203.0.113.1' => [GymSessionStatus::TurnedAway, [$blockOnly]],
+        // In both: the wait comes first, then the block. Still waiting.
+        '203.0.113.2' => [GymSessionStatus::Training, [$blockOnly, $wait]],
+        // Only the wait, and failed it: that's the gym, not a block.
+        '203.0.113.3' => [GymSessionStatus::TurnedAway, [$wait]],
+    ];
+    foreach ($visits as $ip => [$status, $routines]) {
+        EdgeRequest::factory()->for($domain)->create(['action' => RequestAction::Diverted, 'client_ip' => $ip, 'occurred_at' => now()->subMinute()]);
+        GymSession::factory()->create([
+            'team_id' => $user->currentTeam->id, 'domain_id' => $domain->id, 'client_ip' => $ip, 'status' => $status,
+            'started_at' => now()->subMinutes(2), 'last_seen_at' => now()->subMinute(),
+        ])->routines()->attach(collect($routines)->pluck('id'));
+    }
+
+    $this->actingAs($user);
+
+    $html = Livewire::test('pages::activity.index')->html();
+
+    expect(substr_count($html, 'data-test="gym-blocked"'))->toBe(2)
+        ->and(substr_count($html, 'data-test="gym-routines"'))->toBe(1)
+        ->and(substr_count($html, 'data-test="gym-outcome"'))->toBe(2)
+        ->and($html)->not->toContain('title="Blocked: outside the US" data-test="gym-outcome"')
+        ->and($html)->toContain('title="Blocked: outside the US, Outdated wait" data-test="gym-outcome"')
+        ->and($html)->toContain('title="Outdated wait" data-test="gym-outcome"');
 });
 
 test('the search\'s totals are kept half a minute, so paging and actions reuse them', function () {

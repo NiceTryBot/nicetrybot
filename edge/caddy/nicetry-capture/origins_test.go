@@ -157,7 +157,7 @@ func TestOriginsAreValidatedAndAnUnchangedListIsKept(t *testing.T) {
 	}))
 	defer app.Close()
 
-	origins, etag, err := fetchOrigins(app.Client(), app.URL, "t", "")
+	origins, etag, _, err := fetchOrigins(app.Client(), app.URL, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestOriginsAreValidatedAndAnUnchangedListIsKept(t *testing.T) {
 		t.Errorf("etag = %q", etag)
 	}
 
-	origins, _, err = fetchOrigins(app.Client(), app.URL, "t", etag)
+	origins, _, _, err = fetchOrigins(app.Client(), app.URL, "t", etag)
 	if err != nil || origins != nil {
 		t.Errorf("an unchanged list should come back nil, got %v, %v", origins, err)
 	}

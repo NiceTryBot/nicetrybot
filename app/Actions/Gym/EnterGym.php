@@ -35,7 +35,7 @@ class EnterGym
             'token' => Str::random(40),
             'is_preview' => false,
             'status' => GymSessionStatus::Training,
-            'destination' => $destination,
+            'destination' => $destination === null ? null : mb_substr($destination, 0, 2048),
             'client_ip' => $visitor->ip,
             'user_agent' => $visitor->userAgent === null ? null : mb_substr($visitor->userAgent, 0, 512),
             'ja4' => $visitor->ja4,

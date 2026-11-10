@@ -59,7 +59,7 @@ test('a one-try pass allows page loads and one submission, then sends the visito
 
     edgeAsks('edge.gym.check', 'POST', '/livewire/message/login', $pass, ['X-Livewire' => 'true', 'Referer' => 'https://sign.example/login'])
         ->assertExactJson(['effects' => ['html' => null, 'dirty' => [], 'redirect' => '/login'], 'serverMemo' => []]);
-    edgeAsks('edge.gym.check', 'GET', '/login', $pass)->assertOk()->assertCookie(GymSession::SESSION_COOKIE, encrypted: false);
+    edgeAsks('edge.gym.check', 'GET', '/login', $pass)->assertForbidden()->assertCookie(GymSession::SESSION_COOKIE, encrypted: false);
 });
 
 test('after the try, the page that could lift the verdict opens provisionally and the edge reports how it went', function (int $status, bool $lifted) {
@@ -91,7 +91,7 @@ test('a spent pass doesn\'t open pages that can\'t lift the verdict', function (
     ['session' => $session, 'pass' => $pass] = taggedClientWithPass();
     $session->update(['pass_state' => GymPassState::Spent]);
 
-    edgeAsks('edge.gym.check', 'GET', '/pricing', $pass)->assertOk()->assertSee('<html', escape: false);
+    edgeAsks('edge.gym.check', 'GET', '/pricing', $pass)->assertForbidden()->assertSee('<html', escape: false);
 
     expect($session->fresh()->pass_state)->toBe(GymPassState::Spent);
 });

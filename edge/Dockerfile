@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
       --with github.com/josuebrunel/caddy-ja3ja4@v0.2.0 \
       --with nicetrybot.com/caddy/capture=/src/nicetry-capture \
       --output /usr/bin/caddy
-# The Blackhole add-on's agent: stdlib only, static, run by compose.blackhole.yml from this same image.
+# The Blackhole add-on's agent: static, run by compose.blackhole.yml from this same image.
 WORKDIR /src/blackhole
 COPY blackhole/ ./
 RUN --mount=type=cache,target=/root/.cache/go-build \

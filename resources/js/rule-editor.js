@@ -9,7 +9,7 @@
  * For a read-only copy (the Activity search shows the WHERE a question became), use
  * x-html="highlightRule(code, fieldNames)".
  */
-const keywords = /^(BAN|TAG|AS|FOR|FOREVER|WHERE|WITHIN|HAVING|UNTIL|GROUP|BY|FILTER|AND|OR|NOT|LIKE|IN|IS|NULL|COUNT|DISTINCT|SECONDS?|MINUTES?|HOURS?|DAYS?|WEEKS?)$/i
+const keywords = /^(BLOCK|TAG|FINGERPRINT|EVERY|AS|FOR|FOREVER|GYM|TARPIT|BLACKHOLE|WHERE|WITHIN|HAVING|UNTIL|GROUP|BY|FILTER|AND|OR|NOT|LIKE|IN|IS|NULL|COUNT|DISTINCT|SECONDS?|MINUTES?|HOURS?|DAYS?|WEEKS?)$/i
 
 window.highlightRule = (source = '', fieldNames = []) => {
     const fields = fieldNames instanceof Set ? fieldNames : new Set(fieldNames)

@@ -70,6 +70,8 @@ enum ChartInterval: string
 
     /**
      * Get how many seconds one bar covers.
+     *
+     * @return 1|60|300|900|3600|21600|86400|604800
      */
     public function seconds(): int
     {
@@ -88,6 +90,8 @@ enum ChartInterval: string
     /**
      * Get the seconds after the Unix epoch the bars line up with: weeks start on a Monday (the epoch
      * was a Thursday), everything else on the epoch.
+     *
+     * @return 0|345600
      */
     public function offsetSeconds(): int
     {

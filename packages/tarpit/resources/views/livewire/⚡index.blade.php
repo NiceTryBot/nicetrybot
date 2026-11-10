@@ -1,8 +1,11 @@
 <?php
 
+use App\Actions\Analytics\CountOverTime;
 use App\Data\RequestQuery;
+use App\Enums\ChartInterval;
 use App\Enums\DomainStatus;
 use App\Enums\ProtectionMode;
+use App\Enums\TrafficPeriod;
 use App\Gym\HashPuzzle;
 use App\Models\Team;
 use Flux\Flux;
@@ -30,6 +33,24 @@ new #[Title('Tarpits')] class extends Component
      */
     #[Url(as: 'rule', except: null)]
     public ?int $forRule = null;
+
+    /**
+     * How far back the activity chart reaches.
+     */
+    #[Url(except: '7d')]
+    public string $period = '7d';
+
+    /**
+     * How much time each bar of that chart covers ("1h", "1d", …), or "" for the period's default.
+     */
+    #[Url(as: 'by', except: '')]
+    public string $chartInterval = '';
+
+    /**
+     * What the chart counts over time: "holds" (requests the tarpits held) or "tarpits" (tarpits added).
+     */
+    #[Url(as: 'chart', except: 'holds')]
+    public string $chartSource = 'holds';
 
     public ?int $editingId = null;
 
@@ -144,6 +165,82 @@ new #[Title('Tarpits')] class extends Component
                 'held_ms' => (int) $row->held_ms,
             ]])
             ->all();
+    }
+
+    /**
+     * The period the activity chart covers, falling back to the last 7 days.
+     */
+    #[Computed]
+    public function chartPeriod(): TrafficPeriod
+    {
+        return TrafficPeriod::tryFrom($this->period) ?? TrafficPeriod::Week;
+    }
+
+    /**
+     * A fresh period starts the bar size over on its default.
+     */
+    public function updatedPeriod(): void
+    {
+        $this->chartInterval = '';
+    }
+
+    /**
+     * The chart's bars across the period: how many requests the team's tarpits held, or how many tarpits
+     * the team added, counted by when each happened.
+     *
+     * @return array<int, array{key: string, label: string, start: int, end: int, count: int}>
+     */
+    #[Computed]
+    public function chartBuckets(): array
+    {
+        $interval = ChartInterval::resolve($this->chartInterval, $this->chartPeriod);
+
+        if ($this->chartSource === 'tarpits') {
+            return app(CountOverTime::class)->handle(
+                $this->team->tarpits()->toBase(),
+                'tarpits.created_at',
+                $this->chartPeriod,
+                $interval,
+            );
+        }
+
+        // How many requests were held each bar, and the time they were held for, so each bar can be
+        // tinted by the bot-time it cost.
+        $buckets = app(CountOverTime::class)->handle(
+            TarpitHold::query()->whereIn('tarpit_id', $this->team->tarpits()->select('tarpits.id'))->toBase(),
+            'tarpit_holds.created_at',
+            $this->chartPeriod,
+            $interval,
+            sumColumn: 'tarpit_holds.held_ms',
+        );
+
+        return $this->tintByTime($buckets);
+    }
+
+    /**
+     * Tint each bar by the time its tarpits held clients that bar: faint for a light wait, deep violet
+     * for the bars that cost bots the most. Height still reads as how many requests were held, so a bar
+     * can be tall but pale (many quick holds) or short but deep (a few long ones).
+     *
+     * @param  array<int, array{key: string, label: string, start: int, end: int, count: int, weight?: int}>  $buckets
+     * @return array<int, array{key: string, label: string, start: int, end: int, count: int, weight?: int, fill?: string, note?: string}>
+     */
+    private function tintByTime(array $buckets): array
+    {
+        $max = max(1, (int) collect($buckets)->max('weight'));
+
+        return array_map(function (array $bucket) use ($max) {
+            $weight = (int) ($bucket['weight'] ?? 0);
+
+            if ($weight > 0) {
+                // A square-root curve so the many ordinary waits still separate from the quietest bars.
+                $alpha = 35 + (int) round(sqrt($weight / $max) * 65);
+                $bucket['fill'] = "color-mix(in oklab, var(--chart-spoofed) {$alpha}%, transparent)";
+                $bucket['note'] = __('Held :time', ['time' => $this->describeHeld($weight)]);
+            }
+
+            return $bucket;
+        }, $buckets);
     }
 
     /**
@@ -364,6 +461,56 @@ new #[Title('Tarpits')] class extends Component
             <x-ntb.metric :label="__('Clients behind them')" :value="Number::format($totals->sum('clients'))" icon="computer-desktop" />
             <x-ntb.metric :label="__('Bot time wasted')" :value="$this->describeHeld($totals->sum('held_ms'))" icon="fire" data-test="tarpit-time-wasted" />
         </div>
+
+        <x-ntb.panel class="mb-6" data-test="tarpit-chart">
+            <x-ntb.count-chart
+                :buckets="$this->chartBuckets"
+                :label="$chartSource === 'tarpits' ? __('Tarpits added') : __('Requests held')"
+                color="bg-(--chart-spoofed)"
+                height-class="h-40"
+            >
+                <x-slot:heading>
+                    <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <div class="inline-flex rounded-md border border-line bg-canvas p-0.5 text-xs font-medium dark:border-zinc-700 dark:bg-zinc-900" role="group" aria-label="{{ __('What to chart') }}" data-test="tarpit-chart-source">
+                            @foreach (['holds' => __('Requests held'), 'tarpits' => __('Tarpits added')] as $source => $sourceLabel)
+                                <button
+                                    type="button"
+                                    wire:click="$set('chartSource', '{{ $source }}')"
+                                    @class(['rounded px-2.5 py-1 transition', 'bg-white text-ink shadow-sm dark:bg-zinc-700 dark:text-white' => $chartSource === $source, 'text-zinc-500 hover:text-ink dark:text-zinc-400 dark:hover:text-white' => $chartSource !== $source])
+                                    aria-pressed="{{ $chartSource === $source ? 'true' : 'false' }}"
+                                    data-test="tarpit-chart-source-{{ $source }}"
+                                >{{ $sourceLabel }}</button>
+                            @endforeach
+                        </div>
+                        <div class="flex items-center gap-2">
+                            @if (count($intervals = ChartInterval::for($this->chartPeriod)) > 1)
+                                <flux:select wire:model.live="chartInterval" size="xs" class="w-32" :aria-label="__('Bar size')" data-test="tarpit-chart-interval">
+                                    @foreach ($intervals as $intervalOption)
+                                        <flux:select.option :value="$intervalOption === ChartInterval::default($this->chartPeriod) ? '' : $intervalOption->value">{{ $intervalOption->label() }}</flux:select.option>
+                                    @endforeach
+                                </flux:select>
+                            @endif
+                            <flux:select wire:model.live="period" size="xs" class="w-36" :aria-label="__('Time period')" data-test="tarpit-chart-period">
+                                @foreach (TrafficPeriod::cases() as $periodOption)
+                                    <flux:select.option :value="$periodOption->value">{{ $periodOption->label() }}</flux:select.option>
+                                @endforeach
+                            </flux:select>
+                        </div>
+                    </div>
+
+                    @if ($chartSource === 'holds')
+                        <div class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.65rem] text-zinc-500 dark:text-zinc-400" data-test="tarpit-chart-heat">
+                            <span>{{ __('Bar height is requests held; colour is the time they were held for —') }}</span>
+                            <span class="inline-flex items-center gap-1.5">
+                                {{ __('less') }}
+                                <span class="h-2 w-20 rounded-full" style="background: linear-gradient(to right, color-mix(in oklab, var(--chart-spoofed) 35%, transparent), var(--chart-spoofed))"></span>
+                                {{ __('more') }}
+                            </span>
+                        </div>
+                    @endif
+                </x-slot:heading>
+            </x-ntb.count-chart>
+        </x-ntb.panel>
     @endif
 
     <div class="space-y-4">

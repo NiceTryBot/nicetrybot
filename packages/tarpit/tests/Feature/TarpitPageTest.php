@@ -2,13 +2,18 @@
 
 use App\Enums\TeamRole;
 use App\Models\Domain;
+use App\Models\EdgeRequest;
 use App\Models\EdgeRule;
 use App\Models\Team;
 use App\Models\User;
+use App\Support\RuleDestinations;
 use Livewire\Livewire;
 use NiceTry\Tarpit\Enums\TarpitAfterWait;
+use NiceTry\Tarpit\Enums\TarpitOutcome;
+use NiceTry\Tarpit\Enums\TarpitReason;
 use NiceTry\Tarpit\Enums\TarpitWhenFull;
 use NiceTry\Tarpit\Models\Tarpit;
+use NiceTry\Tarpit\Models\TarpitHold;
 
 test('an admin sets up a tarpit from the page, with its rules, waits and limits', function () {
     $user = User::factory()->create();
@@ -65,6 +70,58 @@ test('an admin sets up a tarpit from the page, with its rules, waits and limits'
         ->and($tarpit->fresh()->rules)->toBeEmpty();
 });
 
+test('the activity chart counts holds over the period and toggles to tarpits added', function () {
+    $user = User::factory()->create();
+    $team = $user->currentTeam;
+    $domain = Domain::factory()->for($team)->create();
+    $tarpit = Tarpit::factory()->for($team)->create(['name' => 'Probers']);
+
+    $held = function ($when) use ($domain, $tarpit) {
+        $request = EdgeRequest::factory()->for($domain)->create();
+
+        return TarpitHold::create([
+            'edge_request_id' => $request->id,
+            'tarpit_id' => $tarpit->id,
+            'reason' => TarpitReason::Rule,
+            'outcome' => TarpitOutcome::Held,
+            'try' => 1,
+            'held_ms' => 1000,
+            'created_at' => $when,
+        ]);
+    };
+
+    $held(now());
+    $held(now());
+    $held(now()->subDays(3));
+    $held(now()->subDays(10)); // Older than the 7-day window: off the chart.
+
+    // A hold in another team's tarpit never shows here.
+    $theirs = Tarpit::factory()->create();
+    TarpitHold::create(['edge_request_id' => EdgeRequest::factory()->create()->id, 'tarpit_id' => $theirs->id, 'reason' => TarpitReason::Rule, 'outcome' => TarpitOutcome::Held, 'try' => 1, 'held_ms' => 1000, 'created_at' => now()]);
+
+    $this->actingAs($user);
+
+    $component = Livewire::test('tarpit::index')
+        ->assertSeeHtml('data-test="tarpit-chart"')
+        ->assertSeeHtml('data-test="tarpit-chart-source-tarpits"');
+
+    $holdBars = $component->instance()->chartBuckets;
+    expect(collect($holdBars)->sum('count'))->toBe(3)
+        ->and(end($holdBars)['count'])->toBe(2);
+
+    // Each bar with holds is tinted by the time it held clients (two 1 s holds today), and names that
+    // time in its tooltip.
+    $today = end($holdBars);
+    expect($today['weight'])->toBe(2000)
+        ->and($today)->toHaveKeys(['fill', 'note']);
+
+    $component->set('chartSource', 'tarpits');
+
+    // Just the one tarpit the team added within the window, and the tarpits view stays a single colour.
+    expect(collect($component->instance()->chartBuckets)->sum('count'))->toBe(1)
+        ->and(collect($component->instance()->chartBuckets)->every(fn ($bucket) => ! array_key_exists('fill', $bucket)))->toBeTrue();
+});
+
 test('the editor refuses waits it can\'t read and domains of another team', function () {
     $user = User::factory()->create();
     $this->actingAs($user);
@@ -98,34 +155,44 @@ test('members see the tarpits but can\'t change them, and no one reaches another
     expect($tarpit->fresh()->enabled)->toBeTrue();
 });
 
-test('a rule\'s clients are sent to a tarpit from the rule, and the rule can start a new one', function () {
+test('a TARPIT clause in the script sends the rule\'s clients to a tarpit, made by name, and dropping it releases them', function () {
     $user = User::factory()->create();
     $rule = EdgeRule::factory()->for($user->currentTeam)->script("TAG ip AS 'prober' FOR 1 DAY WHERE category = 'probe'")->create();
-    $tarpit = Tarpit::factory()->for($user->currentTeam)->create(['name' => 'Probers']);
     $this->actingAs($user);
 
     Livewire::test('pages::rules.index')
         ->call('edit', $rule->id)
-        ->assertSeeHtml('data-test="rule-tarpit"');
-
-    Livewire::test('tarpit::rule-panel', ['rule' => $rule])
-        ->assertSeeHtml('data-test="rule-tarpit-only-tags"')
-        ->set('tarpitId', $tarpit->id)
-        ->call('send')
+        ->assertSeeHtml('data-test="rule-destinations"')
+        ->set('source', "TAG ip AS 'prober' FOR 1 DAY\nTARPIT 'Probers'\nWHERE category = 'probe'")
+        ->call('save')
         ->assertHasNoErrors()
-        ->assertSeeHtml('data-test="rule-tarpit-connected"')
-        ->assertSeeHtml('data-test="rule-tarpit-what-waits"')
-        ->assertDontSeeHtml('data-test="rule-tarpit-only-tags"');
+        ->assertSeeHtml('data-test="rule-destination"');
 
+    $tarpit = $user->currentTeam->tarpits()->where('name', 'Probers')->sole();
     expect($tarpit->rules()->pluck('edge_rules.id')->all())->toBe([$rule->id]);
 
-    Livewire::test('tarpit::rule-panel', ['rule' => $rule])->call('release', $tarpit->id);
-    expect($tarpit->rules()->count())->toBe(0);
+    Livewire::test('pages::rules.index')
+        ->call('edit', $rule->id)
+        ->set('source', "TAG ip AS 'prober' FOR 1 DAY\nWHERE category = 'probe'")
+        ->call('save')
+        ->assertHasNoErrors();
 
-    Livewire::withQueryParams(['rule' => $rule->id])
-        ->test('tarpit::index')
-        ->assertSet('ruleIds', [$rule->id])
-        ->assertSet('forRule', null);
+    expect($tarpit->fresh()->rules()->count())->toBe(0);
+});
 
-    Livewire::test('tarpit::rule-panel', ['rule' => EdgeRule::factory()->create()])->assertNotFound();
+test('a rule connected to a tarpit sits in the board\'s Tarpit column, until the tarpit is off', function () {
+    $user = User::factory()->create();
+    $rule = EdgeRule::factory()->for($user->currentTeam)->create();
+    $tarpit = Tarpit::factory()->for($user->currentTeam)->create(['name' => 'Probers']);
+    $tarpit->rules()->attach($rule);
+    $this->actingAs($user);
+
+    $columns = fn () => collect(app(RuleDestinations::class)->board($user->currentTeam, $user->currentTeam->edgeRules()->get()))
+        ->mapWithKeys(fn (array $lane) => [$lane['column']->key => count($lane['cards'])]);
+
+    expect($columns()['tarpit'])->toBe(1)->and($columns()['tag'])->toBe(0);
+
+    $tarpit->update(['enabled' => false]);
+
+    expect($columns()['tarpit'])->toBe(0)->and($columns()['tag'])->toBe(1);
 });

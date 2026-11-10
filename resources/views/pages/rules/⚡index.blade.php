@@ -1,7 +1,6 @@
 <?php
 
 use App\Actions\Ai\TranslateRule;
-use App\Actions\Gym\SendRuleToRoutine;
 use App\Actions\Rules\BacktestRule;
 use App\Actions\Rules\FindStaleVerdicts;
 use App\Actions\Rules\SaveEdgeRule;
@@ -9,7 +8,6 @@ use App\Data\RuleBacktest;
 use App\Data\RuleScript;
 use App\Data\RuleScriptParser;
 use App\Data\RuleScriptSyntaxError;
-use App\Data\TranslatedRule;
 use App\Enums\AiProvider;
 use App\Enums\DomainStatus;
 use App\Enums\PathCategory;
@@ -21,6 +19,10 @@ use App\Models\GymRoutine;
 use App\Models\Team;
 use App\Models\Verdict;
 use App\Support\AnthropicException;
+use App\Support\RuleBoardColumn;
+use App\Support\RuleDestination;
+use App\Support\RuleDestinationError;
+use App\Support\RuleDestinations;
 use App\Support\RuleFieldDefinition;
 use App\Support\RuleFields;
 use App\Support\RuleTemplates;
@@ -39,9 +41,16 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 
-new #[Title('Rules')] class extends Component {
+new #[Title('Rules')] class extends Component
+{
     #[Url(except: 'rules')]
     public string $tab = 'rules';
+
+    /**
+     * How the rules are laid out: the board, by what happens to their clients, or the list.
+     */
+    #[Url(except: 'board')]
+    public string $view = 'board';
 
     public bool $isEditing = false;
 
@@ -64,11 +73,6 @@ new #[Title('Rules')] class extends Component {
     public array $staleVerdictIds = [];
 
     /**
-     * The gym routine picked to send the rule's clients to.
-     */
-    public ?int $gymRoutineId = null;
-
-    /**
      * The rule to write, in plain English, for Claude.
      */
     public string $question = '';
@@ -76,14 +80,6 @@ new #[Title('Rules')] class extends Component {
     public ?string $askNote = null;
 
     public ?string $askError = null;
-
-    /**
-     * Where the draft's clients go once it's saved: one of the team's gym routines, or a new routine by
-     * name. Set when Claude writes a rule that asks for the gym.
-     */
-    public ?int $pendingRoutineId = null;
-
-    public string $pendingRoutineName = '';
 
     /**
      * The source the backtest was last asked for. The editor opens without it and its placeholder asks
@@ -137,6 +133,37 @@ new #[Title('Rules')] class extends Component {
     }
 
     /**
+     * The rules by what happens to their clients. Editing a rule needs the editor, beside the list.
+     *
+     * @return list<array{column: RuleBoardColumn, cards: list<array{rule: EdgeRule, destinations: list<RuleDestination>, links: list<RuleDestination>}>}>
+     */
+    #[Computed]
+    public function board(): array
+    {
+        return app(RuleDestinations::class)->board($this->team, $this->rules);
+    }
+
+    /**
+     * Determine if the page shows the board. A team without rules gets the list, for its templates. The
+     * board stays put while a rule is edited: the editor opens over it in a modal.
+     */
+    #[Computed]
+    public function showsBoard(): bool
+    {
+        return $this->view !== 'list' && $this->rules->isNotEmpty();
+    }
+
+    /**
+     * Closing the editor modal (its backdrop, escape, or the close button) clears the draft.
+     */
+    public function updatedIsEditing(bool $value): void
+    {
+        if (! $value) {
+            $this->cancel();
+        }
+    }
+
+    /**
      * @return Collection<int, Verdict>
      */
     #[Computed]
@@ -187,12 +214,6 @@ new #[Title('Rules')] class extends Component {
         return route('activity.index', ['q' => (new RuleScriptParser($this->source))->activitySearch(), 'period' => TrafficPeriod::Week->value]);
     }
 
-    #[Computed]
-    public function canManageGym(): bool
-    {
-        return Gate::allows('create', [GymRoutine::class, $this->team]);
-    }
-
     /**
      * Whether the user connected an Anthropic key, so rules can be asked for in plain English.
      */
@@ -212,35 +233,22 @@ new #[Title('Rules')] class extends Component {
     }
 
     /**
-     * The team's routine the draft's clients go to once it's saved, if it's one the team has.
-     */
-    #[Computed]
-    public function pendingRoutine(): ?GymRoutine
-    {
-        return $this->pendingRoutineId === null ? null : $this->allGymRoutines->find($this->pendingRoutineId);
-    }
-
-    /**
-     * The team's gym routines as they stand to the rule being edited: those its clients already go
-     * through, those it can join, and those it can't join without changing who else enters them.
+     * Where the open saved rule sends its clients now, for the read-only summary: the destinations and
+     * links the board reads, so the editor and the board agree. A rule the script hasn't saved yet (no id)
+     * has none.
      *
-     * @return array{connected: Collection<int, GymRoutine>, available: Collection<int, GymRoutine>, unavailable: Collection<int, GymRoutine>}
+     * @return list<RuleDestination>
      */
     #[Computed]
-    public function gymRoutines(): array
+    public function ruleDestinations(): array
     {
-        $routines = $this->editingId === null ? new Collection : $this->allGymRoutines;
-        $groups = $routines->groupBy(fn (GymRoutine $routine) => match (true) {
-            $routine->entry()->takesVerdictsFrom($this->editingId) => 'connected',
-            $routine->entry()->withVerdictsFrom($this->editingId) !== null => 'available',
-            default => 'unavailable',
-        });
+        if ($this->editingId === null) {
+            return [];
+        }
 
-        return [
-            'connected' => $groups->get('connected', new Collection),
-            'available' => $groups->get('available', new Collection),
-            'unavailable' => $groups->get('unavailable', new Collection),
-        ];
+        $rule = $this->team->edgeRules()->find($this->editingId);
+
+        return $rule === null ? [] : app(RuleDestinations::class)->forRule($this->team, $rule);
     }
 
     /**
@@ -288,13 +296,10 @@ new #[Title('Rules')] class extends Component {
             'isEditing' => true,
             'editingId' => null,
             'name' => $starter['name'] ?? '',
-            'source' => $starter['source'] ?? "BAN ip, ja4 FOR 1 DAY\nWHERE ",
+            'source' => $starter['source'] ?? "BLOCK ip, ja4 FOR 1 DAY\nWHERE ",
             'enabled' => true,
             'savedAt' => null,
             'staleVerdictIds' => [],
-            'gymRoutineId' => null,
-            'pendingRoutineId' => null,
-            'pendingRoutineName' => '',
             'askNote' => null,
         ]);
         $this->dispatch('rule-loaded');
@@ -313,15 +318,12 @@ new #[Title('Rules')] class extends Component {
             'enabled' => $rule->enabled,
             'savedAt' => null,
             'staleVerdictIds' => [],
-            'gymRoutineId' => null,
-            'pendingRoutineId' => null,
-            'pendingRoutineName' => '',
             'askNote' => null,
         ]);
         $this->dispatch('rule-loaded');
     }
 
-    public function save(FindStaleVerdicts $findStaleVerdicts, SendRuleToRoutine $sendRuleToRoutine, SaveEdgeRule $saveEdgeRule): void
+    public function save(FindStaleVerdicts $findStaleVerdicts, SaveEdgeRule $saveEdgeRule): void
     {
         $rule = $this->editingId === null ? null : $this->team->edgeRules()->findOrFail($this->editingId);
 
@@ -340,17 +342,18 @@ new #[Title('Rules')] class extends Component {
             return;
         }
 
-        $rule = $saveEdgeRule->handle($this->team, $rule, ['name' => $this->name, 'source' => $this->source, 'enabled' => $this->enabled], $script);
-        $this->editingId = $rule->id;
+        try {
+            $rule = $saveEdgeRule->handle($this->team, $rule, ['name' => $this->name, 'source' => $this->source, 'enabled' => $this->enabled], $script);
+        } catch (RuleDestinationError $error) {
+            $this->addError('source', $error->getMessage());
 
-        $this->staleVerdictIds = $findStaleVerdicts->handle($rule)->modelKeys();
-
-        if ($this->pendingRoutineId !== null || $this->pendingRoutineName !== '') {
-            $this->sendToPendingRoutine($rule, $sendRuleToRoutine);
+            return;
         }
 
+        $this->editingId = $rule->id;
+        $this->staleVerdictIds = $findStaleVerdicts->handle($rule)->modelKeys();
         $this->savedAt = now()->format('H:i:s');
-        unset($this->rules);
+        unset($this->rules, $this->ruleDestinations, $this->allGymRoutines);
     }
 
     public function toggle(int $ruleId): void
@@ -375,7 +378,7 @@ new #[Title('Rules')] class extends Component {
         $rule->delete();
 
         if ($this->editingId === $ruleId) {
-            $this->reset('isEditing', 'editingId', 'name', 'source', 'enabled', 'savedAt', 'staleVerdictIds', 'gymRoutineId', 'pendingRoutineId', 'pendingRoutineName', 'askNote');
+            $this->reset('isEditing', 'editingId', 'name', 'source', 'enabled', 'savedAt', 'staleVerdictIds', 'askNote');
         }
 
         unset($this->rules);
@@ -412,33 +415,9 @@ new #[Title('Rules')] class extends Component {
     }
 
     /**
-     * Send the clients the rule flags through the picked gym routine, by adding the rule to its entry.
-     */
-    public function sendToRoutine(SendRuleToRoutine $sendRuleToRoutine): void
-    {
-        $rule = $this->team->edgeRules()->findOrFail($this->editingId);
-
-        $this->validate(['gymRoutineId' => ['required', 'integer']], ['gymRoutineId.required' => __('Pick a routine.')]);
-
-        $routine = $this->team->gymRoutines()->findOrFail($this->gymRoutineId);
-        Gate::authorize('update', $routine);
-
-        if ($sendRuleToRoutine->handle($rule, $routine) === null) {
-            $this->addError('gymRoutineId', __('Adding this rule would change who else enters :routine. Start a new routine instead.', ['routine' => $routine->name]));
-
-            return;
-        }
-
-        $this->gymRoutineId = null;
-        unset($this->allGymRoutines, $this->gymRoutines);
-
-        Flux::toast(variant: 'success', text: __('Clients this rule flags now go through :routine.', ['routine' => $routine->name]));
-    }
-
-    /**
      * Have Claude write a rule from the question into the editor: a fresh draft, or the unsaved draft
-     * already there when the question reads as a change to it. When the question asks for the gym, the
-     * routine waits for the save.
+     * already there when the question reads as a change to it. The destination (the gym, a tarpit, the
+     * blackhole) is written into the script itself, so there's nothing to apply on top of it.
      */
     public function ask(TranslateRule $translateRule): void
     {
@@ -467,7 +446,7 @@ new #[Title('Rules')] class extends Component {
                 $this->team->domains()->orderBy('hostname')->pluck('hostname')->all(),
                 $this->allGymRoutines->map(fn (GymRoutine $routine) => ['id' => $routine->id, 'name' => $routine->name, 'entry' => $routine->entry()->describe($this->team)])->values()->all(),
                 $isRefining ? $this->source : '',
-                $isRefining ? $this->pendingRoutineLabel() : '',
+                app(App\Support\RuleDestinationHandlers::class)->keywords(),
             );
         } catch (AnthropicException $exception) {
             $this->askError = $exception->getMessage();
@@ -486,8 +465,6 @@ new #[Title('Rules')] class extends Component {
         }
 
         $this->tab = 'rules';
-
-        [$this->pendingRoutineId, $this->pendingRoutineName] = $this->canManageGym ? $this->routineFor($translated) : [null, ''];
         $this->name = $translated->name !== '' ? $translated->name : $this->name;
         $this->source = $translated->source;
         $this->askNote = $translated->note;
@@ -496,60 +473,10 @@ new #[Title('Rules')] class extends Component {
         $this->dispatch('rule-loaded');
     }
 
-    /**
-     * Keep the draft out of the gym: forget the routine Claude picked for it.
-     */
-    public function clearPendingRoutine(): void
-    {
-        $this->reset('pendingRoutineId', 'pendingRoutineName');
-    }
-
     public function cancel(): void
     {
-        $this->reset('isEditing', 'editingId', 'name', 'source', 'enabled', 'savedAt', 'staleVerdictIds', 'gymRoutineId', 'pendingRoutineId', 'pendingRoutineName', 'askNote');
+        $this->reset('isEditing', 'editingId', 'name', 'source', 'enabled', 'savedAt', 'staleVerdictIds', 'askNote');
         $this->resetErrorBag();
-    }
-
-    /**
-     * Where a translated rule's clients go: the team's routine Claude picked, else the team's routine by
-     * the new name (ignoring case), else a new routine by that name.
-     *
-     * @return array{0: int|null, 1: string}
-     */
-    private function routineFor(TranslatedRule $translated): array
-    {
-        $routine = $translated->routineId === null ? null : $this->allGymRoutines->find($translated->routineId);
-        $routine ??= $translated->routineName === null ? null : $this->allGymRoutines->first(fn (GymRoutine $routine) => mb_strtolower($routine->name) === mb_strtolower($translated->routineName));
-
-        return $routine !== null ? [$routine->id, ''] : [null, (string) $translated->routineName];
-    }
-
-    /**
-     * Say where the draft's clients go, for Claude: "Login wall", or "PhpMyAdmin Gym (new)".
-     */
-    private function pendingRoutineLabel(): string
-    {
-        return $this->pendingRoutine?->name ?? ($this->pendingRoutineName !== '' ? $this->pendingRoutineName.' (new)' : '');
-    }
-
-    /**
-     * Send the saved rule's clients to the routine the draft asked for, then forget it.
-     */
-    private function sendToPendingRoutine(EdgeRule $rule, SendRuleToRoutine $sendRuleToRoutine): void
-    {
-        $routine = $this->pendingRoutine ?? ($this->pendingRoutineId === null ? $this->pendingRoutineName : null);
-        $this->reset('pendingRoutineId', 'pendingRoutineName');
-
-        if ($routine === null || ! $this->canManageGym) {
-            return;
-        }
-
-        $sent = $sendRuleToRoutine->handle($rule, $routine);
-        unset($this->allGymRoutines, $this->gymRoutines, $this->pendingRoutine);
-
-        $sent === null
-            ? Flux::toast(variant: 'warning', text: __('Rule saved. :routine can\'t take it without changing who else enters, so pick another routine below.', ['routine' => is_string($routine) ? $routine : $routine->name]))
-            : Flux::toast(variant: 'success', text: __('Rule saved. Clients it flags now go through :routine.', ['routine' => $sent->name]));
     }
 }; ?>
 
@@ -566,68 +493,32 @@ new #[Title('Rules')] class extends Component {
         @endif
     </x-ntb.page-heading>
 
-    {{-- Ask: a rule in plain English, written into the editor by Claude. --}}
-    @if ($this->canManage)
-        <div class="mb-6" data-test="rule-ask">
-            @if ($this->hasAnthropicKey)
-                <form wire:submit="ask" class="flex items-center gap-2 rounded-xl border border-line bg-white py-1 ps-3 pe-1 shadow-xs transition focus-within:border-coral-400 focus-within:ring-4 focus-within:ring-coral-500/10 dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-coral-400/70">
-                    <span class="shrink-0 text-coral-500" wire:loading.class="animate-pulse" wire:target="ask">
-                        <flux:icon.sparkles class="size-5" />
-                    </span>
-                    <input
-                        type="text"
-                        wire:model="question"
-                        x-on:keydown.escape="$el.blur()"
-                        autocomplete="off"
-                        spellcheck="false"
-                        enterkeyhint="go"
-                        placeholder="{{ $isEditing && ! $editingId ? __('Change the draft, like “make it last a week”') : __('Describe a rule, like “send everyone on mysite.com who hits phpmyadmin.php to the PhpMyAdmin Gym”') }}"
-                        class="min-w-0 flex-1 bg-transparent py-1.5 text-[15px] text-ink outline-none placeholder:text-zinc-400 dark:text-white dark:placeholder:text-zinc-500"
-                        aria-label="{{ __('Describe a rule') }}"
-                        data-test="rule-question"
-                    />
-                    <flux:button type="submit" size="sm" variant="primary" class="shrink-0" data-test="rule-ask-button">
-                        <span wire:loading.remove wire:target="ask">{{ $isEditing && ! $editingId ? __('Change it') : __('Write rule') }}</span>
-                        <span wire:loading wire:target="ask">{{ __('Thinking…') }}</span>
-                    </flux:button>
-                </form>
-
-                <div wire:loading.flex wire:target="ask" class="mt-2 hidden items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
-                    <span class="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"><span class="block h-full w-1/2 animate-pulse rounded-full bg-coral-400"></span></span>
-                    {{ __('Claude is writing the rule…') }}
-                </div>
-
-                @if ($askError)
-                    <p class="mt-2 flex gap-2 text-sm text-rose-700 dark:text-rose-300" wire:loading.remove wire:target="ask" data-test="rule-ask-error">
-                        <flux:icon.exclamation-triangle variant="mini" class="mt-0.5 size-4 shrink-0" />
-                        <span>{{ $askError }}</span>
-                    </p>
-                @endif
-            @else
-                <div class="flex items-start gap-3 rounded-lg border border-dashed border-coral-300 bg-coral-50/60 px-3 py-2.5 text-sm dark:border-coral-500/30 dark:bg-coral-500/5" data-test="rule-ask-connect">
-                    <flux:icon.sparkles variant="mini" class="mt-0.5 size-4 shrink-0 text-coral-500" />
-                    <p class="text-zinc-700 dark:text-zinc-200">
-                        {{ __('Describe a rule in plain English, like “send everyone who hits phpmyadmin.php to the PhpMyAdmin Gym”.') }}
-                        <a href="{{ route('ai.edit') }}" wire:navigate class="font-medium text-coral-700 underline underline-offset-2 dark:text-coral-300">{{ __('Add your Anthropic API key') }}</a>
-                        {{ __('and Claude writes the rule and sets up its gym routine.') }}
-                    </p>
-                </div>
-            @endif
-        </div>
+    {{-- Ask: a rule in plain English, written into the editor by Claude. While a rule is open, this moves
+         into the editor modal so the draft can be refined there. --}}
+    @if ($this->canManage && ! $isEditing)
+        <x-ntb.rule-ask class="mb-6" :has-key="$this->hasAnthropicKey" :is-editing="$isEditing" :editing-id="$editingId" :ask-error="$askError" />
     @endif
 
-    <div class="mb-4 overflow-x-auto">
-        <flux:radio.group wire:model.live="tab" variant="segmented" size="sm" :aria-label="__('Rules or verdicts')">
-            <flux:radio value="rules" :label="__('Rules').' · '.$this->rules->count()" />
-            <flux:radio value="verdicts" :label="__('Active verdicts').' · '.Number::format($this->activeVerdictCount)" />
-        </flux:radio.group>
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div class="max-w-full">
+            <flux:radio.group wire:model.live="tab" variant="segmented" size="sm" :aria-label="__('Rules or verdicts')">
+                <flux:radio value="rules" :label="__('Rules').' · '.$this->rules->count()" />
+                <flux:radio value="verdicts" :label="__('Active verdicts').' · '.Number::format($this->activeVerdictCount)" />
+            </flux:radio.group>
+        </div>
+        @if ($tab !== 'verdicts' && $this->rules->isNotEmpty())
+            <flux:radio.group wire:model.live="view" variant="segmented" size="sm" :aria-label="__('Board or list')" data-test="rules-view">
+                <flux:radio value="board" :label="__('Board')" />
+                <flux:radio value="list" :label="__('List')" />
+            </flux:radio.group>
+        @endif
     </div>
 
     @if ($tab === 'verdicts')
         <x-ntb.panel :heading="__('Active verdicts')" :subheading="__('Subjects your rules have banned or tagged, until the verdict expires or you lift it. Domains in observe mode record verdicts without blocking.')" :padded="false">
             @if ($this->verdicts->isEmpty())
                 <x-ntb.empty-state :heading="__('No active verdicts.')">
-                    {{ __('When an enabled rule matches new traffic, the subjects it bans or tags show up here.') }}
+                    {{ __('When an enabled rule matches new traffic, the subjects it blocks or tags show up here.') }}
                 </x-ntb.empty-state>
             @else
                 <div class="px-4 pb-2">
@@ -678,10 +569,11 @@ new #[Title('Rules')] class extends Component {
                 </div>
             @endif
         </x-ntb.panel>
+    @elseif ($this->showsBoard)
+        <x-ntb.rule-board :board="$this->board" :can-manage="$this->canManage" />
     @else
-        <div class="grid gap-6 xl:grid-cols-[22rem_minmax(0,1fr)]">
-            {{-- Rule list --}}
-            <div class="space-y-3">
+        {{-- The list of rules, with templates and add-on links. Opening one brings the editor modal. --}}
+        <div class="max-w-xl space-y-3" data-test="rule-list">
                 @forelse ($this->rules as $rule)
                     @php($ruleScript = rescue(fn () => $rule->script(), report: false))
                     {{-- The whole card opens the rule, except its switch and gym links. The open card stays put, so unsaved edits survive a stray click. --}}
@@ -771,20 +663,24 @@ new #[Title('Rules')] class extends Component {
                     {{ app(ViewSlots::class)->render(ViewSlot::RulesGallery, ['team' => $this->team]) }}
                 @endif
             </div>
+    @endif
 
-            {{-- Editor --}}
-            <div class="min-w-0 transition-opacity" wire:loading.class="pointer-events-none opacity-50" wire:target="edit">
-                @if (! $isEditing)
-                    <x-ntb.panel>
-                        <x-ntb.empty-state :heading="__('Pick a rule, or start a new one.')">
-                            {{ __('Rules read like SQL: BAN who, FOR how long, WHERE something is true. Add WITHIN and HAVING to count requests over a window, and UNTIL to lift a verdict early.') }}
-                        </x-ntb.empty-state>
-                    </x-ntb.panel>
-                @else
-                    @php($parsed = $this->parsed)
-                    @php($lines = max(1, substr_count($source, "\n") + 1))
+    {{-- The editor opens in a modal over the board or list, so what you were looking at stays in view. --}}
+    <flux:modal name="rule-editor" wire:model="isEditing" class="w-full max-w-4xl" data-test="rule-editor">
+        @if ($isEditing)
+            @php($parsed = $this->parsed)
+            @php($lines = max(1, substr_count($source, "\n") + 1))
 
-                    <x-ntb.panel>
+            <div class="mb-5">
+                <flux:heading size="lg">{{ $editingId ? __('Edit rule') : __('New rule') }}</flux:heading>
+                <flux:subheading>{{ __('Rules read like SQL: BLOCK who, FOR how long, WHERE something is true. Add WITHIN and HAVING to count requests over a window, and UNTIL to lift a verdict early. FINGERPRINT tags the client and fingerprints their browser on a key page, then lets them carry on.') }}</flux:subheading>
+            </div>
+
+            @if ($this->canManage)
+                <x-ntb.rule-ask class="mb-5" :has-key="$this->hasAnthropicKey" :is-editing="$isEditing" :editing-id="$editingId" :ask-error="$askError" />
+            @endif
+
+            <x-ntb.panel>
                         <div class="flex flex-wrap items-end gap-3">
                             <div class="min-w-48 flex-1">
                                 <flux:input wire:model="name" :label="__('Rule name')" size="sm" :disabled="! $this->canManage" data-test="rule-name" />
@@ -881,30 +777,24 @@ new #[Title('Rules')] class extends Component {
                                         </div>
                                         <div class="flex flex-wrap items-center gap-1.5">
                                             <span class="w-28 shrink-0 text-zinc-500 dark:text-zinc-400">{{ __('Clauses') }}</span>
-                                            @foreach (['AND', 'OR', 'NOT', "LIKE '%…%'", 'IN (…)', 'IS NULL', 'WITHIN 10 MINUTES', 'HAVING COUNT(*) >= 5', 'COUNT(DISTINCT host)', "COUNT(*) FILTER (WHERE path = '/') = 0", "UNTIL status = 200", 'FOR 1 DAY', 'FOREVER'] as $clause)
+                                            @foreach (['AND', 'OR', 'NOT', "LIKE '%…%'", 'IN (…)', 'IS NULL', 'EVERY 1 HOUR', 'WITHIN 10 MINUTES', 'HAVING COUNT(*) >= 5', 'COUNT(DISTINCT host)', "COUNT(*) FILTER (WHERE path = '/') = 0", "UNTIL status = 200", 'FOR 1 DAY', 'FOREVER'] as $clause)
                                                 <button type="button" x-on:click="insert(@js($clause))" class="rounded border border-line px-1.5 py-0.5 font-mono text-coral-700 hover:border-coral-400 dark:border-zinc-700 dark:text-coral-300">{{ $clause }}</button>
                                             @endforeach
                                         </div>
+                                        @php($destinationHandlers = app(App\Support\RuleDestinationHandlers::class)->all())
+                                        @if ($destinationHandlers !== [])
+                                            <div class="flex flex-wrap items-center gap-1.5">
+                                                <span class="w-28 shrink-0 text-zinc-500 dark:text-zinc-400">{{ __('Destinations') }}</span>
+                                                @foreach ($destinationHandlers as $handler)
+                                                    @php($snippet = $handler->takesTarget() ? $handler->keyword()." '…'" : $handler->keyword())
+                                                    <button type="button" x-on:click="insert(@js($snippet))" class="rounded border border-line px-1.5 py-0.5 font-mono text-emerald-700 hover:border-emerald-400 dark:border-zinc-700 dark:text-emerald-300">{{ $snippet }}</button>
+                                                @endforeach
+                                            </div>
+                                        @endif
                                     </div>
                                 </details>
                             @endif
                         </div>
-
-                        @if ($this->pendingRoutine || $pendingRoutineName !== '')
-                            <div class="mt-4 flex items-start gap-3 rounded-lg border border-coral-300 bg-coral-50/60 px-3 py-2.5 text-sm dark:border-coral-500/30 dark:bg-coral-500/5" data-test="rule-pending-gym">
-                                <flux:icon.fire variant="mini" class="mt-0.5 size-4 shrink-0 text-coral-600 dark:text-coral-400" />
-                                <p class="min-w-0 flex-1 text-zinc-700 dark:text-zinc-200">
-                                    @if ($this->pendingRoutine)
-                                        {{ __('On save, the clients it flags go through') }}
-                                        <a href="{{ route('gym.routines.edit', $this->pendingRoutine) }}" wire:navigate class="font-medium underline underline-offset-2">{{ $this->pendingRoutine->name }}</a>{{ $this->pendingRoutine->enabled ? '.' : ', '.__('which is off.') }}
-                                    @else
-                                        {{ __('On save, the clients it flags go through a new gym routine,') }}
-                                        <span class="font-medium">“{{ $pendingRoutineName }}”</span>{{ __(': a browser check, then proof of work. Change it in the gym afterwards.') }}
-                                    @endif
-                                </p>
-                                <flux:button size="xs" variant="ghost" wire:click="clearPendingRoutine" data-test="rule-pending-gym-clear">{{ __('Don\'t send') }}</flux:button>
-                            </div>
-                        @endif
 
                         <div class="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-4 dark:border-zinc-800">
                             @if ($this->canManage)
@@ -932,73 +822,41 @@ new #[Title('Rules')] class extends Component {
                         @endif
                     </x-ntb.panel>
 
-                    {{-- Gym hand-off --}}
+                    {{-- Where its clients go: read from the board's destinations, set in the script above. --}}
                     @if ($editingId)
-                        @php($gym = $this->gymRoutines)
-                        <x-ntb.panel class="mt-6" :heading="__('Send its clients to the gym')" :subheading="__('While a verdict from this rule lasts, the client holding it goes through a gym routine on your domains in Enforce mode.')" data-test="rule-gym">
-                            @if (! $this->hasEnforcingDomain)
-                                <flux:callout class="mb-4" variant="warning" icon="shield-exclamation" data-test="rule-gym-observe-only">
-                                    <flux:callout.text>{{ __('None of your domains is in Enforce mode, so no one is sent to the gym yet. Switch a domain to Enforce on its page.') }}</flux:callout.text>
-                                    <x-slot name="actions">
-                                        <flux:button size="sm" variant="ghost" :href="route('domains.index')" wire:navigate>{{ __('Domains') }}</flux:button>
-                                    </x-slot>
-                                </flux:callout>
-                            @endif
-
-                            @if ($gym['connected']->isNotEmpty())
-                                <ul class="mb-4 divide-y divide-line rounded-lg border border-line dark:divide-zinc-800 dark:border-zinc-800">
-                                    @foreach ($gym['connected'] as $routine)
-                                        <li wire:key="rule-gym-{{ $routine->id }}" class="flex items-start gap-3 px-3 py-2.5" data-test="rule-gym-routine">
-                                            <flux:icon.fire variant="mini" class="mt-0.5 size-4 shrink-0 text-coral-600 dark:text-coral-400" />
-                                            <div class="min-w-0 flex-1">
-                                                <a href="{{ route('gym.routines.edit', $routine) }}" wire:navigate class="text-sm font-medium hover:underline">{{ $routine->name }}</a>
-                                                @unless ($routine->enabled)
-                                                    <flux:badge size="sm" class="ms-1">{{ __('Off') }}</flux:badge>
-                                                @endunless
-                                                <span class="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">{{ $routine->entry()->describe($this->team) }}</span>
+                        @php($destinations = $this->ruleDestinations)
+                        <x-ntb.panel class="mt-6" :heading="__('Where its clients go')" :subheading="__('Set in the script: add GYM \'routine\', TARPIT \'name\' or BLACKHOLE after the duration. The board and the edge read this.')" data-test="rule-destinations">
+                            @if ($destinations === [])
+                                <p class="text-sm text-zinc-500 dark:text-zinc-400" data-test="rule-destinations-none">{{ __('Nowhere yet — it only tags its clients. Add a destination clause to the script to send them somewhere.') }}</p>
+                            @else
+                                <ul class="divide-y divide-line rounded-lg border border-line dark:divide-zinc-800 dark:border-zinc-800">
+                                    @foreach ($destinations as $destination)
+                                        <li wire:key="rule-dest-{{ $loop->index }}" class="flex items-start gap-3 px-3 py-2.5" data-test="rule-destination">
+                                            <flux:icon :icon="$destination->icon" variant="mini" class="mt-0.5 size-4 shrink-0 text-zinc-500 dark:text-zinc-400" />
+                                            <div class="min-w-0 flex-1 text-sm">
+                                                @if ($destination->url)
+                                                    <a href="{{ $destination->url }}" wire:navigate class="font-medium hover:underline">{{ $destination->label }}</a>
+                                                @else
+                                                    <span class="font-medium">{{ $destination->label }}</span>
+                                                @endif
+                                                @if ($destination->note)
+                                                    <span class="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">{{ $destination->note }}</span>
+                                                @endif
                                             </div>
-                                            <flux:button size="xs" variant="ghost" icon="arrow-right" :href="route('gym.routines.edit', $routine)" wire:navigate>{{ __('Open') }}</flux:button>
                                         </li>
                                     @endforeach
                                 </ul>
-                            @endif
 
-                            @if ($this->canManageGym)
-                                <div class="flex flex-wrap items-start gap-2">
-                                    @if ($gym['available']->isNotEmpty())
-                                        <div class="min-w-48 flex-1 sm:max-w-xs">
-                                            <flux:select wire:model="gymRoutineId" size="sm" :placeholder="__('Pick a routine…')" :aria-label="__('Gym routine')" data-test="rule-gym-pick">
-                                                @foreach ($gym['available'] as $routine)
-                                                    <flux:select.option :value="$routine->id">{{ $routine->name }}{{ $routine->enabled ? '' : ' ('.__('off').')' }}</flux:select.option>
-                                                @endforeach
-                                            </flux:select>
-                                        </div>
-                                        <flux:button variant="primary" size="sm" icon="arrow-right" wire:click="sendToRoutine" data-test="rule-gym-send">{{ __('Send') }}</flux:button>
-                                    @endif
-                                    <flux:button
-                                        :variant="$gym['available']->isEmpty() && $gym['connected']->isEmpty() ? 'primary' : 'ghost'"
-                                        size="sm"
-                                        icon="plus"
-                                        :href="route('gym.routines.create', ['rule' => $editingId])"
-                                        wire:navigate
-                                        data-test="rule-gym-new"
-                                    >{{ __('New routine') }}</flux:button>
-                                </div>
-                                @error('gymRoutineId') <p class="mt-2 text-sm text-rose-700 dark:text-rose-300">{{ $message }}</p> @enderror
-                                @if ($gym['unavailable']->isNotEmpty())
-                                    <p class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                                        {{ __(':routines can\'t take this rule without changing who else enters: every visitor enters already, or they need all of several conditions.', ['routines' => $gym['unavailable']->pluck('name')->join(', ', ' '.__('and').' ')]) }}
-                                    </p>
+                                @if (! $this->hasEnforcingDomain)
+                                    <flux:callout class="mt-4" variant="warning" icon="shield-exclamation" data-test="rule-destinations-observe-only">
+                                        <flux:callout.text>{{ __('None of your domains is in Enforce mode, so no one is diverted or blocked yet. Switch a domain to Enforce on its page.') }}</flux:callout.text>
+                                        <x-slot name="actions">
+                                            <flux:button size="sm" variant="ghost" :href="route('domains.index')" wire:navigate>{{ __('Domains') }}</flux:button>
+                                        </x-slot>
+                                    </flux:callout>
                                 @endif
-                            @elseif ($gym['connected']->isEmpty())
-                                <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ __('No gym routine takes this rule\'s clients yet.') }}</p>
                             @endif
                         </x-ntb.panel>
-
-                        {{-- Add-ons' panels for the open rule, from App\Support\ViewSlots. --}}
-                        @if (($openRule = $this->rules->firstWhere('id', $editingId)) !== null)
-                            {{ app(ViewSlots::class)->render(ViewSlot::RulePanels, ['team' => $this->team, 'rule' => $openRule]) }}
-                        @endif
                     @endif
 
                     {{-- Backtest --}}
@@ -1063,9 +921,8 @@ new #[Title('Rules')] class extends Component {
                         </x-ntb.panel>
                     @endif
                 @endif
-            </div>
-        </div>
-    @endif
+    </flux:modal>
+
     @if ($this->canManage)
         <livewire:pages::clients.label-modal />
     @endif

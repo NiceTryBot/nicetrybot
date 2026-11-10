@@ -4,6 +4,7 @@ use App\Http\Controllers\Edge\AuthorizeCertificateController;
 use App\Http\Controllers\Edge\GymCheckController;
 use App\Http\Controllers\Edge\GymReportController;
 use App\Http\Controllers\Edge\IngestEdgeLogsController;
+use App\Http\Controllers\Edge\ListAllowedAddressesController;
 use App\Http\Controllers\Edge\ListGymTriggersController;
 use App\Http\Controllers\Edge\ListLiveTailsController;
 use App\Http\Controllers\Edge\ListLockdownsController;
@@ -19,6 +20,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('caddy/ask', AuthorizeCertificateController::class)->name('edge.certificates.authorize');
 Route::middleware([AuthenticateEdge::class, CompressEdgeFeeds::class])->group(function () {
+    Route::get('caddy/allow-feed', ListAllowedAddressesController::class)->middleware('cache.headers:no_cache;etag')->name('edge.allowed');
     Route::get('caddy/response-captures', ListResponseCapturesController::class)->middleware('cache.headers:no_cache;etag')->name('edge.captures.index');
     Route::get('caddy/gym-triggers', ListGymTriggersController::class)->middleware('cache.headers:no_cache;etag')->name('edge.gym.triggers');
     Route::get('caddy/gym-check', GymCheckController::class)->name('edge.gym.check');

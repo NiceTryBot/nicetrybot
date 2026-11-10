@@ -124,7 +124,7 @@ function claudeSearchAnswer(array $answer, string $stopReason = 'end_turn'): arr
 /**
  * The body of a Claude API message answering a request for a rule, as Http::fake() returns it.
  *
- * @param  array{name?: string, source: string, routine_id?: int, routine_name?: string, note?: string}  $answer
+ * @param  array{name?: string, source: string, note?: string}  $answer
  * @return array<string, mixed>
  */
 function claudeRuleAnswer(array $answer): array
@@ -133,7 +133,7 @@ function claudeRuleAnswer(array $answer): array
         ...claudeSearchAnswer([]),
         'content' => [
             ['type' => 'thinking', 'thinking' => '', 'signature' => 'test-signature'],
-            ['type' => 'text', 'text' => json_encode(['name' => '', 'routine_id' => 0, 'routine_name' => '', 'note' => '', ...$answer])],
+            ['type' => 'text', 'text' => json_encode(['name' => '', 'note' => '', ...$answer])],
         ],
     ];
 }

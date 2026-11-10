@@ -98,3 +98,26 @@ test('Activity shows Tarpit in place of Passed, and beside In the gym when a rou
         ->assertSeeHtml('data-test="tarpit-details"')
         ->assertSee('the client left the gym without running its script');
 });
+
+test('Activity shows Tarpit in place of Blocked when the tarpit answered, and beside it when something further in refused', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->verified()->enforcing()->create();
+    $tarpit = Tarpit::factory()->for($user->currentTeam)->create();
+    $hungUp = EdgeRequest::factory()->for($domain)->create(['action' => RequestAction::Blocked, 'status_code' => 0, 'occurred_at' => now()->subMinutes(4)]);
+    $turnedAway = EdgeRequest::factory()->for($domain)->create(['action' => RequestAction::Blocked, 'status_code' => 429, 'occurred_at' => now()->subMinutes(3)]);
+    $refusedFurtherIn = EdgeRequest::factory()->for($domain)->create(['action' => RequestAction::Blocked, 'status_code' => 403, 'occurred_at' => now()->subMinutes(2)]);
+
+    $this->actingAs($user);
+    $blockedBefore = substr_count(Livewire::test('pages::activity.index')->html(), 'Blocked');
+
+    foreach ([$hungUp, $turnedAway, $refusedFurtherIn] as $request) {
+        TarpitHold::create(['edge_request_id' => $request->id, 'tarpit_id' => $tarpit->id, 'reason' => TarpitReason::Rule, 'outcome' => TarpitOutcome::Held, 'try' => 2, 'held_ms' => 2000, 'created_at' => now()]);
+    }
+
+    $html = Livewire::test('pages::activity.index')->html();
+
+    expect(substr_count($html, 'data-test="tarpit-badge"'))->toBe(3)
+        ->and(substr_count($html, 'Blocked'))->toBe($blockedBefore - 2);
+
+    Livewire::test('pages::activity.index')->call('inspect', $hungUp->id)->assertSeeHtml('data-test="tarpit-details"');
+});

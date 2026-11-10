@@ -1,10 +1,43 @@
 <?php
 
+use App\Actions\Gym\RollUpGymMetrics;
 use App\Enums\GymSessionStatus;
 use App\Models\GymRoutine;
 use App\Models\GymSession;
+use App\Models\GymTeamDailyMetric;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 use Livewire\Livewire;
+
+test('the activity chart bars read finished days from the rollup and count today live', function () {
+    $user = User::factory()->create();
+    $team = $user->currentTeam;
+
+    // A finished day two days back lives in the rollup.
+    GymTeamDailyMetric::create([
+        'team_id' => $team->id,
+        'day' => today()->subDays(2),
+        'entered' => 12, 'cleared' => 5, 'turned_away' => 2, 'gave_up' => 1, 'hashes' => 9_000,
+    ]);
+
+    // Today is counted live: two visitors, one of them cleared, 150 hashes between them.
+    GymSession::factory()->for($team)->cleared()->create(['started_at' => today()->setTime(9, 0), 'hashes' => 100]);
+    GymSession::factory()->for($team)->create(['started_at' => today()->setTime(10, 0), 'hashes' => 50]);
+
+    $this->actingAs($user);
+    $component = Livewire::test('pages::gym.index');
+
+    $entered = collect($component->instance()->chartBuckets)->keyBy('key');
+    expect($entered[today()->subDays(2)->toDateString()]['count'])->toBe(12)
+        ->and($entered[today()->toDateString()]['count'])->toBe(2);
+
+    $cleared = collect($component->set('chartSource', 'cleared')->instance()->chartBuckets)->keyBy('key');
+    expect($cleared[today()->subDays(2)->toDateString()]['count'])->toBe(5)
+        ->and($cleared[today()->toDateString()]['count'])->toBe(1);
+
+    $hashes = collect($component->set('chartSource', 'hashes')->instance()->chartBuckets)->keyBy('key');
+    expect($hashes[today()->toDateString()]['count'])->toBe(150);
+});
 
 test('the gym lists routines in stacking order with what each one does', function () {
     $user = User::factory()->create();
@@ -39,6 +72,35 @@ test('the numbers count real visits only, and a stale visit has given up', funct
     $stats = Livewire::test('pages::gym.index')->instance()->stats;
 
     expect($stats)->toBe(['entered' => 3, 'cleared' => 1, 'turned_away' => 1, 'gave_up' => 1, 'hashes' => 3_000_000]);
+});
+
+test('the numbers add finished days from the roll-up to today counted live', function () {
+    $user = User::factory()->create();
+    $team = $user->currentTeam;
+    $routine = GymRoutine::factory()->for($team)->create(['name' => 'Probers']);
+
+    $attach = function (GymSession $session) use ($routine) {
+        $session->routines()->attach($routine);
+
+        return $session;
+    };
+
+    // Two days ago: one cleared, one turned away — rolled into the summary tables, off the live scan.
+    $attach(GymSession::factory()->for($team)->cleared()->create(['started_at' => today()->subDays(2)->setTime(9, 0), 'hashes' => 2_000]));
+    $attach(GymSession::factory()->for($team)->create(['started_at' => today()->subDays(2)->setTime(9, 0), 'status' => GymSessionStatus::TurnedAway]));
+    app(RollUpGymMetrics::class)->handle($team, CarbonImmutable::parse(today()->subDays(2)->toDateString()));
+
+    // Today: one cleared, counted live rather than from the roll-up.
+    $attach(GymSession::factory()->for($team)->cleared()->create(['started_at' => today()->setTime(8, 0), 'hashes' => 500]));
+
+    $this->actingAs($user);
+
+    $component = Livewire::test('pages::gym.index');
+
+    $routineRow = $component->instance()->routines->firstWhere('id', $routine->id);
+    expect($routineRow->entered_count)->toBe(3)->and($routineRow->cleared_count)->toBe(2);
+
+    expect($component->instance()->stats)->toBe(['entered' => 3, 'cleared' => 2, 'turned_away' => 1, 'gave_up' => 0, 'hashes' => 2_500]);
 });
 
 test('the tester shows which routines a visitor would stack into', function () {

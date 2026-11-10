@@ -61,7 +61,7 @@ function judgedGymCheck(string $uri, array $rules, array $client = ['X-NiceTry-C
 test('a single-request rule the edge flags reaches its verdict at once, and its gym takes the client in on that request', function () {
     [$rule] = ruleWithGym();
 
-    judgedGymCheck('/phpmyadmin.php', [$rule->id])->assertOk()->assertSee('Spot me, bro');
+    judgedGymCheck('/phpmyadmin.php', [$rule->id])->assertForbidden()->assertSee('Spot me, bro');
 
     expect(Verdict::sole())
         ->edge_rule_id->toBe($rule->id)

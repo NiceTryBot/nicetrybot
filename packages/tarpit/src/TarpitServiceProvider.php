@@ -3,7 +3,7 @@
 namespace NiceTry\Tarpit;
 
 use App\Addons\AddonServiceProvider;
-use App\Enums\ViewSlot;
+use App\Enums\NavGroup;
 use App\Models\EdgeRequest;
 use App\Models\Team;
 use App\Support\NavItem;
@@ -14,6 +14,8 @@ use NiceTry\Tarpit\Models\Tarpit;
 use NiceTry\Tarpit\Models\TarpitHold;
 use NiceTry\Tarpit\Policies\TarpitPolicy;
 use NiceTry\Tarpit\Rules\TarpitField;
+use NiceTry\Tarpit\Rules\TarpitRuleDestinationHandler;
+use NiceTry\Tarpit\Rules\TarpitRuleDestinations;
 use NiceTry\Tarpit\Rules\TarpitTemplates;
 
 /**
@@ -44,11 +46,13 @@ class TarpitServiceProvider extends AddonServiceProvider
 
     protected array $ruleTemplates = [TarpitTemplates::class];
 
+    protected array $ruleDestinations = [TarpitRuleDestinations::class];
+
+    protected array $ruleDestinationHandlers = [TarpitRuleDestinationHandler::class];
+
     protected array $ruleFields = [TarpitField::class];
 
-    protected array $slots = [
-        ViewSlot::RulePanels->value => 'tarpit::rule-panels',
-    ];
+    protected array $slots = [];
 
     protected function bootAddon(): void
     {
@@ -59,7 +63,7 @@ class TarpitServiceProvider extends AddonServiceProvider
     protected function nav(): array
     {
         return [
-            new NavItem('Tarpits', 'clock', 'tarpits.index', order: 95, current: ['tarpits.*']),
+            new NavItem('Tarpits', 'clock', 'tarpits.index', order: 95, current: ['tarpits.*'], group: NavGroup::Timeouts),
         ];
     }
 }

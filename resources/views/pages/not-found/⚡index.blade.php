@@ -5,6 +5,7 @@ use App\Concerns\SearchesDomains;
 use App\Data\NotFoundSummary;
 use App\Data\RequestQuery;
 use App\Enums\NotFoundCategory;
+use App\Enums\NotFoundGrouping;
 use App\Enums\TrafficPeriod;
 use App\Models\Domain;
 use App\Models\Team;
@@ -26,6 +27,9 @@ new #[Title('404s')] class extends Component {
 
     #[Url(except: '7d')]
     public string $period = '7d';
+
+    #[Url(as: 'group', except: '')]
+    public string $groupBy = '';
 
     #[Computed]
     public function team(): Team
@@ -49,6 +53,12 @@ new #[Title('404s')] class extends Component {
     }
 
     #[Computed]
+    public function grouping(): ?NotFoundGrouping
+    {
+        return NotFoundGrouping::tryFrom($this->groupBy);
+    }
+
+    #[Computed]
     public function summary(): NotFoundSummary
     {
         $domain = $this->domains->firstWhere('hostname', $this->domain);
@@ -63,8 +73,34 @@ new #[Title('404s')] class extends Component {
 
         return new NotFoundSummary(...[
             ...$summary,
-            'paths' => array_map(fn (array $path): array => [...$path, 'category' => NotFoundCategory::from($path['category'])], $summary['paths']),
+            'paths' => $this->pathsFromCache($summary['paths']),
         ]);
+    }
+
+    /**
+     * The missing paths in their groups, kept the same way as the summary.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    #[Computed]
+    public function pathGroups(): array
+    {
+        if ($this->grouping === null) {
+            return [];
+        }
+
+        $domain = $this->domains->firstWhere('hostname', $this->domain);
+
+        $groups = Cache::flexible(
+            "not-found:groups:{$this->team->id}:{$this->trafficPeriod->value}:{$this->grouping->value}:".($domain?->id ?? 'all'),
+            $this->trafficPeriod->cacheSeconds(),
+            fn (): array => array_map(
+                fn (array $group): array => [...$group, 'paths' => $this->pathsToCache($group['paths'])],
+                app(SummarizeNotFound::class)->groupedPaths($this->team, $this->trafficPeriod, $this->grouping, $domain),
+            ),
+        );
+
+        return array_map(fn (array $group): array => [...$group, 'paths' => $this->pathsFromCache($group['paths'])], $groups);
     }
 
     /**
@@ -74,8 +110,26 @@ new #[Title('404s')] class extends Component {
     {
         return [
             ...get_object_vars($summary),
-            'paths' => array_map(fn (array $path): array => [...$path, 'category' => $path['category']->value], $summary->paths),
+            'paths' => $this->pathsToCache($summary->paths),
         ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $paths
+     * @return array<int, array<string, mixed>>
+     */
+    protected function pathsToCache(array $paths): array
+    {
+        return array_map(fn (array $path): array => [...$path, 'category' => $path['category']->value], $paths);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $paths
+     * @return array<int, array<string, mixed>>
+     */
+    protected function pathsFromCache(array $paths): array
+    {
+        return array_map(fn (array $path): array => [...$path, 'category' => NotFoundCategory::from($path['category'])], $paths);
     }
 
     /**
@@ -160,7 +214,7 @@ new #[Title('404s')] class extends Component {
                     @foreach ($summary->domains as $domainRow)
                         <li wire:key="nf-domain-row-{{ md5($domainRow['hostname']) }}">
                             <div class="mb-1.5 flex items-baseline justify-between gap-3 text-sm">
-                                <a href="{{ route('not-found.index', ['domain' => $domainRow['hostname'], 'period' => $period]) }}" class="truncate font-medium hover:underline" wire:navigate>{{ $domainRow['hostname'] }}</a>
+                                <a href="{{ route('not-found.index', ['domain' => $domainRow['hostname'], 'period' => $period, 'group' => $groupBy ?: null]) }}" class="truncate font-medium hover:underline" wire:navigate>{{ $domainRow['hostname'] }}</a>
                                 <span class="font-mono text-xs tabular-nums">{{ Number::format($domainRow['hits']) }}</span>
                             </div>
                             <div class="h-2 rounded-full bg-zinc-100 dark:bg-zinc-800">
@@ -171,30 +225,63 @@ new #[Title('404s')] class extends Component {
                 </ul>
             </x-ntb.panel>
 
-            <x-ntb.panel class="xl:col-span-2" :heading="__('Most requested missing paths')" :subheading="__('Probes are worth enforcing on. Browser assets and broken links are worth fixing.')">
+            <x-ntb.panel class="xl:col-span-2" :heading="__('Most requested missing paths')" :subheading="__('Probes are worth enforcing on. Browser assets and broken links are worth fixing.')" wire:loading.class="opacity-60">
+                <x-slot:actions>
+                    <flux:select wire:model.live="groupBy" size="sm" class="w-48" :aria-label="__('Group by')">
+                        <flux:select.option value="">{{ __('Group by: nothing') }}</flux:select.option>
+                        @foreach (NotFoundGrouping::cases() as $groupingOption)
+                            <flux:select.option :value="$groupingOption->value">{{ __('Group by: :grouping', ['grouping' => $groupingOption->label()]) }}</flux:select.option>
+                        @endforeach
+                    </flux:select>
+                </x-slot:actions>
+
+                @php($grouping = $this->grouping)
+                @php($showsLooksLike = $grouping !== NotFoundGrouping::LooksLike)
+
                 <flux:table>
                     <flux:table.columns>
                         <flux:table.column>{{ __('Path') }}</flux:table.column>
-                        <flux:table.column>{{ __('Looks like') }}</flux:table.column>
+                        @if ($showsLooksLike)
+                            <flux:table.column>{{ __('Looks like') }}</flux:table.column>
+                        @endif
                         <flux:table.column align="end">{{ __('Hits') }}</flux:table.column>
                         <flux:table.column align="end" class="max-md:hidden">{{ __('IPs') }}</flux:table.column>
                         <flux:table.column align="end" class="max-md:hidden">{{ __('Last seen') }}</flux:table.column>
                     </flux:table.columns>
 
                     <flux:table.rows>
-                        @foreach ($summary->paths as $path)
-                            <flux:table.row :key="md5($path['path'])">
-                                <flux:table.cell class="max-w-72">
-                                    <a href="{{ route('activity.index', ['q' => 'path = '.RequestQuery::quote($path['path']), 'status' => '404', 'period' => $period, 'domain' => $domain]) }}" class="block truncate font-mono text-xs text-ink hover:underline dark:text-zinc-100" wire:navigate>{{ $path['path'] }}</a>
-                                    @if ($path['domains'] > 1)
-                                        <span class="text-xs text-zinc-500 dark:text-zinc-400">{{ __('on :count domains', ['count' => $path['domains']]) }}</span>
+                        @foreach ($grouping ? $this->pathGroups : [['key' => null, 'paths' => $summary->paths]] as $pathGroup)
+                            @if ($grouping)
+                                <flux:table.row :key="'group-'.md5((string) $pathGroup['key'])">
+                                    <flux:table.cell :colspan="$showsLooksLike ? 2 : 1" class="pt-6">
+                                        <a href="{{ route('activity.index', ['q' => $grouping->activityClause($pathGroup['key']), 'status' => '404', 'period' => $period, 'domain' => $domain]) }}" class="font-semibold text-ink hover:underline dark:text-white" wire:navigate>{{ $grouping->groupLabel($pathGroup['key']) }}</a>
+                                        <span class="ms-1 font-mono text-xs tabular-nums">{{ round($pathGroup['hits'] / $summary->total * 100, 1) }}% · {{ trans_choice(':count path|:count paths', $pathGroup['distinctPaths'], ['count' => Number::format($pathGroup['distinctPaths'])]) }}</span>
+                                        @if ($description = $grouping->groupDescription($pathGroup['key']))
+                                            <p class="mt-0.5 text-xs whitespace-normal">{{ $description }}</p>
+                                        @endif
+                                    </flux:table.cell>
+                                    <flux:table.cell align="end" variant="strong" class="pt-6 font-mono text-xs tabular-nums">{{ Number::format($pathGroup['hits']) }}</flux:table.cell>
+                                    <flux:table.cell align="end" variant="strong" class="pt-6 font-mono text-xs tabular-nums max-md:hidden">{{ Number::format($pathGroup['uniqueIps']) }}</flux:table.cell>
+                                    <flux:table.cell align="end" variant="strong" class="pt-6 text-xs whitespace-nowrap max-md:hidden">{{ CarbonImmutable::parse($pathGroup['lastSeenAt'])->diffForHumans(short: true) }}</flux:table.cell>
+                                </flux:table.row>
+                            @endif
+
+                            @foreach ($pathGroup['paths'] as $path)
+                                <flux:table.row :key="md5($pathGroup['key'].'|'.$path['path'])">
+                                    <flux:table.cell class="max-w-72">
+                                        <a href="{{ route('activity.index', ['q' => 'path = '.RequestQuery::quote($path['path']), 'status' => '404', 'period' => $period, 'domain' => $domain]) }}" class="block truncate font-mono text-xs text-ink hover:underline dark:text-zinc-100" wire:navigate>{{ $path['path'] }}</a>
+                                        @if ($path['domains'] > 1)
+                                            <span class="text-xs text-zinc-500 dark:text-zinc-400">{{ __('on :count domains', ['count' => $path['domains']]) }}</span>
+                                        @endif
+                                    </flux:table.cell>
+                                    @if ($showsLooksLike)
+                                        <flux:table.cell><flux:badge size="sm" :color="$path['category']->color()">{{ $path['category']->label() }}</flux:badge></flux:table.cell>
                                     @endif
-                                </flux:table.cell>
-                                <flux:table.cell><flux:badge size="sm" :color="$path['category']->color()">{{ $path['category']->label() }}</flux:badge></flux:table.cell>
-                                <flux:table.cell align="end" variant="strong" class="font-mono text-xs tabular-nums">{{ Number::format($path['hits']) }}</flux:table.cell>
-                                <flux:table.cell align="end" class="font-mono text-xs tabular-nums max-md:hidden">{{ Number::format($path['uniqueIps']) }}</flux:table.cell>
-                                <flux:table.cell align="end" class="text-xs whitespace-nowrap max-md:hidden">{{ CarbonImmutable::parse($path['lastSeenAt'])->diffForHumans(short: true) }}</flux:table.cell>
-                            </flux:table.row>
+                                    <flux:table.cell align="end" variant="strong" class="font-mono text-xs tabular-nums">{{ Number::format($path['hits']) }}</flux:table.cell>
+                                    <flux:table.cell align="end" class="font-mono text-xs tabular-nums max-md:hidden">{{ Number::format($path['uniqueIps']) }}</flux:table.cell>
+                                    <flux:table.cell align="end" class="text-xs whitespace-nowrap max-md:hidden">{{ CarbonImmutable::parse($path['lastSeenAt'])->diffForHumans(short: true) }}</flux:table.cell>
+                                </flux:table.row>
+                            @endforeach
                         @endforeach
                     </flux:table.rows>
                 </flux:table>

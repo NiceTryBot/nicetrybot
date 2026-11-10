@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Data\CrawlerDirectory;
 use App\Data\LabelDirectory;
+use App\Enums\NavGroup;
 use App\Gym\Contracts\Obstacle;
 use App\Gym\ObstacleRegistry;
 use App\Http\Middleware\AddServerTiming;
@@ -12,8 +13,12 @@ use App\Models\GymSession;
 use App\Models\User;
 use App\Support\CompressResponse;
 use App\Support\CoreVisitorData;
+use App\Support\GymRuleDestinationHandler;
+use App\Support\GymRuleDestinations;
 use App\Support\Nav;
 use App\Support\NavItem;
+use App\Support\RuleDestinationHandlers;
+use App\Support\RuleDestinations;
 use App\Support\SettingsNav;
 use App\Support\SettingsNavItem;
 use App\Support\SharedOrigins;
@@ -53,6 +58,8 @@ class AppServiceProvider extends ServiceProvider
         $this->app->scoped(CrawlerDirectory::class);
 
         $this->app->tag([CoreVisitorData::class], VisitorDataHolders::TAG);
+        $this->app->tag([GymRuleDestinations::class], RuleDestinations::TAG);
+        $this->app->tag([GymRuleDestinationHandler::class], RuleDestinationHandlers::TAG);
 
         // The core's obstacles in their config order, then the ones add-ons bring.
         $this->app->singleton(ObstacleRegistry::class, fn ($app) => new ObstacleRegistry([
@@ -101,8 +108,8 @@ class AppServiceProvider extends ServiceProvider
                 $viewerIp = ViewerIp::of(request());
 
                 return $viewerIp !== null && (bool) auth()->user()?->currentTeam?->verdicts()->active()->where('client_ip', $viewerIp)->exists() ? __('You') : null;
-            }, badgeColor: 'red', test: 'nav-tags'),
-            new NavItem('Bot gym', 'fire', 'gym.index', order: 90, current: ['gym.index', 'gym.routines.*']),
+            }, badgeColor: 'red', test: 'nav-tags', group: NavGroup::Tags),
+            new NavItem('Bot gym', 'fire', 'gym.index', order: 90, current: ['gym.index', 'gym.routines.*'], group: NavGroup::Timeouts),
         );
     }
 

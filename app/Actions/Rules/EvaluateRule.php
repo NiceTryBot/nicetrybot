@@ -8,10 +8,24 @@ use App\Models\EdgeRule;
 use App\Models\TlsFingerprint;
 use App\Models\Verdict;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class EvaluateRule
 {
+    /**
+     * How far past its last request a single-request rule looks in one run, in request ids. A rule that
+     * has fallen behind catches up over several runs, saving its place after each, as one run over a big
+     * backlog could outlast the process and never save it.
+     */
+    public const int MOST_REQUESTS_PER_RUN = 50000;
+
+    /**
+     * How many clients a single-request rule records in one run, at about 20ms each. A run covering
+     * more covers fewer requests instead.
+     */
+    public const int MOST_CLIENTS_PER_RUN = 1500;
+
     public function __construct(private BuildRuleQuery $buildRuleQuery)
     {
         //
@@ -25,8 +39,11 @@ class EvaluateRule
      * A rule starts from the moment it's first evaluated: requests from before it existed are left to
      * the backtest, so a new rule never bans retroactively. Afterwards, a rule with UNTIL lifts the
      * verdict of any subject that made a matching request after its verdict last matched.
+     *
+     * A verdict runs from the match that earned it, so a rule catching up doesn't start a fresh ban on a
+     * client for what it did days ago, and spends nothing on requests whose ban would already be over.
      */
-    public function handle(EdgeRule $rule, ?CarbonImmutable $now = null): int
+    public function handle(EdgeRule $rule, ?CarbonImmutable $now = null, int $mostClients = self::MOST_CLIENTS_PER_RUN): int
     {
         $now ??= CarbonImmutable::now();
         $script = $rule->script();
@@ -39,29 +56,45 @@ class EvaluateRule
             return 0;
         }
 
-        $query = $this->buildRuleQuery->handle($rule->team, $script);
-        $subjectColumns = array_map(fn (RuleSubject $subject) => $subject->column(), $script->subjects);
-
-        if ($script->isAggregate()) {
-            [$having, $bindings] = $this->buildRuleQuery->having($script->having);
-
-            $query->where('edge_requests.occurred_at', '>=', $now->subSeconds($script->windowSeconds))
-                ->havingRaw($having, $bindings)
-                ->havingRaw('max(edge_requests.id) > ?', [$since]);
-        } else {
-            $query->where('edge_requests.id', '>', $since)->where('edge_requests.id', '<=', $latestId);
+        if (! $script->isAggregate()) {
+            $latestId = min($latestId, $since + self::MOST_REQUESTS_PER_RUN);
         }
 
-        $groups = $query
-            ->selectRaw(implode(', ', [
-                in_array(RuleSubject::Ip, $script->subjects, true) ? 'edge_requests.client_ip as client_ip' : 'null as client_ip',
-                in_array(RuleSubject::Ja4, $script->subjects, true) ? 'edge_requests.ja4_id as ja4_id' : 'null as ja4_id',
-                'count(*) as matched',
-                'min(edge_requests.occurred_at) as first_matched_at',
-                'max(edge_requests.occurred_at) as last_matched_at',
-            ]))
-            ->groupBy($subjectColumns)
-            ->get();
+        $subjectColumns = array_map(fn (RuleSubject $subject) => $subject->column(), $script->subjects);
+
+        $matches = function (int $upTo) use ($rule, $script, $subjectColumns, $since, $now): Collection {
+            $query = $this->buildRuleQuery->handle($rule->team, $script);
+
+            if ($script->isAggregate()) {
+                [$having, $bindings] = $this->buildRuleQuery->having($script->having);
+
+                $query->where('edge_requests.occurred_at', '>=', $now->subSeconds($script->windowSeconds))
+                    ->havingRaw($having, $bindings)
+                    ->havingRaw('max(edge_requests.id) > ?', [$since]);
+            } else {
+                $query->where('edge_requests.id', '>', $since)
+                    ->where('edge_requests.id', '<=', $upTo)
+                    ->when($rule->duration_seconds !== null, fn ($query) => $query->where('edge_requests.occurred_at', '>', $now->subSeconds($rule->duration_seconds)));
+            }
+
+            return $query
+                ->selectRaw(implode(', ', [
+                    in_array(RuleSubject::Ip, $script->subjects, true) ? 'edge_requests.client_ip as client_ip' : 'null as client_ip',
+                    in_array(RuleSubject::Ja4, $script->subjects, true) ? 'edge_requests.ja4_id as ja4_id' : 'null as ja4_id',
+                    'count(*) as matched',
+                    'min(edge_requests.occurred_at) as first_matched_at',
+                    'max(edge_requests.occurred_at) as last_matched_at',
+                ]))
+                ->groupBy($subjectColumns)
+                ->get();
+        };
+
+        $groups = $matches($latestId);
+
+        while (! $script->isAggregate() && $groups->count() > $mostClients && $latestId > $since + 1) {
+            $latestId = $since + (int) ceil(($latestId - $since) / 2);
+            $groups = $matches($latestId);
+        }
 
         $reached = 0;
 
@@ -129,6 +162,7 @@ class EvaluateRule
      */
     private function record(EdgeRule $rule, object $group, bool $isAggregate, CarbonImmutable $now): bool
     {
+        $lastMatchedAt = $group->last_matched_at;
         $verdict = Verdict::query()
             ->active()
             ->where('edge_rule_id', $rule->id)
@@ -139,9 +173,15 @@ class EvaluateRule
         if ($verdict !== null) {
             $verdict->update([
                 'matched_requests' => $isAggregate ? max($verdict->matched_requests, (int) $group->matched) : $verdict->matched_requests + (int) $group->matched,
-                'last_matched_at' => $group->last_matched_at,
+                'last_matched_at' => $lastMatchedAt,
             ]);
 
+            return false;
+        }
+
+        $expiresAt = $rule->duration_seconds === null ? null : CarbonImmutable::parse($lastMatchedAt)->addSeconds($rule->duration_seconds);
+
+        if ($expiresAt?->lessThanOrEqualTo($now)) {
             return false;
         }
 
@@ -153,8 +193,8 @@ class EvaluateRule
             'ja4_id' => $group->ja4_id,
             'matched_requests' => (int) $group->matched,
             'first_matched_at' => $group->first_matched_at,
-            'last_matched_at' => $group->last_matched_at,
-            'expires_at' => $rule->duration_seconds === null ? null : $now->addSeconds($rule->duration_seconds),
+            'last_matched_at' => $lastMatchedAt,
+            'expires_at' => $expiresAt,
         ]);
 
         return true;

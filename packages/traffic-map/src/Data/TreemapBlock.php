@@ -24,6 +24,7 @@ class TreemapBlock
         public readonly string $size,
         public readonly bool $subdivided,
         public readonly array $tiles,
+        public readonly ?TreemapClient $client = null,
     ) {}
 
     public function suspectPct(): int

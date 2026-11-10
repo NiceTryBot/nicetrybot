@@ -54,7 +54,7 @@ test('list-rules shows how each of the team\'s rules is doing and which gyms tak
         ->assertStructuredContent(fn ($json) => $json
             ->has('rules', 1)
             ->where('rules.0.name', 'Datacenter burst')
-            ->where('rules.0.action', 'ban')
+            ->where('rules.0.action', 'block')
             ->where('rules.0.active_verdicts', 1)
             ->where('rules.0.total_verdicts', 2)
             ->where('rules.0.matched_requests', 6)
@@ -93,7 +93,7 @@ test('backtest-rule says who a draft would have matched, without saving anything
 test('a script that doesn\'t parse says where it breaks', function (string $tool, array $arguments) {
     [$token] = apiToken([ApiAbility::ManageRules]);
 
-    mcpAs($token)->tool($tool, [...$arguments, 'source' => "BAN ip FOR 1 HOUR\nWHERE stauts = 404"])
+    mcpAs($token)->tool($tool, [...$arguments, 'source' => "BLOCK ip FOR 1 HOUR\nWHERE stauts = 404"])
         ->assertHasErrors(['Line 2, column 7', 'Did you mean status?']);
 
     expect(EdgeRule::count())->toBe(0);
@@ -143,7 +143,7 @@ test('create-rule sends the rule\'s clients to one of the team\'s gyms by id', f
     [$token] = apiToken([ApiAbility::ManageRules, ApiAbility::ManageGym]);
     $gym = GymRoutine::factory()->for($token->team)->entering([['field' => 'verdict', 'operator' => 'in', 'values' => ['999']]])->create(['name' => 'Bad actors']);
 
-    mcpAs($token)->tool(CreateRule::class, ['name' => 'Probes', 'source' => "BAN ip FOR 1 DAY WHERE category = 'probe'", 'gym_id' => $gym->id])
+    mcpAs($token)->tool(CreateRule::class, ['name' => 'Probes', 'source' => "BLOCK ip FOR 1 DAY WHERE category = 'probe'", 'gym_id' => $gym->id])
         ->assertOk()
         ->assertStructuredContent(fn ($json) => $json->where('gym.linked', true)->where('gym.gym.created', false)->etc());
 
@@ -153,7 +153,7 @@ test('create-rule sends the rule\'s clients to one of the team\'s gyms by id', f
 test('create-rule saves the rule but says why it couldn\'t send its clients to the gym', function (Closure $setUp, string $reason) {
     [$token, $gym] = $setUp();
 
-    mcpAs($token)->tool(CreateRule::class, ['name' => 'Probes', 'source' => "BAN ip FOR 1 DAY WHERE category = 'probe'", 'gym_id' => $gym->id])
+    mcpAs($token)->tool(CreateRule::class, ['name' => 'Probes', 'source' => "BLOCK ip FOR 1 DAY WHERE category = 'probe'", 'gym_id' => $gym->id])
         ->assertOk()
         ->assertStructuredContent(fn ($json) => $json->where('gym.linked', false)->etc())
         ->assertSee($reason);
@@ -236,5 +236,5 @@ test('describe-rule-language gives the grammar and the fields', function () {
 
     mcpAs($token)->tool(DescribeRuleLanguage::class)
         ->assertOk()
-        ->assertSee(['BAN | TAG', 'country']);
+        ->assertSee(['BLOCK | TAG', 'country']);
 });

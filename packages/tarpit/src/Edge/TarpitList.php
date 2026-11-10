@@ -9,6 +9,7 @@ use App\Enums\ProtectionMode;
 use App\Models\Domain;
 use App\Models\EdgeRule;
 use App\Models\Verdict;
+use App\Support\AllowedAddresses;
 use App\Support\TarpitFeedContributor;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -131,7 +132,13 @@ class TarpitList implements TarpitFeedContributor
             }
         }
 
-        return array_values($clients);
+        // An allowed address (the White List or Nice Bots add-ons) is never held, however it got here.
+        $allowed = app(AllowedAddresses::class);
+
+        return array_values(array_filter(
+            $clients,
+            fn (array $client) => $client['ip'] === null || ! $allowed->allows($client['ip']),
+        ));
     }
 
     /**

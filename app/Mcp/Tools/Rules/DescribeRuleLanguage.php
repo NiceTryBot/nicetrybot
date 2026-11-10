@@ -27,8 +27,8 @@ class DescribeRuleLanguage extends TeamTool
      * The rule language's grammar, as the Rules page's "Ask" teaches it to Claude.
      */
     private const string GRAMMAR = <<<'GRAMMAR'
-        script    := action subjects [AS 'tag'] FOR duration [WHERE expr] [WITHIN span HAVING having] [UNTIL expr]
-        action    := BAN | TAG
+        script    := action subjects [AS 'tag'] FOR duration [EVERY span] [WHERE expr] [WITHIN span HAVING having] [UNTIL expr]
+        action    := BLOCK | TAG | FINGERPRINT
         subjects  := subject {, subject}       subject := ip | ja4
         duration  := number unit | FOREVER     span := number unit
         unit      := SECOND | MINUTE | HOUR | DAY | WEEK, or the plural
@@ -41,13 +41,14 @@ class DescribeRuleLanguage extends TeamTool
 
         Clauses go in that order. Keywords ignore case. Strings take single quotes, doubling a quote inside ('O''Brien'). Numbers are bare. < and > work only on number fields. LIKE ignores case: % matches any run of characters and _ one character. AND binds tighter than OR, so wrap OR groups in parentheses when you AND them with something else. A line starting with -- is a comment.
 
-        - TAG names what the rule found (TAG ip, ja4 AS 'phpmyadmin-probe'); BAN takes no AS. Use TAG unless the person asks to ban or block.
+        - TAG names what the rule found (TAG ip, ja4 AS 'phpmyadmin-probe'); BLOCK takes no AS. Use TAG unless the person asks to ban or block.
         - The subjects are who the verdict lands on: ip, ja4 (an IP and its TLS fingerprint together, which is one client) unless only IPs or only fingerprints are meant.
         - FOR is how long the verdict lasts. A verdict with no end is FOR FOREVER.
+        - FINGERPRINT tags too, and fingerprints the browser on the request itself, then lets it carry on; its AS name is also its Known Faces bucket. Use it only when asked to fingerprint. One request has to decide it, so no WITHIN. EVERY says how soon the same subject can be fingerprinted again, at least 10 MINUTES; without it, FOR decides.
         - WHERE picks the requests that count. Without WITHIN, one matching request is enough.
         - WITHIN … HAVING counts each subject's matching requests over a window of at most 24 HOURS.
         - UNTIL lifts a verdict early, as soon as its subject makes a request that passes it.
-        - To send a rule's clients to a gym, give create-rule a gym; the rule itself only tags or bans.
+        - To send a rule's clients to a gym, give create-rule a gym; the rule itself only tags or blocks.
         GRAMMAR;
 
     /**

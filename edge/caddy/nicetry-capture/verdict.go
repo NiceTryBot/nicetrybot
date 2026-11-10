@@ -68,6 +68,10 @@ func (v *Verdict) Validate() error {
 
 func (v *Verdict) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	r.Header.Del(verdictHeader)
+	// An allowed client (nicetry_allow) carries no standing verdict to the origin.
+	if isAllowed(r) {
+		return next.ServeHTTP(w, r)
+	}
 	if value := v.verdicts.lookup(requestIP(r)); value != "" {
 		r.Header.Set(verdictHeader, value)
 	}
@@ -107,8 +111,18 @@ func (m *verdictMap) lookup(ip string) string {
 	return (*m.current.Load())[ip]
 }
 
+// restore starts the verdicts from their last good copy.
+func (m *verdictMap) restore(store *lastGood) bool {
+	verdicts, ok := restoreList(store, "verdicts", parseVerdicts)
+	if ok {
+		m.current.Store(&verdicts)
+	}
+	return ok
+}
+
 func (m *verdictMap) poll(interval time.Duration) {
 	client := &http.Client{Timeout: 10 * time.Second}
+	m.restore(sharedLastGood())
 	for {
 		if err := m.refresh(client); err != nil {
 			caddy.Log().Named("nicetry_verdict").Warn("keeping the last verdicts", zap.Error(err))
@@ -156,6 +170,7 @@ func (m *verdictMap) refresh(client *http.Client) error {
 	}
 	m.current.Store(&verdicts)
 	m.etag = resp.Header.Get("ETag")
+	sharedLastGood().save("verdicts", raw)
 	return nil
 }
 

@@ -48,6 +48,12 @@ Schedule::command('rules:evaluate')
     ->withoutOverlapping(5)
     ->description('Run enabled rules over newly imported requests');
 
+Schedule::command('gym:roll-up-metrics')
+    ->hourly()
+    ->withoutOverlapping(30)
+    ->environments('production')
+    ->description('Summarize each team\'s recent gym sessions into daily metrics for the gym page');
+
 Schedule::command('addons:check-licences')
     ->daily()
     ->withoutOverlapping(30)

@@ -21,7 +21,7 @@ use Laravel\Mcp\Server\Attributes\Description;
     Save a new rule for the team. A rule is a script in NiceTryBot's rule language (call
     describe-rule-language for the grammar and fields), e.g.
     "TAG ip, ja4 AS 'dutch-visitors' FOR 1 DAY WHERE country = 'NL'". Every minute it reads the requests
-    logged since it last ran and puts a verdict (ban or tag, for the script's duration) on each client it
+    logged since it last ran and puts a verdict (block or tag, for the script's duration) on each client it
     matches; it starts from now, never from past traffic. To send the clients it flags through a gym, pass
     gym_id (one of the team's gyms, from list-gyms) or gym_name (the team's gym by that name, or a new gym
     made for this rule); that needs the token's gym ability too, and the answer says if linking was

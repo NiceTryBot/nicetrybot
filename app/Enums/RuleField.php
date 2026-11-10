@@ -149,7 +149,7 @@ enum RuleField: string implements RuleFieldDefinition
             self::Method => [HttpMethod::fromVerb((string) $literal) !== HttpMethod::Other || strtoupper((string) $literal) === 'OTHER'
                 ? HttpMethod::fromVerb((string) $literal)->value
                 : throw new InvalidArgumentException(__('Unknown method :value. Use GET, POST, HEAD, PUT, PATCH, DELETE or OPTIONS.', ['value' => $literal]))],
-            self::Action => [(RequestAction::fromSlug((string) $literal) ?? throw new InvalidArgumentException(__('Unknown action :value. Use passed, observed, diverted or blocked.', ['value' => $literal])))->value],
+            self::Action => [(RequestAction::fromSlug((string) $literal) ?? throw new InvalidArgumentException(__('Unknown action :value. Use passed, observed, diverted, blocked or bouncer.', ['value' => $literal])))->value],
             self::NetworkKind => [match (strtolower((string) $literal)) {
                 'hosting' => NetworkKind::Hosting->value,
                 'unknown', 'network' => NetworkKind::Unknown->value,

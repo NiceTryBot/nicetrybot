@@ -23,9 +23,9 @@ class EdgeRuleFactory extends Factory
         return [
             'team_id' => Team::factory(),
             'name' => 'Probe scanners',
-            'source' => "BAN ip, ja4 FOR 30 DAYS\nWHERE category = 'probe'",
+            'source' => "BLOCK ip, ja4 FOR 30 DAYS\nWHERE category = 'probe'",
             'enabled' => true,
-            'action' => RuleAction::Ban,
+            'action' => RuleAction::Block,
             'duration_seconds' => 30 * 86400,
             'last_request_id' => 0,
         ];

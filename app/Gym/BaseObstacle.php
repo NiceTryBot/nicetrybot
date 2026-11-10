@@ -45,6 +45,15 @@ abstract class BaseObstacle implements Obstacle
     }
 
     /**
+     * Determine if the obstacle is hidden from the gym builder: a system obstacle an add-on drives itself
+     * (the bouncer's), never offered for a routine to pick, though the pipeline still runs it.
+     */
+    public function hidden(): bool
+    {
+        return false;
+    }
+
+    /**
      * Get the obstacle's own directory, the one its class file sits in.
      */
     public function basePath(): string

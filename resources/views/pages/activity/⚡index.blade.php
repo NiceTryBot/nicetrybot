@@ -28,7 +28,6 @@ use App\Enums\RuleField;
 use App\Enums\RuleSubject;
 use App\Enums\TrafficPeriod;
 use App\Enums\ViewSlot;
-use App\Support\ViewSlots;
 use App\Gym\HashPuzzle;
 use App\Http\Controllers\Edge\ListLiveTailsController;
 use App\Models\ClientLabel;
@@ -43,12 +42,14 @@ use App\Models\Team;
 use App\Models\UserAgent;
 use App\Models\Verdict;
 use App\Support\ActionAddons;
+use App\Support\ActionBadge;
 use App\Support\AnthropicException;
 use App\Support\ClientAddons;
 use App\Support\CurlCommand;
 use App\Support\RequestAddons;
 use App\Support\RuleFieldDefinition;
 use App\Support\RuleFields;
+use App\Support\ViewSlots;
 use App\Support\WhereCondition;
 use App\Support\WholePeriodQuery;
 use Carbon\CarbonImmutable;
@@ -78,7 +79,8 @@ use Livewire\Component;
 use Livewire\WithPagination;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
-new #[Title('Activity')] class extends Component {
+new #[Title('Activity')] class extends Component
+{
     use SearchesDomains;
     use WithPagination;
 
@@ -1362,8 +1364,8 @@ new #[Title('Activity')] class extends Component {
             )])
             ->filter();
 
-        // Only the sessions a row shows need their routines.
-        Collection::make($matched->unique('id')->values())->load('routines:id,name');
+        // Only the sessions a row shows need their routines (with their obstacles and exits, to tell a block).
+        Collection::make($matched->unique('id')->values())->load('routines:id,name,obstacles,exit_action');
 
         return $matched->all();
     }
@@ -2621,10 +2623,12 @@ new #[Title('Activity')] class extends Component {
                                         @php($actionBadges = $this->actionBadges[$request->id] ?? [])
                                         <span class="flex flex-wrap items-center gap-1">
                                             @if (($gymSession = $this->gymSessionsByRequest[$request->id] ?? null) && $gymSession->routines->isNotEmpty())
+                                                {{-- A visit that ends in a block whatever the visitor does is a block, not a gym visit. --}}
+                                                @php($endsInBlock = $gymSession->endsInBlock())
                                                 <flux:tooltip :content="trans_choice('Routine: :names|Routines: :names', $gymSession->routines->count(), ['names' => $gymSession->routines->pluck('name')->join(', ')])" position="top">
-                                                    <x-ntb.action-badge :action="$request->action" class="cursor-help" data-test="gym-routines" />
+                                                    <x-ntb.action-badge :action="$endsInBlock ? RequestAction::Blocked : $request->action" class="cursor-help" data-test="{{ $endsInBlock ? 'gym-blocked' : 'gym-routines' }}" />
                                                 </flux:tooltip>
-                                            @elseif ($request->action !== RequestAction::Passed || ! collect($actionBadges)->contains('replacesPassed', true))
+                                            @elseif (! ActionBadge::replaceCore($actionBadges, $request->action))
                                                 <x-ntb.action-badge :action="$request->action" />
                                             @endif
                                             {{-- Add-ons' badges, from App\Support\ActionAddons. --}}
@@ -2635,7 +2639,7 @@ new #[Title('Activity')] class extends Component {
                                         @foreach ($actionBadges as $actionBadge)
                                             {{ $actionBadge->note }}
                                         @endforeach
-                                        @if ($gymSession)
+                                        @if ($gymSession && ! $gymSession->wasBlockedOutright())
                                             <span class="mt-1 flex items-center gap-1 text-[0.65rem] whitespace-nowrap text-zinc-500 dark:text-zinc-400" title="{{ $gymSession->routines->pluck('name')->join(', ') }}" data-test="gym-outcome">
                                                 <span @class([
                                                     'size-1.5 shrink-0 rounded-full',
@@ -2742,9 +2746,11 @@ new #[Title('Activity')] class extends Component {
                             <button type="button" role="menuitem" x-on:click="client('only')" class="flex w-full items-center gap-2 rounded px-2 py-1 text-start hover:bg-canvas dark:hover:bg-zinc-800">
                                 <flux:icon.funnel variant="micro" class="size-3.5 text-zinc-400" /> {{ __('Show only this') }}
                             </button>
-                            <button type="button" role="menuitem" x-show="kind === 'ip' && ! value.includes(':')" x-on:click="client('enrich')" class="flex w-full items-center gap-2 rounded px-2 py-1 text-start hover:bg-canvas dark:hover:bg-zinc-800" data-test="enrich-client">
-                                <flux:icon.chart-bar variant="micro" class="size-3.5 text-violet-500" /> <span x-text="enriched ? '{{ __('Stop enriching') }}' : '{{ __('Enrich: show its neighbors') }}'"></span>
-                            </button>
+                            @if ($view !== 'map')
+                                <button type="button" role="menuitem" x-show="kind === 'ip' && ! value.includes(':')" x-on:click="client('enrich')" class="flex w-full items-center gap-2 rounded px-2 py-1 text-start hover:bg-canvas dark:hover:bg-zinc-800" data-test="enrich-client">
+                                    <flux:icon.chart-bar variant="micro" class="size-3.5 text-violet-500" /> <span x-text="enriched ? '{{ __('Stop enriching') }}' : '{{ __('Enrich: show its neighbors') }}'"></span>
+                                </button>
+                            @endif
                             @if ($this->canLabelClients)
                                 <div class="my-1 border-t border-line dark:border-zinc-800"></div>
                                 <button type="button" role="menuitem" x-on:click="client('mine')" class="flex w-full items-center gap-2 rounded px-2 py-1 text-start hover:bg-canvas dark:hover:bg-zinc-800" data-test="mark-mine">
@@ -2811,7 +2817,7 @@ new #[Title('Activity')] class extends Component {
                 <div class="flex flex-wrap items-center gap-2">
                     <x-ntb.status-code :code="$request->status_code" />
                     @php($actionBadges = app(ActionAddons::class)->badges($this->team, [$request->id])[0])
-                    @if ($request->action !== RequestAction::Passed || ! collect($actionBadges)->contains('replacesPassed', true))
+                    @if (! ActionBadge::replaceCore($actionBadges, $request->action))
                         <x-ntb.action-badge :action="$request->action" />
                     @endif
                     @foreach ($actionBadges as $actionBadge)

@@ -351,8 +351,18 @@ func (m *rewriteMap) lookup(host string) []rewriteRule {
 	return (*m.current.Load())[host]
 }
 
+// restore starts the rewrites from their last good copy.
+func (m *rewriteMap) restore(store *lastGood) bool {
+	rewrites, ok := restoreList(store, "rewrites", parseRewrites)
+	if ok {
+		m.current.Store(&rewrites)
+	}
+	return ok
+}
+
 func (m *rewriteMap) poll(interval time.Duration) {
 	client := &http.Client{Timeout: 10 * time.Second}
+	m.restore(sharedLastGood())
 	for {
 		if err := m.refresh(client); err != nil {
 			caddy.Log().Named("nicetry_rewrite").Warn("keeping the last rewrites", zap.Error(err))
@@ -400,6 +410,7 @@ func (m *rewriteMap) refresh(client *http.Client) error {
 	}
 	m.current.Store(&rewrites)
 	m.etag = resp.Header.Get("ETag")
+	sharedLastGood().save("rewrites", raw)
 	return nil
 }
 

@@ -11,6 +11,7 @@ enum RequestAction: int
     case Observed = 2;
     case Diverted = 3;
     case Blocked = 4;
+    case Bouncer = 5;
 
     /**
      * Get the action from the slug used in URLs and edge logs (e.g. "observed").
@@ -44,6 +45,7 @@ enum RequestAction: int
             self::Observed => __('Observed'),
             self::Diverted => __('In the gym'),
             self::Blocked => __('Blocked'),
+            self::Bouncer => __('Bouncer'),
         };
     }
 
@@ -57,6 +59,7 @@ enum RequestAction: int
             self::Observed => 'sky',
             self::Diverted => 'amber',
             self::Blocked => 'rose',
+            self::Bouncer => 'amber',
         };
     }
 
@@ -70,6 +73,7 @@ enum RequestAction: int
             self::Observed => 'eye',
             self::Diverted => 'arrow-uturn-right',
             self::Blocked => 'no-symbol',
+            self::Bouncer => 'arrow-right-end-on-rectangle',
         };
     }
 
@@ -86,7 +90,7 @@ enum RequestAction: int
      */
     public function isKeptOffOrigin(): bool
     {
-        return in_array($this, [self::Diverted, self::Blocked], true);
+        return in_array($this, [self::Diverted, self::Blocked, self::Bouncer], true);
     }
 
     /**

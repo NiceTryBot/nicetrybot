@@ -1,10 +1,12 @@
 <?php
 
 use App\Data\RequestQuery;
+use App\Enums\NetworkCategory;
 use App\Enums\RequestAction;
 use App\Enums\TrafficPeriod;
 use App\Models\Domain;
 use App\Models\EdgeRequest;
+use App\Models\NetworkCategory as NetworkCategoryModel;
 use App\Models\Team;
 use App\Models\User;
 use Illuminate\Support\Collection;
@@ -99,6 +101,91 @@ test('it groups by client IP', function () {
         ->and($tiles['ip203.0.113.7']->sym)->toContain('203.0.113.7')
         ->and($tiles['ip203.0.113.7']->sym)->toContain('🇧🇷')
         ->and($tiles['ip203.0.113.7']->sub)->toBe('Brazil');
+});
+
+test('an IP tile says which network it comes from and what kind of network that is', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->verified()->create();
+
+    EdgeRequest::factory()->count(2)->for($domain)->fromNetwork(16276, 'OVH SAS')->create(['client_ip' => '203.0.113.7', 'occurred_at' => now()->subMinute()]);
+    NetworkCategoryModel::factory()->create(['asn' => 16276, 'category' => NetworkCategory::Business]);
+    EdgeRequest::factory()->for($domain)->create(['client_ip' => '198.51.100.9', 'asn' => null, 'occurred_at' => now()->subMinute()]);
+
+    $tiles = tilesByKey(app(SummarizeTrafficMap::class)->handle($user->currentTeam, MapDimension::Ip, TrafficPeriod::Day)->tiles);
+
+    expect($tiles['ip203.0.113.7']->client->networkLine())->toBe('AS16276 · '.NetworkCategory::Business->label().' · OVH SAS')
+        ->and($tiles['ip198.51.100.9']->client->ip)->toBe('198.51.100.9')
+        ->and($tiles['ip198.51.100.9']->client->networkLine())->toBeNull();
+
+    $this->actingAs($user);
+
+    Livewire::test('pages::activity.index')
+        ->set('view', 'map')
+        ->set('mapDimension', 'ip')
+        ->assertSeeHtml('data-client-value="203.0.113.7" data-client-asn="16276"')
+        ->assertSeeHtml('data-test="traffic-map-network"')
+        ->assertDontSeeHtml('data-test="enrich-client"');
+});
+
+test('it groups by ASN category as a network is shown, on its own or split', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->verified()->create();
+
+    EdgeRequest::factory()->count(4)->for($domain)->fromNetwork(64500, 'A business')->create(['occurred_at' => now()->subMinute()]);
+    NetworkCategoryModel::factory()->create(['asn' => 64500, 'category' => NetworkCategory::Business]);
+    EdgeRequest::factory()->count(3)->for($domain)->fromNetwork(64501, 'On the curated list')->create(['occurred_at' => now()->subMinute()]);
+    EdgeRequest::factory()->count(2)->for($domain)->fromNetwork(64502, 'Set to none by hand')->create(['occurred_at' => now()->subMinute()]);
+    NetworkCategoryModel::factory()->create(['asn' => 64502, 'category' => null, 'is_override' => true]);
+    EdgeRequest::factory()->for($domain)->create(['asn' => null, 'occurred_at' => now()->subMinute()]);
+
+    $summarize = app(SummarizeTrafficMap::class);
+    $tiles = tilesByKey($summarize->handle($user->currentTeam, MapDimension::NetworkCategory, TrafficPeriod::Day)->tiles);
+
+    expect($tiles->map->requests->all())->toBe(['nc'.NetworkCategory::Business->value => 4, 'nc'.NetworkCategory::Hosting->value => 3, 'nc-none' => 3])
+        ->and($tiles['nc'.NetworkCategory::Business->value]->sym)->toBe(mb_strtoupper(NetworkCategory::Business->label()));
+
+    $split = $summarize->handle($user->currentTeam, MapDimension::NetworkCategory, TrafficPeriod::Day, secondary: MapDimension::Country);
+
+    expect($split->twoLevel())->toBeTrue()
+        ->and(array_sum(array_column($split->blocks, 'requests')))->toBe(10);
+
+    $this->actingAs($user);
+
+    Livewire::test('pages::activity.index')
+        ->set('view', 'map')
+        ->assertSeeHtml('data-test="map-dim-category"')
+        ->set('mapDimension', 'category')
+        ->assertSeeHtml('data-test="traffic-map"');
+});
+
+test('only an IP is a client on the map, on either side of a split', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->verified()->create();
+
+    EdgeRequest::factory()->count(30)->for($domain)->fromNetwork(16276, 'OVH SAS')->create(['client_ip' => '203.0.113.7', 'country_code' => 'FR', 'occurred_at' => now()->subMinute()]);
+    EdgeRequest::factory()->count(10)->for($domain)->fromNetwork(16276, 'OVH SAS')->create(['client_ip' => '203.0.113.8', 'country_code' => 'FR', 'occurred_at' => now()->subMinute()]);
+
+    $summarize = app(SummarizeTrafficMap::class);
+
+    $byCountry = $summarize->handle($user->currentTeam, MapDimension::Country, TrafficPeriod::Day, secondary: MapDimension::Ip)->blocks[0];
+    $byIp = $summarize->handle($user->currentTeam, MapDimension::Ip, TrafficPeriod::Day, secondary: MapDimension::Country)->blocks[0];
+
+    expect($byCountry->client)->toBeNull()
+        ->and(tilesByKey($byCountry->tiles)['cFR/ip203.0.113.7']->client->asn)->toBe(16276)
+        ->and($byIp->client->ip)->toBe('203.0.113.7')
+        ->and($byIp->client->asn)->toBe(16276);
+});
+
+test('the full map has no client menu with no add-on to fill it', function () {
+    $user = User::factory()->create();
+    EdgeRequest::factory()->for(Domain::factory()->for($user->currentTeam)->verified())->create(['client_ip' => '203.0.113.7', 'occurred_at' => now()->subMinute()]);
+
+    $this->actingAs($user);
+
+    Livewire::test('traffic-map::index')
+        ->set('dimension', 'ip')
+        ->assertSeeHtml('data-client-value="203.0.113.7"')
+        ->assertDontSeeHtml('data-test="traffic-map-client-menu"');
 });
 
 test('an Activity search that filters on a domain field does not error and scopes the map', function () {

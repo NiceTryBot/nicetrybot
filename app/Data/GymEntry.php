@@ -178,6 +178,35 @@ readonly class GymEntry
     }
 
     /**
+     * Get the entry with a rule's verdicts removed: the rule drops out of each verdict condition that
+     * names it, and a condition left with no rules is dropped. "Any rule" conditions are left alone,
+     * since a single rule can't be singled out of them. Null when the rule was never named explicitly,
+     * so nothing changes.
+     */
+    public function withoutVerdictsFrom(int $ruleId): ?self
+    {
+        $changed = false;
+        $conditions = [];
+
+        foreach ($this->conditions as $condition) {
+            if ($condition->field === GymField::Verdict && $condition->operator === GymOperator::In && in_array((string) $ruleId, $condition->values, true)) {
+                $changed = true;
+                $values = array_values(array_diff($condition->values, [(string) $ruleId]));
+
+                if ($values !== []) {
+                    $conditions[] = new GymCondition($condition->field, $condition->operator, $values);
+                }
+
+                continue;
+            }
+
+            $conditions[] = $condition;
+        }
+
+        return $changed ? new self($conditions, $this->matchAll) : null;
+    }
+
+    /**
      * Compile the entry into a Rules expression, or null when every visitor enters.
      *
      * @return array<string, mixed>|null

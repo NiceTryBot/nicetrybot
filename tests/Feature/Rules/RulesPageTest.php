@@ -31,7 +31,7 @@ test('a template becomes a saved rule that starts watching from now', function (
 
     expect($rule->team_id)->toBe($user->currentTeam->id)
         ->and($rule->name)->toBe('Probe scanners')
-        ->and($rule->action)->toBe(RuleAction::Ban)
+        ->and($rule->action)->toBe(RuleAction::Block)
         ->and($rule->duration_seconds)->toBe(30 * 86400)
         ->and($rule->last_request_id)->toBe($existing->id);
 });
@@ -42,7 +42,7 @@ test('a rule that does not parse shows where it breaks and is not saved', functi
     Livewire::test('pages::rules.index')
         ->call('newRule')
         ->set('name', 'Broken')
-        ->set('source', "BAN ip FOR 1 HOUR\nWHERE stauts = 404")
+        ->set('source', "BLOCK ip FOR 1 HOUR\nWHERE stauts = 404")
         ->assertSee('Line 2, column 7')
         ->assertSee('Did you mean status?')
         ->call('save')
@@ -113,99 +113,78 @@ test('a draft from Activity opens in the editor with the name it suggests', func
         ->assertSet('source', "TAG ip AS 'skipped-home' FOR 1 DAY\nWHERE host = 'settlement.example'");
 });
 
-test('a rule\'s clients are sent through a picked gym routine', function () {
+test('saving a GYM clause sends the rule\'s clients through a routine, made by name', function () {
     $user = User::factory()->create();
-    $rule = EdgeRule::factory()->for($user->currentTeam)->create();
-    $routine = GymRoutine::factory()->for($user->currentTeam)->entering([['field' => 'path', 'operator' => 'starts_with', 'values' => ['/gymbros']]])->create(['name' => 'Gymbros']);
-
     $this->actingAs($user);
 
     Livewire::test('pages::rules.index')
-        ->call('edit', $rule->id)
-        ->set('gymRoutineId', $routine->id)
-        ->call('sendToRoutine')
+        ->call('newRule')
+        ->set('name', 'Gymbros')
+        ->set('source', "TAG ip AS 'probe' FOR 1 DAY\nGYM 'Gymbros'\nWHERE category = 'probe'")
+        ->call('save')
         ->assertHasNoErrors()
-        ->assertSeeHtml('data-test="rule-gym-routine"');
+        ->assertSeeHtml('data-test="rule-destination"');
 
-    expect($routine->fresh())
-        ->match_all->toBeFalse()
-        ->conditions->toBe([
-            ['field' => 'path', 'operator' => 'starts_with', 'values' => ['/gymbros']],
-            ['field' => 'verdict', 'operator' => 'in', 'values' => [(string) $rule->id]],
-        ]);
+    $routine = $user->currentTeam->gymRoutines()->where('name', 'Gymbros')->sole();
+    expect($routine->entry()->takesVerdictsFrom(EdgeRule::sole()->id))->toBeTrue();
 });
 
-test('sending a rule\'s clients to the gym needs a routine picked', function () {
+test('naming a gym routine that can\'t take the rule is refused, and the rule is not saved', function () {
     $user = User::factory()->create();
-    $rule = EdgeRule::factory()->for($user->currentTeam)->create();
-
-    $this->actingAs($user);
-
-    Livewire::test('pages::rules.index')
-        ->call('edit', $rule->id)
-        ->call('sendToRoutine')
-        ->assertHasErrors('gymRoutineId')
-        ->assertSee('Pick a routine.');
-});
-
-test('a routine the rule can\'t join without changing who else enters is left alone', function () {
-    $user = User::factory()->create();
-    $rule = EdgeRule::factory()->for($user->currentTeam)->create();
     $conditions = [['field' => 'network', 'operator' => 'in', 'values' => ['hetzner']], ['field' => 'country', 'operator' => 'in', 'values' => ['DE']]];
     $routine = GymRoutine::factory()->for($user->currentTeam)->entering($conditions)->create(['name' => 'German clouds']);
 
     $this->actingAs($user);
 
     Livewire::test('pages::rules.index')
-        ->call('edit', $rule->id)
-        ->assertSee('German clouds can\'t take this rule without changing who else enters')
-        ->set('gymRoutineId', $routine->id)
-        ->call('sendToRoutine')
-        ->assertHasErrors('gymRoutineId')
-        ->assertSee('Adding this rule would change who else enters German clouds. Start a new routine instead.');
+        ->call('newRule')
+        ->set('name', 'Probes')
+        ->set('source', "TAG ip AS 'probe' FOR 1 DAY\nGYM 'German clouds'\nWHERE category = 'probe'")
+        ->call('save')
+        ->assertHasErrors('source')
+        ->assertSee('can’t take this rule without changing who else enters');
 
-    expect($routine->fresh()->conditions)->toBe($conditions);
+    expect($routine->fresh()->conditions)->toBe($conditions)
+        ->and(EdgeRule::count())->toBe(0);
 });
 
-test('another team\'s gym routine cannot take a rule', function () {
+test('a GYM name the team already uses joins that routine instead of making another', function () {
     $user = User::factory()->create();
-    $rule = EdgeRule::factory()->for($user->currentTeam)->create();
-    $foreignRoutine = GymRoutine::factory()->create();
+    $routine = GymRoutine::factory()->for($user->currentTeam)->entering([['field' => 'path', 'operator' => 'contains', 'values' => ['phpmyadmin']]])->create(['name' => 'PhpMyAdmin Gym']);
 
     $this->actingAs($user);
 
     Livewire::test('pages::rules.index')
-        ->call('edit', $rule->id)
-        ->set('gymRoutineId', $foreignRoutine->id)
-        ->call('sendToRoutine')
-        ->assertStatus(404);
+        ->call('newRule')
+        ->set('name', 'Probes')
+        ->set('source', "TAG ip AS 'probe' FOR 1 DAY\nGYM 'phpmyadmin gym'\nWHERE category = 'probe'")
+        ->call('save')
+        ->assertHasNoErrors();
 
-    expect($foreignRoutine->fresh()->conditions)->toBe([['field' => 'network', 'operator' => 'in', 'values' => ['digitalocean', 'hetzner']]]);
+    expect(GymRoutine::count())->toBe(1)
+        ->and($routine->fresh()->match_all)->toBeFalse();
 });
 
-test('members see which gym routine takes a rule\'s clients but cannot send them', function () {
+test('members see where a rule\'s clients go, read-only', function () {
     $member = User::factory()->create();
     $team = Team::factory()->create();
     $team->members()->attach($member, ['role' => TeamRole::Member->value]);
     $member->switchTeam($team);
     $rule = EdgeRule::factory()->for($team)->create();
     GymRoutine::factory()->for($team)->entering([['field' => 'verdict', 'operator' => 'in', 'values' => [(string) $rule->id]]])->create(['name' => 'Flagged clients']);
-    $other = GymRoutine::factory()->for($team)->create();
 
     $this->actingAs($member);
 
     Livewire::test('pages::rules.index')
         ->call('edit', $rule->id)
-        ->assertSee('Flagged clients')
-        ->assertDontSeeHtml('data-test="rule-gym-new"')
-        ->set('gymRoutineId', $other->id)
-        ->call('sendToRoutine')
-        ->assertForbidden();
+        ->assertSeeHtml('data-test="rule-destinations"')
+        ->assertSee('Flagged clients');
 });
 
-test('the gym hand-off warns while no domain sends anyone to the gym', function () {
+test('the destinations warn while no domain sends anyone to Enforce', function () {
     $user = User::factory()->create();
     $rule = EdgeRule::factory()->for($user->currentTeam)->create();
+    GymRoutine::factory()->for($user->currentTeam)->entering([['field' => 'verdict', 'operator' => 'in', 'values' => [(string) $rule->id]]])->create(['name' => 'Waiting room']);
     Domain::factory()->for($user->currentTeam)->verified()->create();
 
     $this->actingAs($user);
@@ -221,15 +200,16 @@ test('the gym hand-off warns while no domain sends anyone to the gym', function 
 
 const ASKED_PHPMYADMIN_RULE = "TAG ip, ja4 AS 'phpmyadmin-probe' FOR 1 DAY\nWHERE host = 'mysite.com' AND path LIKE '%phpmyadmin%'";
 
-test('a rule asked for in plain English waits in the editor, then makes its gym routine on save', function () {
+const ASKED_PHPMYADMIN_GYM_RULE = "TAG ip, ja4 AS 'phpmyadmin-probe' FOR 1 DAY\nGYM 'PhpMyAdmin Gym'\nWHERE host = 'mysite.com' AND path LIKE '%phpmyadmin%'";
+
+test('a rule asked for in plain English waits in the editor, then its destination is set on save', function () {
     $user = User::factory()->create();
     AiCredential::factory()->for($user)->create();
     Domain::factory()->for($user->currentTeam)->create(['hostname' => 'mysite.com']);
     Http::preventStrayRequests();
     Http::fake(['api.anthropic.com/v1/messages' => Http::response(claudeRuleAnswer([
         'name' => 'phpMyAdmin probes on mysite.com',
-        'source' => ASKED_PHPMYADMIN_RULE,
-        'routine_name' => 'PhpMyAdmin Gym',
+        'source' => ASKED_PHPMYADMIN_GYM_RULE,
         'note' => 'Matched any path with phpmyadmin in it, not just phpmyadmin.php.',
     ]))]);
 
@@ -239,10 +219,8 @@ test('a rule asked for in plain English waits in the editor, then makes its gym 
         ->set('question', 'send everyone on mysite.com who hits phpmyadmin.php to the PhpMyAdmin Gym')
         ->call('ask')
         ->assertSet('name', 'phpMyAdmin probes on mysite.com')
-        ->assertSet('source', ASKED_PHPMYADMIN_RULE)
-        ->assertSet('pendingRoutineName', 'PhpMyAdmin Gym')
-        ->assertSee('Matched any path with phpmyadmin in it, not just phpmyadmin.php.')
-        ->assertSee('On save, the clients it flags go through a new gym routine');
+        ->assertSet('source', ASKED_PHPMYADMIN_GYM_RULE)
+        ->assertSee('Matched any path with phpmyadmin in it, not just phpmyadmin.php.');
 
     expect(EdgeRule::count())->toBe(0);
     expect(GymRoutine::count())->toBe(0);
@@ -250,9 +228,7 @@ test('a rule asked for in plain English waits in the editor, then makes its gym 
 
     $component->call('save')
         ->assertHasNoErrors()
-        ->assertSet('pendingRoutineName', '')
-        ->assertDispatched('toast-show')
-        ->assertSeeHtml('data-test="rule-card-gym"');
+        ->assertSeeHtml('data-test="rule-destination"');
 
     expect(GymRoutine::sole())
         ->name->toBe('PhpMyAdmin Gym')
@@ -261,20 +237,20 @@ test('a rule asked for in plain English waits in the editor, then makes its gym 
         ->conditions->toBe([['field' => 'verdict', 'operator' => 'in', 'values' => [(string) EdgeRule::sole()->id]]]);
 });
 
-test('a gym routine Claude picks from the team\'s takes the rule on save', function () {
+test('a gym routine Claude names in the script takes the rule on save', function () {
     $user = User::factory()->create();
     AiCredential::factory()->for($user)->create();
     $routine = GymRoutine::factory()->for($user->currentTeam)->entering([['field' => 'path', 'operator' => 'starts_with', 'values' => ['/login']]])->create(['name' => 'Login wall']);
+    $source = "TAG ip, ja4 AS 'phpmyadmin-probe' FOR 1 DAY\nGYM 'Login wall'\nWHERE path LIKE '%phpmyadmin%'";
     Http::preventStrayRequests();
-    Http::fake(['api.anthropic.com/v1/messages' => Http::response(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => ASKED_PHPMYADMIN_RULE, 'routine_id' => $routine->id]))]);
+    Http::fake(['api.anthropic.com/v1/messages' => Http::response(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => $source]))]);
 
     $this->actingAs($user);
 
     Livewire::test('pages::rules.index')
         ->set('question', 'put phpmyadmin probes through the login wall')
         ->call('ask')
-        ->assertSet('pendingRoutineId', $routine->id)
-        ->assertSee('On save, the clients it flags go through')
+        ->assertSet('source', $source)
         ->call('save')
         ->assertHasNoErrors();
 
@@ -286,88 +262,27 @@ test('a gym routine Claude picks from the team\'s takes the rule on save', funct
     Http::assertSent(fn (Request $request) => str_contains($request['messages'][0]['content'], "{$routine->id}: Login wall. Visitors whose path starts with “/login”."));
 });
 
-test('a new routine name the team already uses joins that routine instead of making another', function () {
-    $user = User::factory()->create();
-    AiCredential::factory()->for($user)->create();
-    $routine = GymRoutine::factory()->for($user->currentTeam)->entering([['field' => 'path', 'operator' => 'contains', 'values' => ['phpmyadmin']]])->create(['name' => 'PhpMyAdmin Gym']);
-    Http::preventStrayRequests();
-    Http::fake(['api.anthropic.com/v1/messages' => Http::response(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => ASKED_PHPMYADMIN_RULE, 'routine_name' => 'phpmyadmin gym']))]);
-
-    $this->actingAs($user);
-
-    Livewire::test('pages::rules.index')
-        ->set('question', 'send phpmyadmin probes to the phpmyadmin gym')
-        ->call('ask')
-        ->assertSet('pendingRoutineId', $routine->id)
-        ->assertSet('pendingRoutineName', '')
-        ->call('save');
-
-    expect(GymRoutine::count())->toBe(1);
-    expect($routine->fresh()->match_all)->toBeFalse();
-});
-
-test('a routine Claude picks that can\'t take the rule is left alone, and the rule still saves', function () {
-    $user = User::factory()->create();
-    AiCredential::factory()->for($user)->create();
-    $conditions = [['field' => 'network', 'operator' => 'in', 'values' => ['hetzner']], ['field' => 'country', 'operator' => 'in', 'values' => ['DE']]];
-    $routine = GymRoutine::factory()->for($user->currentTeam)->entering($conditions)->create(['name' => 'German clouds']);
-    Http::preventStrayRequests();
-    Http::fake(['api.anthropic.com/v1/messages' => Http::response(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => ASKED_PHPMYADMIN_RULE, 'routine_id' => $routine->id]))]);
-
-    $this->actingAs($user);
-
-    Livewire::test('pages::rules.index')
-        ->set('question', 'send phpmyadmin probes through german clouds')
-        ->call('ask')
-        ->call('save')
-        ->assertHasNoErrors()
-        ->assertSee('German clouds can\'t take this rule without changing who else enters');
-
-    expect(EdgeRule::count())->toBe(1);
-    expect($routine->fresh()->conditions)->toBe($conditions);
-});
-
-test('Don\'t send keeps a drafted rule out of the gym', function () {
-    $user = User::factory()->create();
-    AiCredential::factory()->for($user)->create();
-    Http::preventStrayRequests();
-    Http::fake(['api.anthropic.com/v1/messages' => Http::response(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => ASKED_PHPMYADMIN_RULE, 'routine_name' => 'PhpMyAdmin Gym']))]);
-
-    $this->actingAs($user);
-
-    Livewire::test('pages::rules.index')
-        ->set('question', 'send phpmyadmin probes to the PhpMyAdmin Gym')
-        ->call('ask')
-        ->call('clearPendingRoutine')
-        ->assertDontSeeHtml('data-test="rule-pending-gym"')
-        ->call('save')
-        ->assertHasNoErrors();
-
-    expect(EdgeRule::count())->toBe(1);
-    expect(GymRoutine::count())->toBe(0);
-});
-
 test('asking again changes the unsaved draft instead of starting another', function () {
     $user = User::factory()->create();
     AiCredential::factory()->for($user)->create();
     $longer = str_replace('FOR 1 DAY', 'FOR 7 DAYS', ASKED_PHPMYADMIN_RULE);
     Http::preventStrayRequests();
     Http::fakeSequence('api.anthropic.com/v1/messages')
-        ->push(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => ASKED_PHPMYADMIN_RULE, 'routine_name' => 'PhpMyAdmin Gym']))
-        ->push(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => $longer, 'routine_name' => 'PhpMyAdmin Gym']));
+        ->push(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => ASKED_PHPMYADMIN_RULE]))
+        ->push(claudeRuleAnswer(['name' => 'phpMyAdmin probes', 'source' => $longer]));
 
     $this->actingAs($user);
 
     Livewire::test('pages::rules.index')
-        ->set('question', 'send phpmyadmin probes to the PhpMyAdmin Gym')
+        ->set('question', 'tag phpmyadmin probes')
         ->call('ask')
         ->set('question', 'make it a week')
         ->call('ask')
-        ->assertSet('source', $longer)
-        ->assertSet('pendingRoutineName', 'PhpMyAdmin Gym');
+        ->assertSet('source', $longer);
 
     Http::assertSent(fn (Request $request) => str_contains($request['messages'][0]['content'], "<current_rule>\n".ASKED_PHPMYADMIN_RULE."\n</current_rule>")
-        && str_contains($request['messages'][0]['content'], '<current_gym_routine>PhpMyAdmin Gym (new)</current_gym_routine>'));
+        && str_contains($request['messages'][0]['content'], '<destinations>')
+        && str_contains($request['messages'][0]['content'], 'GYM'));
 });
 
 test('Claude\'s errors show beside the ask box and leave the editor closed', function () {

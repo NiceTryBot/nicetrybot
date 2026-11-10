@@ -27,7 +27,8 @@ test('a routine\'s obstacle whose add-on is gone is skipped, and the visitor car
     $session = GymSession::factory()->create(['team_id' => $routine->team_id, 'escalations' => [['key' => 'queue~captcha', 'type' => 'captcha', 'after' => 'queue']]]);
     $session->routines()->attach($routine);
 
-    $this->get(route('gym.show', $session))->assertOk()->assertSeeHtml('data-obstacle="waiting-room"');
+    // The challenge answers 403 (an interstitial, like Cloudflare's), named in a Nice-Mode header.
+    $this->get(route('gym.show', $session))->assertForbidden()->assertHeader('Nice-Mode', 'gym')->assertSeeHtml('data-obstacle="waiting-room"');
 
     $alone = GymRoutine::factory()->create(['obstacles' => [['id' => 'puzzle', 'type' => 'captcha', 'config' => [], 'escalate' => null]]]);
     $passed = GymSession::factory()->create(['team_id' => $alone->team_id, 'destination' => 'https://shop.example.com/checkout']);

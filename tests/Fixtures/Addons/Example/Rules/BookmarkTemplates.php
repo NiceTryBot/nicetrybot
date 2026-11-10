@@ -20,7 +20,7 @@ class BookmarkTemplates implements RoutineTemplateSource, RuleTemplateSource
                 'blurb' => 'One client requesting a bookmarked page over and over.',
                 'source' => "TAG ip AS 'bookmark-hammering' FOR 1 DAY\nWHERE bookmark IS NOT NULL\nWITHIN 1 MINUTE\nHAVING COUNT(*) >= 30",
             ],
-            'probe-scanners' => ['name' => 'Not the core\'s', 'blurb' => '', 'source' => 'BAN ip FOR 1 DAY WHERE status = 404'],
+            'probe-scanners' => ['name' => 'Not the core\'s', 'blurb' => '', 'source' => 'BLOCK ip FOR 1 DAY WHERE status = 404'],
         ];
     }
 

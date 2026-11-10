@@ -65,6 +65,18 @@ class ObstacleRegistry
     }
 
     /**
+     * Get the obstacles a routine may pick in the builder: every registered one but those an add-on
+     * hides because it drives them itself (the bouncer's). The pipeline still resolves a hidden one by
+     * key through find(), so it runs where its add-on puts it.
+     *
+     * @return array<string, Obstacle>
+     */
+    public function selectable(): array
+    {
+        return array_filter($this->all(), fn (Obstacle $obstacle): bool => ! ($obstacle instanceof BaseObstacle && $obstacle->hidden()));
+    }
+
+    /**
      * Get the obstacle with a key, or null when no obstacle (any longer) has it, or its add-on is off:
      * routines then skip it, as they do one that was uninstalled.
      */

@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Enums\NavGroup;
 use Closure;
 
 /**
@@ -15,6 +16,7 @@ final readonly class NavItem
      * @param  list<string>  $current  Route name patterns the item is current on; its own route when empty.
      * @param  bool  $ai  Mark the page as having AI Ask.
      * @param  (Closure(): ?string)|null  $badge  Text for a badge, worked out as the sidebar is drawn; null for none.
+     * @param  NavGroup|null  $group  The titled group it's under; null for the workspace's own links.
      */
     public function __construct(
         public string $label,
@@ -26,6 +28,7 @@ final readonly class NavItem
         public ?Closure $badge = null,
         public string $badgeColor = 'zinc',
         public ?string $test = null,
+        public ?NavGroup $group = null,
     ) {
         //
     }

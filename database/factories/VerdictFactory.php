@@ -23,7 +23,7 @@ class VerdictFactory extends Factory
         return [
             'team_id' => Team::factory(),
             'edge_rule_id' => fn (array $attributes) => EdgeRule::factory()->state(['team_id' => $attributes['team_id']]),
-            'action' => RuleAction::Ban,
+            'action' => RuleAction::Block,
             'client_ip' => '203.0.113.'.fake()->numberBetween(1, 254),
             'ja4_id' => null,
             'matched_requests' => 1,

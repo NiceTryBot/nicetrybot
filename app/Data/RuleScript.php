@@ -5,16 +5,17 @@ namespace App\Data;
 use App\Enums\RuleAction;
 use App\Enums\RuleField;
 use App\Enums\RuleSubject;
+use App\Support\RuleDestinationHandlers;
 use App\Support\RuleFieldDefinition;
 use Illuminate\Support\Number;
 
 /**
  * A parsed rule script: what to do, to whom, for how long, and when.
  *
- *     BAN ip, ja4 FOR 30 DAYS
+ *     BLOCK ip, ja4 FOR 30 DAYS
  *     WHERE category = 'probe'
  *
- *     BAN ip FOR 1 HOUR
+ *     BLOCK ip FOR 1 HOUR
  *     WHERE status = 404
  *     WITHIN 10 MINUTES
  *     HAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2
@@ -27,6 +28,13 @@ use Illuminate\Support\Number;
  *     WHERE path = '/login' AND method = 'POST' AND status = 422
  *     WITHIN 10 MINUTES HAVING COUNT(*) >= 3
  *     UNTIL method = 'GET' AND path = '/dashboard' AND status = 200
+ * FINGERPRINT tags too, and has Known Faces fingerprint the subject's browser on the request itself, so
+ * one request has to decide it. EVERY says how soon the same subject can be fingerprinted again, and
+ * defaults to the verdict's duration:
+ *
+ *     FINGERPRINT ip, ja4 AS 'claim-form' FOR 30 DAYS EVERY 60 MINUTES
+ *     WHERE path LIKE '/claim%'
+ *
  * Expressions are kept as small array nodes:
  * and/or/not, compare, like, in and null for WHERE; and/or/not and aggregate for HAVING.
  */
@@ -38,6 +46,8 @@ readonly class RuleScript
      * @param  array<string, mixed>|null  $where
      * @param  array<string, mixed>|null  $having
      * @param  array<string, mixed>|null  $until
+     * @param  int|null  $everySeconds  How soon FINGERPRINT can fingerprint the same subject again, when it says.
+     * @param  array<string, string|null>  $destinations  Where its clients go, keyed by destination keyword (GYM, TARPIT, BLACKHOLE) to its target name, or null for one that takes none.
      */
     public function __construct(
         public RuleAction $action,
@@ -48,6 +58,8 @@ readonly class RuleScript
         public ?int $windowSeconds,
         public ?array $having,
         public ?array $until = null,
+        public ?int $everySeconds = null,
+        public array $destinations = [],
     ) {
         //
     }
@@ -149,11 +161,17 @@ readonly class RuleScript
     public function describe(): string
     {
         $subjects = implode(__(' and '), array_map(fn (RuleSubject $subject) => $subject->label(), $this->subjects));
-        $verb = $this->action === RuleAction::Ban
-            ? __('Ban the :subjects', ['subjects' => $subjects])
-            : __('Tag the :subjects as “:tag”', ['subjects' => $subjects, 'tag' => $this->tag]);
+        $verb = match ($this->action) {
+            RuleAction::Block => __('Block the :subjects', ['subjects' => $subjects]),
+            RuleAction::Tag => __('Tag the :subjects as “:tag”', ['subjects' => $subjects, 'tag' => $this->tag]),
+            RuleAction::Fingerprint => __('Fingerprint the :subjects and tag them as “:tag”', ['subjects' => $subjects, 'tag' => $this->tag]),
+        };
 
         $sentence = $verb.' '.self::describeDuration($this->durationSeconds);
+
+        if ($this->everySeconds !== null) {
+            $sentence .= ', '.__('fingerprinting again at most every :span', ['span' => self::describeSpan($this->everySeconds)]);
+        }
 
         if ($this->having !== null) {
             $sentence .= ' '.__('when, within :window, its requests:where reach :having', [
@@ -168,6 +186,16 @@ readonly class RuleScript
         }
 
         $sentence .= '.';
+
+        if ($this->destinations !== []) {
+            $handlers = app(RuleDestinationHandlers::class);
+            $phrases = array_map(
+                fn (string $keyword, ?string $target) => $handlers->keyword($keyword)?->phrase($target) ?? mb_strtolower($keyword),
+                array_keys($this->destinations),
+                array_values($this->destinations),
+            );
+            $sentence .= ' '.__('It also :phrases.', ['phrases' => implode(__(' and '), $phrases)]);
+        }
 
         if ($this->until !== null) {
             $sentence .= ' '.__('It’s lifted as soon as the subject makes a request where :until.', ['until' => self::describeExpression($this->until)]);
@@ -272,7 +300,7 @@ readonly class RuleScript
         return $seconds === null ? __('forever') : __('for :span', ['span' => self::describeSpan($seconds)]);
     }
 
-    private static function describeSpan(?int $seconds): string
+    public static function describeSpan(?int $seconds): string
     {
         foreach ([604800 => 'week', 86400 => 'day', 3600 => 'hour', 60 => 'minute', 1 => 'second'] as $size => $unit) {
             if ($seconds !== null && $seconds % $size === 0) {

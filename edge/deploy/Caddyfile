@@ -14,8 +14,12 @@
 	order nicetry_gym before handle
 	# Who the visitor really is behind Cloudflare (CF-Connecting-IP, only from Cloudflare's own ranges).
 	order nicetry_client before nicetry_gym
+	# The allow list (White List, Nice Bots) marks clients that skip the gym, tarpit and verdict — right
+	# after the client is known, and before any of them run.
+	order nicetry_allow after nicetry_client
+	order nicetry_allow before nicetry_gym
 	# Tarpitted clients wait first, so even a request the PHP guard or a lockdown refuses costs them the wait.
-	order nicetry_tarpit after nicetry_client
+	order nicetry_tarpit after nicetry_allow
 	# PHP's session upload progress field is refused before anything reaches an origin (or the gym).
 	order nicetry_php_guard after nicetry_tarpit
 	# A locked-down team's hostnames get the maintenance page before anything else (gym, origin) hears of it.
@@ -82,6 +86,15 @@
 	# Behind Cloudflare every connection comes from Cloudflare; this finds the visitor (logged as
 	# visitor_ip with via=cloudflare) for NiceTryBot's own use. What the origin receives is unchanged.
 	nicetry_client
+
+	# Allow list: the IPs and CIDR ranges the White List and Nice Bots add-ons keep past every
+	# enforcement. A client on one is marked here and then skips the tarpit, the gym and the verdict.
+	# An empty answer (or none) marks no one, and the handler being absent leaves the others unchanged.
+	nicetry_allow {
+		endpoint {$NICETRY_APP_URL}/caddy/allow-feed
+		token {$NICETRY_EDGE_TOKEN}
+		interval 30s
+	}
 
 	# CVE-2026-109618 / CVE-2026-109619: PHP parses a multipart field named PHP_SESSION_UPLOAD_PROGRESS
 	# before the site's code runs, on any PHP URL. Bodies naming it get nginx's 403 (logged as blocked,
@@ -180,7 +193,12 @@
 	}
 
 	# Scanner probes; mirrors App\Enums\NotFoundCategory::PROBE_PATTERNS in the NiceTryBot app.
-	@probe path_regexp probe (?i)(/\.(env|git|aws|ssh|vscode)|/\.DS_Store|/wp-(admin|login|content|includes)|/xmlrpc\.php|/_ignition/|/phpmyadmin|/pma/|/vendor/phpunit/|/cgi-bin/|/server-status|/actuator/|/boaform/|/HNAP1|\.(php|aspx?|jsp|cgi)$)
+	# An image under wp-content/uploads is a CMS asset, not a probe, even though its path holds
+	# "/wp-content" — excluded here so it logs as passed, matching PathCategory::CmsAsset.
+	@probe {
+		not path_regexp (?i)/wp-content/uploads/.*\.(png|jpe?g|gif|svg|webp|avif|ico|bmp|tiff?)$
+		path_regexp probe (?i)(/\.(env|git|aws|ssh|vscode)|/\.DS_Store|/wp-(admin|login|content|includes)|/xmlrpc\.php|/_ignition/|/phpmyadmin|/pma/|/vendor/phpunit/|/cgi-bin/|/server-status|/actuator/|/boaform/|/HNAP1|\.(php|aspx?|jsp|cgi)$)
+	}
 	vars @probe bot_tag probe
 
 	# Read by Vector (deploy/vector), which sends the lines to the app. Rolled at 100 MiB, ten kept.

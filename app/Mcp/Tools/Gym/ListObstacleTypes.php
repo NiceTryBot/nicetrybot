@@ -65,7 +65,7 @@ class ListObstacleTypes extends TeamTool
                     'unit' => $setting->unit,
                     'help' => $setting->help,
                 ], fn (mixed $value) => $value !== null), $obstacle->settings()),
-            ], $registry->all())),
+            ], $registry->selectable())),
         ]);
     }
 }

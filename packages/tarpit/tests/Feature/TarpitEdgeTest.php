@@ -23,7 +23,7 @@ test('the edge hears each enabled tarpit with its hosts in Enforce mode, its wai
     Domain::factory()->for($team)->verified()->create(['hostname' => 'observed.example']);
 
     $live = EdgeRule::factory()->for($team)->script("TAG ip AS 'prober' FOR 1 DAY WHERE category = 'probe'")->create();
-    $counting = EdgeRule::factory()->for($team)->script('BAN ip FOR 1 HOUR WHERE status = 404 WITHIN 10 MINUTES HAVING COUNT(*) >= 5')->create();
+    $counting = EdgeRule::factory()->for($team)->script('BLOCK ip FOR 1 HOUR WHERE status = 404 WITHIN 10 MINUTES HAVING COUNT(*) >= 5')->create();
     Verdict::factory()->create(['team_id' => $team->id, 'edge_rule_id' => $counting->id, 'client_ip' => '203.0.113.20']);
     Verdict::factory()->expired()->create(['team_id' => $team->id, 'edge_rule_id' => $counting->id, 'client_ip' => '203.0.113.21']);
     Verdict::factory()->create(['team_id' => $team->id, 'client_ip' => '203.0.113.22']);

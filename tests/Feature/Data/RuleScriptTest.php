@@ -9,22 +9,22 @@ use App\Enums\RuleField;
 use App\Enums\RuleSubject;
 
 test('a probe rule bans the IP and fingerprint for 30 days', function () {
-    $script = RuleScript::parse("-- Probe scanners\nban ip, ja4 for 30 days\nwhere category = 'probe'");
+    $script = RuleScript::parse("-- Probe scanners\nblock ip, ja4 for 30 days\nwhere category = 'probe'");
 
-    expect($script->action)->toBe(RuleAction::Ban)
+    expect($script->action)->toBe(RuleAction::Block)
         ->and($script->subjects)->toBe([RuleSubject::Ip, RuleSubject::Ja4])
         ->and($script->durationSeconds)->toBe(30 * 86400)
         ->and($script->isAggregate())->toBeFalse()
-        ->and($script->describe())->toBe('Ban the IP and TLS fingerprint for 30 days as soon as it makes a request where path category is “probe/*”.');
+        ->and($script->describe())->toBe('Block the IP and TLS fingerprint for 30 days as soon as it makes a request where path category is “probe/*”.');
 });
 
 test('a windowed rule counts requests per subject with HAVING', function () {
-    $script = RuleScript::parse("BAN ip FOR 1 HOUR\nWHERE status = 404\nWITHIN 10 MINUTES\nHAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2");
+    $script = RuleScript::parse("BLOCK ip FOR 1 HOUR\nWHERE status = 404\nWITHIN 10 MINUTES\nHAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2");
 
     expect($script->windowSeconds)->toBe(600)
         ->and($script->isAggregate())->toBeTrue()
         ->and($script->fields())->toEqualCanonicalizing([RuleField::Status, RuleField::Host])
-        ->and($script->describe())->toBe('Ban the IP for 1 hour when, within 10 minutes, its requests where status is 404 reach at least 2 requests and at least 2 different hosts.');
+        ->and($script->describe())->toBe('Block the IP for 1 hour when, within 10 minutes, its requests where status is 404 reach at least 2 requests and at least 2 different hosts.');
 });
 
 test('UNTIL says what lifts a verdict early', function () {
@@ -52,16 +52,16 @@ test('mistakes are reported with where they are and how to fix them', function (
             ->and($error->getMessage())->toContain($message);
     }
 })->with([
-    'misspelled field' => ["BAN ip FOR 1 HOUR\nWHERE stauts = 404", 2, 7, 'Did you mean status?'],
-    'unknown category' => ["BAN ip FOR 1 HOUR\nWHERE category = 'probes'", 2, 18, 'Unknown category probes'],
-    'HAVING without a window' => ["BAN ip FOR 1 HOUR\nHAVING COUNT(*) > 3", 2, 1, 'HAVING needs a window first'],
-    'text where a number belongs' => ['BAN ip FOR 1 HOUR WHERE status = \'x\'', 1, 34, 'status takes a number'],
-    'unclosed quote' => ["BAN ip FOR 1 HOUR WHERE path LIKE '/admin", 1, 35, 'never closed'],
-    'unsupported subject' => ['BAN asn FOR 1 HOUR', 1, 5, 'ip or ja4'],
+    'misspelled field' => ["BLOCK ip FOR 1 HOUR\nWHERE stauts = 404", 2, 7, 'Did you mean status?'],
+    'unknown category' => ["BLOCK ip FOR 1 HOUR\nWHERE category = 'probes'", 2, 18, 'Unknown category probes'],
+    'HAVING without a window' => ["BLOCK ip FOR 1 HOUR\nHAVING COUNT(*) > 3", 2, 1, 'HAVING needs a window first'],
+    'text where a number belongs' => ['BLOCK ip FOR 1 HOUR WHERE status = \'x\'', 1, 36, 'status takes a number'],
+    'unclosed quote' => ["BLOCK ip FOR 1 HOUR WHERE path LIKE '/admin", 1, 37, 'never closed'],
+    'unsupported subject' => ['BLOCK asn FOR 1 HOUR', 1, 7, 'ip or ja4'],
     'tag without a name' => ['TAG ip FOR 1 DAY', 1, 8, 'TAG needs a name'],
-    'window over a day' => ['BAN ip FOR 1 HOUR WITHIN 2 DAYS HAVING COUNT(*) > 1', 1, 26, 'at most 24 hours'],
-    'unknown kind of client' => ["BAN ip FOR 1 HOUR WHERE client = 'old'", 1, 34, "client is 'spoofed', 'outdated', 'corporate' or 'hopped'"],
-    'client tested for null' => ['BAN ip FOR 1 HOUR WHERE client IS NULL', 1, 32, 'client is never null'],
+    'window over a day' => ['BLOCK ip FOR 1 HOUR WITHIN 2 DAYS HAVING COUNT(*) > 1', 1, 28, 'at most 24 hours'],
+    'unknown kind of client' => ["BLOCK ip FOR 1 HOUR WHERE client = 'old'", 1, 36, "client is 'spoofed', 'outdated', 'corporate' or 'hopped'"],
+    'client tested for null' => ['BLOCK ip FOR 1 HOUR WHERE client IS NULL', 1, 34, 'client is never null'],
 ]);
 
 test('an IP with a slash is a range, and a range that can\'t exist is refused', function () {
@@ -82,7 +82,7 @@ test('a rule becomes the Activity search for the traffic it acts on', function (
         "host = 'sign.example'\nAND country != 'US'\nAND NOT path LIKE '/sign/%'",
     ],
     'grouped by IP, without the window' => [
-        "BAN ip FOR 1 HOUR\nWHERE status = 404\nWITHIN 10 MINUTES\nHAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2",
+        "BLOCK ip FOR 1 HOUR\nWHERE status = 404\nWITHIN 10 MINUTES\nHAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2",
         "status = 404\nGROUP BY ip\nHAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2",
     ],
     'without UNTIL, keeping a FILTER\'s own WHERE' => [

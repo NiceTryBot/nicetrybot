@@ -2,8 +2,10 @@
 
 use App\Concerns\SearchesDomains;
 use App\Enums\TrafficPeriod;
+use App\Enums\ViewSlot;
 use App\Models\LiveTail;
 use App\Models\Team;
+use App\Support\ViewSlots;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
@@ -180,7 +182,49 @@ new #[Title('Traffic Map')] class extends Component {
         @endif
     </div>
 
-    <div wire:loading.class="opacity-60" wire:target="dimension, period, domain">
+    {{-- Right-click an IP for what add-ons offer on a client. With nothing to offer, the browser's own menu stays. --}}
+    @php($clientMenu = trim((string) app(ViewSlots::class)->render(ViewSlot::ActivityClientMenu, ['team' => $this->team])))
+    <div
+        wire:loading.class="opacity-60"
+        wire:target="dimension, period, domain"
+        @if ($clientMenu !== '')
+            x-data="{
+                open: false, x: 0, y: 0, kind: '', value: '', asn: '',
+                show(event) {
+                    const client = event.target.closest('[data-client-kind]');
+                    if (! client) return;
+                    event.preventDefault();
+                    Object.assign(this, { kind: client.dataset.clientKind, value: client.dataset.clientValue, asn: client.dataset.clientAsn || '', x: event.clientX, y: event.clientY, open: true });
+                    this.$nextTick(() => {
+                        const box = this.$refs.menu.getBoundingClientRect();
+                        this.x = Math.max(8, Math.min(this.x, window.innerWidth - box.width - 8));
+                        this.y = Math.max(8, Math.min(this.y, window.innerHeight - box.height - 8));
+                    });
+                },
+            }"
+            x-on:contextmenu="show($event)"
+            x-on:keydown.escape.window="open = false"
+            x-on:scroll.window="open = false"
+        @endif
+    >
         @include('traffic-map::treemap', ['data' => $this->map, 'height' => '62vh'])
+
+        @if ($clientMenu !== '')
+            <div
+                x-show="open"
+                style="display: none"
+                x-ref="menu"
+                x-on:click.outside="open = false"
+                x-bind:style="{ left: x + 'px', top: y + 'px' }"
+                class="fixed z-50 w-60 rounded-lg border border-line bg-white p-1 text-sm shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+                role="menu"
+                data-test="traffic-map-client-menu"
+            >
+                <p class="truncate px-2 pt-1.5 pb-1 font-mono text-xs text-zinc-500 dark:text-zinc-400" x-text="value"></p>
+                {!! $clientMenu !!}
+            </div>
+        @endif
     </div>
+
+    {{ app(ViewSlots::class)->render(ViewSlot::ActivityModals, ['team' => $this->team]) }}
 </div>

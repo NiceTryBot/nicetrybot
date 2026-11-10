@@ -5,6 +5,7 @@ namespace App\Data;
 use App\Enums\RuleAction;
 use App\Enums\RuleField;
 use App\Enums\RuleSubject;
+use App\Support\RuleDestinationHandlers;
 use App\Support\RuleFieldDefinition;
 use App\Support\RuleFields;
 use InvalidArgumentException;
@@ -13,8 +14,8 @@ use InvalidArgumentException;
  * Turns rule script text into a RuleScript. Recursive descent over this grammar (keywords ignore case;
  * `--` starts a comment):
  *
- *     script    := action subjects ['AS' string] 'FOR' duration ['WHERE' expr] ['WITHIN' span 'HAVING' having] ['UNTIL' expr]
- *     action    := 'BAN' | 'TAG'
+ *     script    := action subjects ['AS' string] 'FOR' duration ['EVERY' span] ['WHERE' expr] ['WITHIN' span 'HAVING' having] ['UNTIL' expr]
+ *     action    := 'BLOCK' | 'TAG' | 'FINGERPRINT'
  *     subjects  := ('ip' | 'ja4') {',' ('ip' | 'ja4')}
  *     duration  := number unit | 'FOREVER'          span := number unit
  *     expr      := term {'OR' term}                  term := factor {'AND' factor}
@@ -39,6 +40,11 @@ class RuleScriptParser
      * The longest window HAVING may count over.
      */
     public const int MAX_WINDOW_SECONDS = 86400;
+
+    /**
+     * The shortest EVERY: each repeat stops the visitor for a moment.
+     */
+    private const int MIN_EVERY_SECONDS = 600;
 
     /**
      * Seconds per duration unit.
@@ -79,13 +85,14 @@ class RuleScriptParser
         $this->filterCount = 0;
 
         if ($this->peek()['type'] === 'eof') {
-            $this->fail(__('Start with BAN or TAG, e.g. BAN ip FOR 1 HOUR WHERE status = 404.'));
+            $this->fail(__('Start with BLOCK, TAG or FINGERPRINT, e.g. BLOCK ip FOR 1 HOUR WHERE status = 404.'));
         }
 
         $action = match ($this->keyword()) {
-            'BAN' => RuleAction::Ban,
+            'BLOCK' => RuleAction::Block,
             'TAG' => RuleAction::Tag,
-            default => $this->fail(__('A rule starts with BAN or TAG.')),
+            'FINGERPRINT' => RuleAction::Fingerprint,
+            default => $this->fail(__('A rule starts with BLOCK, TAG or FINGERPRINT.')),
         };
         $this->advance();
 
@@ -96,10 +103,27 @@ class RuleScriptParser
             $tag = $this->expect('string', __('AS takes the tag name in quotes, e.g. AS \'ua-tls-mismatch\'.'))['value'];
         } elseif ($action === RuleAction::Tag) {
             $this->fail(__('TAG needs a name: TAG ip AS \'name\' FOR 1 DAY.'));
+        } elseif ($action === RuleAction::Fingerprint) {
+            $this->fail(__('FINGERPRINT needs a name, which is also its Known Faces bucket: FINGERPRINT ip, ja4 AS \'name\' FOR 1 DAY.'));
         }
 
         $this->expectKeyword('FOR', __('Say how long the :action lasts, e.g. FOR 30 DAYS or FOREVER.', ['action' => strtolower($action->label())]));
         $duration = $this->acceptKeyword('FOREVER') ? null : $this->span();
+        $every = null;
+
+        if ($this->acceptKeyword('EVERY')) {
+            if ($action !== RuleAction::Fingerprint) {
+                $this->fail(__('Only FINGERPRINT takes EVERY.'), back: 1);
+            }
+
+            $every = $this->span();
+
+            if ($every < self::MIN_EVERY_SECONDS) {
+                $this->fail(__('EVERY can be no less than 10 minutes, so people aren\'t stopped page after page.'), back: 2);
+            }
+        }
+
+        $destinations = $this->destinations();
 
         $where = $this->acceptKeyword('WHERE') ? $this->expression() : null;
         $window = null;
@@ -121,10 +145,20 @@ class RuleScriptParser
         $until = $this->acceptKeyword('UNTIL') ? $this->expression() : null;
 
         if ($this->peek()['type'] !== 'eof') {
-            $this->fail(__('Unexpected “:token”. Clauses go in order: FOR, WHERE, WITHIN … HAVING, UNTIL.', ['token' => $this->peek()['value']]));
+            $keywords = app(RuleDestinationHandlers::class)->keywords();
+            $this->fail(__('Unexpected “:token”. Clauses go in order: FOR, EVERY, :dest WHERE, WITHIN … HAVING, UNTIL.', [
+                'token' => $this->peek()['value'],
+                'dest' => $keywords === [] ? '' : implode(', ', $keywords).', ',
+            ]));
         }
 
-        return new RuleScript($action, $subjects, $tag, $duration, $where, $window, $having, $until);
+        $script = new RuleScript($action, $subjects, $tag, $duration, $where, $window, $having, $until, $every, $destinations);
+
+        if ($action === RuleAction::Fingerprint && ! $script->isLive()) {
+            $this->fail(__('FINGERPRINT happens on the request itself, so one request has to decide it: no WITHIN, and only what the edge knows before it answers.'));
+        }
+
+        return $script;
     }
 
     /**
@@ -253,6 +287,32 @@ class RuleScriptParser
     }
 
     /**
+     * Parse the destination clauses that follow the duration: GYM 'routine', TARPIT 'name', BLACKHOLE.
+     * Each keyword is known only while its add-on is on, and may appear at most once.
+     *
+     * @return array<string, string|null> Keyword (uppercase) to its quoted target, or null when it takes none.
+     */
+    private function destinations(): array
+    {
+        $handlers = app(RuleDestinationHandlers::class);
+        $destinations = [];
+
+        while (($keyword = $this->keyword()) !== null && ($handler = $handlers->keyword($keyword)) !== null) {
+            $this->advance();
+
+            if (array_key_exists($keyword, $destinations)) {
+                $this->fail(__(':keyword is already set.', ['keyword' => $keyword]), back: 1);
+            }
+
+            $destinations[$keyword] = $handler->takesTarget()
+                ? $this->expect('string', __(':keyword takes a name in quotes, e.g. :keyword \'…\'.', ['keyword' => $keyword]))['value']
+                : null;
+        }
+
+        return $destinations;
+    }
+
+    /**
      * @return list<RuleSubject>
      */
     private function subjects(bool $grouping = false): array
@@ -262,11 +322,11 @@ class RuleScriptParser
         do {
             $token = $this->expect('word', $grouping
                 ? __('Say what to group by: ip, ja4, or both (ip, ja4).')
-                : __('Say what to :action: ip, ja4, or both (ip, ja4).', ['action' => 'ban']));
+                : __('Say what to :action: ip, ja4, or both (ip, ja4).', ['action' => 'block']));
             $subject = RuleSubject::tryFrom(strtolower($token['value']))
                 ?? $this->fail($grouping
                     ? __('You can group by ip or ja4, not “:value”.', ['value' => $token['value']])
-                    : __('You can ban or tag ip or ja4, not “:value”.', ['value' => $token['value']]), back: 1);
+                    : __('You can block or tag ip or ja4, not “:value”.', ['value' => $token['value']]), back: 1);
 
             $subjects[$subject->value] = $subject;
         } while ($this->accept('comma'));

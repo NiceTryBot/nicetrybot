@@ -25,12 +25,12 @@ class RuleTemplates
         'probe-scanners' => [
             'name' => 'Probe scanners',
             'blurb' => 'Anyone fishing for secrets, admin panels or exploits.',
-            'source' => "-- Anyone fishing for secrets, admin panels or exploits.\nBAN ip, ja4 FOR 30 DAYS\nWHERE category = 'probe'",
+            'source' => "-- Anyone fishing for secrets, admin panels or exploits.\nBLOCK ip, ja4 FOR 30 DAYS\nWHERE category = 'probe'",
         ],
         'multi-host-404' => [
             'name' => 'Multi-host 404 sweep',
             'blurb' => 'One IP collecting 404s across several of your sites.',
-            'source' => "-- One IP collecting 404s across several of your sites.\nBAN ip FOR 1 HOUR\nWHERE status = 404\nWITHIN 10 MINUTES\nHAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2",
+            'source' => "-- One IP collecting 404s across several of your sites.\nBLOCK ip FOR 1 HOUR\nWHERE status = 404\nWITHIN 10 MINUTES\nHAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2",
         ],
         'ua-tls-mismatch' => [
             'name' => 'Browser name, script TLS',
@@ -40,7 +40,7 @@ class RuleTemplates
         'hosting-burst' => [
             'name' => 'Datacenter burst',
             'blurb' => 'A flood of requests from a cloud network in minutes.',
-            'source' => "-- A flood of requests from a cloud or hosting network.\nBAN ip, ja4 FOR 6 HOURS\nWHERE network.kind = 'hosting'\nWITHIN 5 MINUTES\nHAVING COUNT(*) >= 60",
+            'source' => "-- A flood of requests from a cloud or hosting network.\nBLOCK ip, ja4 FOR 6 HOURS\nWHERE network.kind = 'hosting'\nWITHIN 5 MINUTES\nHAVING COUNT(*) >= 60",
         ],
     ];
 

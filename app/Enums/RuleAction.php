@@ -7,8 +7,9 @@ namespace App\Enums;
  */
 enum RuleAction: int
 {
-    case Ban = 1;
+    case Block = 1;
     case Tag = 2;
+    case Fingerprint = 3;
 
     /**
      * Get the display label for the action.
@@ -16,8 +17,9 @@ enum RuleAction: int
     public function label(): string
     {
         return match ($this) {
-            self::Ban => __('Ban'),
+            self::Block => __('Block'),
             self::Tag => __('Tag'),
+            self::Fingerprint => __('Fingerprint'),
         };
     }
 
@@ -27,8 +29,9 @@ enum RuleAction: int
     public function color(): string
     {
         return match ($this) {
-            self::Ban => 'rose',
+            self::Block => 'rose',
             self::Tag => 'sky',
+            self::Fingerprint => 'teal',
         };
     }
 }

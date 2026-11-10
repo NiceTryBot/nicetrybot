@@ -26,7 +26,7 @@ func init() {
 var gymCookies = map[string]bool{"_q_pass": true, "_q_session": true, remoteTagCookie: true}
 
 // gymHeaders are the only headers of the gym's answer passed on to the visitor.
-var gymHeaders = []string{"Content-Type", "Cache-Control", "Set-Cookie", "Location", "X-Robots-Tag", "Retry-After"}
+var gymHeaders = []string{"Content-Type", "Cache-Control", "Set-Cookie", "Location", "X-Robots-Tag", "Retry-After", "Nice-Mode", "Nice-Timestamp"}
 
 // Gym is the nicetry_gym handler. For requests on a gym trigger (host + path glob, polled from
 // NiceTryBot), it asks the check endpoint whether the visitor trains first. 204 lets the request
@@ -72,7 +72,7 @@ func (g *Gym) Provision(ctx caddy.Context) error {
 		// The gym's own redirects are for the visitor, not for us to follow.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	g.targets = sharedTargets(g.Triggers, g.Token, time.Duration(g.Interval), "triggers", true)
+	g.targets = sharedTargets(g.Triggers, g.Token, time.Duration(g.Interval), "triggers", true, "gym")
 	if g.Geo != "" {
 		useGeo(g.Geo)
 	}
@@ -91,6 +91,10 @@ func (g *Gym) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.H
 	// The gym's own requests (/_q/…) and the edge diagnostic are never sent to the gym. The path is
 	// cleaned first: /_q/../login reaches the origin as /login.
 	if cleaned := cleanedPath(r); strings.HasPrefix(cleaned, "/_q/") || strings.HasPrefix(cleaned, "/__nicetry/") {
+		return next.ServeHTTP(w, r)
+	}
+	// An allowed client (nicetry_allow) never trains.
+	if isAllowed(r) {
 		return next.ServeHTTP(w, r)
 	}
 	trigger, matched := g.targets.matchOn(r)
@@ -130,8 +134,14 @@ func (g *Gym) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.H
 			w.Header().Add(name, value)
 		}
 	}
+	// NiceTryBot names the action in a header it doesn't forward (the Bot Bouncer logs "bouncer"); the
+	// gym's own answer leaves it unset and reads as "diverted".
+	action := resp.Header.Get("X-NiceTry-Action")
+	if action == "" {
+		action = "diverted"
+	}
 	if extra, ok := r.Context().Value(caddyhttp.ExtraLogFieldsCtxKey).(*caddyhttp.ExtraLogFields); ok {
-		extra.Add(zap.String("action", "diverted"))
+		extra.Add(zap.String("action", action))
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, err = io.Copy(w, io.LimitReader(resp.Body, 4<<20))

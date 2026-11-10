@@ -868,7 +868,7 @@ new #[Title('Gym routine')] class extends Component {
                                                             class="w-full rounded-md border border-line bg-white py-1 ps-2 pe-7 text-sm sm:ms-auto sm:w-auto dark:border-zinc-700 dark:bg-zinc-900"
                                                         >
                                                             <option value="">{{ __('carry on as normal') }}</option>
-                                                            @foreach ($registry->all() as $candidate)
+                                                            @foreach ($registry->selectable() as $candidate)
                                                                 @continue($candidate->key() === $definition->key())
                                                                 <option value="{{ $candidate->key() }}" @disabled(collect($obstacles)->contains('type', $candidate->key()))>
                                                                     {{ __('add :obstacle', ['obstacle' => $candidate->name()]) }}{{ collect($obstacles)->contains('type', $candidate->key()) ? ' '.__('(already here)') : '' }}
@@ -1055,7 +1055,7 @@ new #[Title('Gym routine')] class extends Component {
         </div>
 
         <div class="mt-5 grid gap-3 sm:grid-cols-2" data-test="obstacle-library">
-            @foreach ($registry->all() as $candidate)
+            @foreach ($registry->selectable() as $candidate)
                 @php
                     $defaults = $candidate->configure([]);
                     $isUsed = collect($obstacles)->contains('type', $candidate->key());

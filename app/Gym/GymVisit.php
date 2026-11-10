@@ -49,7 +49,10 @@ class GymVisit
         $this->session->last_seen_at = now();
         $this->session->save();
 
-        return self::page('gym.visit', [
+        // The challenge answers 403, the way a Cloudflare interstitial does: a visitor still at the door
+        // reads as 403 in the logs, and only the ones who clear and carry on show 200. The mode and the
+        // moment it was served ride along in headers (the Bot Bouncer gate overrides the mode to its own).
+        $response = self::page('gym.visit', [
             'session' => $this->session,
             'steps' => $this->plan->steps,
             'current' => array_search($step, $this->plan->steps, true),
@@ -59,7 +62,13 @@ class GymVisit
             'attemptUrl' => route('gym.attempt', $this->session, absolute: false),
             'isDemo' => false,
             'addons' => app(GymAddons::class)->pageHtml($this),
+        ], Response::HTTP_FORBIDDEN);
+        $response->headers->add([
+            'Nice-Mode' => 'gym',
+            'Nice-Timestamp' => now()->utc()->format('Y-m-d H:i:s').' UTC',
         ]);
+
+        return $response;
     }
 
     /**

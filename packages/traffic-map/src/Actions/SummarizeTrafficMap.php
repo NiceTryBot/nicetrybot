@@ -3,17 +3,21 @@
 namespace NiceTry\TrafficMap\Actions;
 
 use App\Actions\Rules\BuildRuleQuery;
+use App\Enums\NetworkCategory;
+use App\Enums\NetworkKind;
 use App\Enums\PathCategory;
 use App\Enums\RequestAction;
 use App\Enums\TrafficPeriod;
 use App\Models\BotTag;
 use App\Models\EdgeRequest;
+use App\Models\Network;
 use App\Models\Team;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Collection;
 use Locale;
 use NiceTry\TrafficMap\Data\TreemapBlock;
+use NiceTry\TrafficMap\Data\TreemapClient;
 use NiceTry\TrafficMap\Data\TreemapData;
 use NiceTry\TrafficMap\Data\TreemapTile;
 use NiceTry\TrafficMap\Enums\MapDimension;
@@ -92,6 +96,10 @@ class SummarizeTrafficMap
                 ['user_agent_profiles', 'user_agent_profiles.user_agent_id', 'edge_requests.user_agent_id'],
                 ['client_hint_profiles', 'client_hint_profiles.client_hint_id', 'edge_requests.client_hints_id'],
             ]],
+            MapDimension::NetworkCategory => [$this->networkCategory(), [
+                ['network_categories', 'network_categories.asn', 'edge_requests.asn'],
+                ['networks', 'networks.asn', 'edge_requests.asn'],
+            ]],
             MapDimension::Team => ['0', []],
         };
     }
@@ -118,11 +126,11 @@ class SummarizeTrafficMap
         $hostnames = $dimension === MapDimension::Domain ? $team->domains()->pluck('hostname', 'id') : collect();
         $botTags = $dimension === MapDimension::BotTag ? BotTag::pluck('name', 'id') : collect();
 
-        // The IP view carries each address's country, for its flag.
+        // The IP view carries each address's country, for its flag, and its network.
         $extra = '';
         if ($dimension === MapDimension::Ip) {
             $joins[] = ['locations', 'locations.id', 'edge_requests.location_id'];
-            $extra = ', max(locations.country_code) as cc';
+            $extra = ', max(locations.country_code) as cc, max(edge_requests.asn) as asn';
         }
 
         $query = $this->grouped($base(), $ids);
@@ -136,7 +144,10 @@ class SummarizeTrafficMap
             ->map(function (object $row) use ($dimension, $hostnames, $botTags): array {
                 [$id, $sym, $sub] = $this->describe($dimension, $row->row_key, $row->cc ?? null, $hostnames, $botTags);
 
-                return ['key' => $id, 'sym' => $sym, 'sub' => $sub, 'requests' => (int) $row->requests, 'suspicious' => (int) $row->suspicious];
+                return [
+                    'key' => $id, 'sym' => $sym, 'sub' => $sub, 'requests' => (int) $row->requests, 'suspicious' => (int) $row->suspicious,
+                    'ip' => $dimension === MapDimension::Ip ? $row->row_key : null, 'asn' => $row->asn ?? null,
+                ];
             })
             ->all();
 
@@ -146,7 +157,7 @@ class SummarizeTrafficMap
     /**
      * Fold the long tail into one OTHERS tile, lay the tiles out, and colour them.
      *
-     * @param  list<array{key: string, sym: string, sub: string|null, requests: int, suspicious: int}>  $rows
+     * @param  list<array{key: string, sym: string, sub: string|null, requests: int, suspicious: int, ip?: mixed, asn?: mixed}>  $rows
      */
     private function flatten(MapDimension $dimension, array $rows): TreemapData
     {
@@ -156,11 +167,12 @@ class SummarizeTrafficMap
         $totalSuspicious = array_sum(array_column($rows, 'suspicious'));
 
         $rects = Squarify::rects(array_map(static fn (array $row): int => $row['requests'], $rows));
+        $clients = $this->clients($rows);
 
         $tiles = [];
         foreach ($rows as $i => $row) {
             $rect = $rects[$i] ?? ['x' => 0.0, 'y' => 0.0, 'w' => 0.0, 'h' => 0.0];
-            $tiles[] = $this->tile($row['key'], $row['sym'], $row['sub'], $row['requests'], $row['suspicious'], $rect);
+            $tiles[] = $this->tile($row['key'], $row['sym'], $row['sub'], $row['requests'], $row['suspicious'], $rect, client: $clients[$row['ip'] ?? ''] ?? null);
         }
 
         return new TreemapData($dimension, null, $tiles, [], $totalRequests, $totalSuspicious, $groups);
@@ -181,12 +193,12 @@ class SummarizeTrafficMap
             $joins[$join[0]] = $join;
         }
 
-        // The IP view (on either side) carries each address's country, for its flag.
+        // The IP view (on either side) carries each address's country, for its flag, and its network.
         $extra = '';
         if ($primary === MapDimension::Ip || $secondary === MapDimension::Ip) {
             $joins['locations'] = ['locations', 'locations.id', 'edge_requests.location_id'];
-            $extra .= $primary === MapDimension::Ip ? ', max(locations.country_code) as p_cc' : '';
-            $extra .= $secondary === MapDimension::Ip ? ', max(locations.country_code) as s_cc' : '';
+            $extra .= $primary === MapDimension::Ip ? ', max(locations.country_code) as p_cc, max(edge_requests.asn) as p_asn' : '';
+            $extra .= $secondary === MapDimension::Ip ? ', max(locations.country_code) as s_cc, max(edge_requests.asn) as s_asn' : '';
         }
 
         $query = $this->grouped($base(), $ids);
@@ -205,11 +217,15 @@ class SummarizeTrafficMap
         foreach ($records as $row) {
             $pid = $this->describe($primary, $row->p_key, $row->p_cc ?? null, $hostnames, $botTags);
             $key = $pid[0];
-            $primaries[$key] ??= ['key' => $key, 'sym' => $pid[1], 'requests' => 0, 'suspicious' => 0, 'children' => []];
+            $primaries[$key] ??= ['key' => $key, 'sym' => $pid[1], 'requests' => 0, 'suspicious' => 0, 'children' => [], 'ip' => $primary === MapDimension::Ip ? $row->p_key : null, 'asn' => null];
+            $primaries[$key]['asn'] ??= $row->p_asn ?? null;
             $primaries[$key]['requests'] += (int) $row->requests;
             $primaries[$key]['suspicious'] += (int) $row->suspicious;
             [$sid, $ssym, $ssub] = $this->describe($secondary, $row->s_key, $row->s_cc ?? null, $hostnames, $botTags);
-            $primaries[$key]['children'][] = ['key' => $sid, 'sym' => $ssym, 'sub' => $ssub, 'requests' => (int) $row->requests, 'suspicious' => (int) $row->suspicious];
+            $primaries[$key]['children'][] = [
+                'key' => $sid, 'sym' => $ssym, 'sub' => $ssub, 'requests' => (int) $row->requests, 'suspicious' => (int) $row->suspicious,
+                'ip' => $secondary === MapDimension::Ip ? $row->s_key : null, 'asn' => $row->s_asn ?? null,
+            ];
         }
 
         $primaries = array_values($primaries);
@@ -219,14 +235,15 @@ class SummarizeTrafficMap
         $totalSuspicious = array_sum(array_column($primaries, 'suspicious'));
         $groups = count($primaries);
 
-        $primaries = $this->trimPrimaries($primaries, self::TOP_BLOCKS);
+        $primaries = array_map(fn (array $row): array => ['children' => $this->trim($row['children'], self::TOP_LEAVES)] + $row, $this->trimPrimaries($primaries, self::TOP_BLOCKS));
 
         $rects = Squarify::rects(array_map(static fn (array $p): int => $p['requests'], $primaries));
+        $clients = $this->clients([...$primaries, ...array_merge(...array_column($primaries, 'children'))]);
 
         $blocks = [];
         foreach ($primaries as $i => $primaryRow) {
             $rect = $rects[$i] ?? ['x' => 0.0, 'y' => 0.0, 'w' => 0.0, 'h' => 0.0];
-            $blocks[] = $this->block($primary, $secondary, $primaryRow, $rect);
+            $blocks[] = $this->block($primaryRow, $rect, $clients);
         }
 
         return new TreemapData($primary, $secondary, [], $blocks, $totalRequests, $totalSuspicious, $groups);
@@ -236,13 +253,15 @@ class SummarizeTrafficMap
      * Build one block (a primary group), subdivided by its children unless it is too small or is the
      * folded OTHERS group.
      *
-     * @param  array{key: string, sym: string, requests: int, suspicious: int, children: list<array{key: string, sym: string, sub: string|null, requests: int, suspicious: int}>, others?: bool}  $primaryRow
+     * @param  array{key: string, sym: string, requests: int, suspicious: int, children: list<array{key: string, sym: string, sub: string|null, requests: int, suspicious: int, ip?: string|null}>, others?: bool, ip?: string|null}  $primaryRow
      * @param  array{x: float, y: float, w: float, h: float}  $rect
+     * @param  array<string, TreemapClient>  $clients
      */
-    private function block(MapDimension $primary, MapDimension $secondary, array $primaryRow, array $rect): TreemapBlock
+    private function block(array $primaryRow, array $rect, array $clients): TreemapBlock
     {
         $share = $primaryRow['requests'] > 0 ? $primaryRow['suspicious'] / $primaryRow['requests'] : 0.0;
-        $children = $this->trim($primaryRow['children'] ?? [], self::TOP_LEAVES);
+        $children = $primaryRow['children'];
+        $client = $clients[$primaryRow['ip'] ?? ''] ?? null;
 
         // Subdivide only a block big enough to carry a header strip and still show readable leaves.
         $subdivide = ! ($primaryRow['others'] ?? false)
@@ -256,10 +275,10 @@ class SummarizeTrafficMap
             $leaf = $this->tile(
                 $primaryRow['key'].'/all', $primaryRow['sym'], null,
                 $primaryRow['requests'], $primaryRow['suspicious'],
-                ['x' => 0.0, 'y' => 0.0, 'w' => 100.0, 'h' => 100.0], $blockSize,
+                ['x' => 0.0, 'y' => 0.0, 'w' => 100.0, 'h' => 100.0], $blockSize, $client,
             );
 
-            return $this->makeBlock($primaryRow, $rect, $share, $blockSize, false, [$leaf]);
+            return $this->makeBlock($primaryRow, $rect, $share, $blockSize, false, [$leaf], $client);
         }
 
         // Leaves are laid out in the block's body (a 0..100 box), so the header never overlaps them.
@@ -270,10 +289,10 @@ class SummarizeTrafficMap
             $sub = $subRects[$j] ?? ['x' => 0.0, 'y' => 0.0, 'w' => 0.0, 'h' => 0.0];
             // Font sizing follows the leaf's true on-screen size, not its size within the small body.
             $onScreen = $this->sizeTier($rect['w'] * $sub['w'] / 100, $rect['h'] * $sub['h'] / 100);
-            $leaves[] = $this->tile($primaryRow['key'].'/'.$child['key'], $child['sym'], $child['sub'], $child['requests'], $child['suspicious'], $sub, $onScreen);
+            $leaves[] = $this->tile($primaryRow['key'].'/'.$child['key'], $child['sym'], $child['sub'], $child['requests'], $child['suspicious'], $sub, $onScreen, $clients[$child['ip'] ?? ''] ?? null);
         }
 
-        return $this->makeBlock($primaryRow, $rect, $share, $blockSize, true, $leaves);
+        return $this->makeBlock($primaryRow, $rect, $share, $blockSize, true, $leaves, $client);
     }
 
     /**
@@ -281,13 +300,13 @@ class SummarizeTrafficMap
      * @param  array{x: float, y: float, w: float, h: float}  $rect
      * @param  list<TreemapTile>  $tiles
      */
-    private function makeBlock(array $primaryRow, array $rect, float $share, string $size, bool $subdivided, array $tiles): TreemapBlock
+    private function makeBlock(array $primaryRow, array $rect, float $share, string $size, bool $subdivided, array $tiles, ?TreemapClient $client): TreemapBlock
     {
         return new TreemapBlock(
             key: $primaryRow['key'], sym: $primaryRow['sym'],
             requests: $primaryRow['requests'], suspicious: $primaryRow['suspicious'],
             x: round($rect['x'], 3), y: round($rect['y'], 3), w: round($rect['w'], 3), h: round($rect['h'], 3),
-            color: $this->color($share), size: $size, subdivided: $subdivided, tiles: $tiles,
+            color: $this->color($share), size: $size, subdivided: $subdivided, tiles: $tiles, client: $client,
         );
     }
 
@@ -299,8 +318,8 @@ class SummarizeTrafficMap
      * Sort rows by volume, keep the biggest, fold the rest into one OTHERS row. Records the group count
      * before folding in $countBefore.
      *
-     * @param  list<array{key: string, sym: string, sub: string|null, requests: int, suspicious: int}>  $rows
-     * @return list<array{key: string, sym: string, sub: string|null, requests: int, suspicious: int}>
+     * @param  list<array{key: string, sym: string, sub: string|null, requests: int, suspicious: int, ip?: mixed, asn?: mixed}>  $rows
+     * @return list<array{key: string, sym: string, sub: string|null, requests: int, suspicious: int, ip?: mixed, asn?: mixed}>
      */
     private function trim(array $rows, int $limit): array
     {
@@ -350,15 +369,45 @@ class SummarizeTrafficMap
     /**
      * @param  array{x: float, y: float, w: float, h: float}  $rect
      */
-    private function tile(string $key, string $sym, ?string $sub, int $requests, int $suspicious, array $rect, ?string $size = null): TreemapTile
+    private function tile(string $key, string $sym, ?string $sub, int $requests, int $suspicious, array $rect, ?string $size = null, ?TreemapClient $client = null): TreemapTile
     {
         $share = $requests > 0 ? $suspicious / $requests : 0.0;
 
         return new TreemapTile(
             key: $key, sym: $sym, sub: $sub, requests: $requests, suspicious: $suspicious,
             x: round($rect['x'], 3), y: round($rect['y'], 3), w: round($rect['w'], 3), h: round($rect['h'], 3),
-            color: $this->color($share), hot: $share >= 0.72 && $requests > 12, size: $size ?? $this->sizeTier($rect['w'], $rect['h']),
+            color: $this->color($share), hot: $share >= 0.72 && $requests > 12, size: $size ?? $this->sizeTier($rect['w'], $rect['h']), client: $client,
         );
+    }
+
+    /**
+     * The clients among the rows that made it onto the map, by IP, each with its network. Looked up
+     * only for these, since a busy window has thousands of addresses and most fold into OTHERS.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array<string, TreemapClient>
+     */
+    private function clients(array $rows): array
+    {
+        $rows = array_filter($rows, static fn (array $row): bool => ($row['ip'] ?? null) !== null);
+
+        if ($rows === []) {
+            return [];
+        }
+
+        $networks = Network::query()
+            ->with('networkCategory')
+            ->whereIn('asn', array_values(array_unique(array_filter(array_column($rows, 'asn')))))
+            ->get()
+            ->keyBy('asn');
+
+        $clients = [];
+        foreach ($rows as $row) {
+            $network = $networks[$row['asn']] ?? null;
+            $clients[$row['ip']] = new TreemapClient($row['ip'], $row['asn'] === null ? null : (int) $row['asn'], $network?->name, $network?->shownCategory()?->label());
+        }
+
+        return $clients;
     }
 
     private function grouped(Builder $query, ?Builder $ids): Builder
@@ -376,6 +425,16 @@ class SummarizeTrafficMap
         }
 
         return $query;
+    }
+
+    /**
+     * A SQL CASE for the category a network is shown under, as App\Models\Network::shownCategory() has
+     * it, so these tiles agree with the ones an IP's network is named on.
+     */
+    private function networkCategory(): string
+    {
+        return 'case when network_categories.asn is not null then network_categories.category '
+            .'when networks.kind = '.NetworkKind::Hosting->value.' then '.NetworkCategory::Hosting->value.' end';
     }
 
     /**
@@ -441,6 +500,9 @@ class SummarizeTrafficMap
                 ? ['page', mb_strtoupper(__('Page')), __('Ordinary pages')]
                 : ['p'.$key, mb_strtoupper(PathCategory::from((int) $key)->slug()), PathCategory::from((int) $key)->slug()],
             MapDimension::Client => ['cl'.$key, mb_strtoupper((string) $key), null],
+            MapDimension::NetworkCategory => $key === null
+                ? ['nc-none', mb_strtoupper(__('No category')), null]
+                : ['nc'.$key, mb_strtoupper(NetworkCategory::from((int) $key)->label()), null],
             MapDimension::Team => ['t'.$key, mb_strtoupper((string) $key), null],
         };
     }

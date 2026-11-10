@@ -2,6 +2,7 @@
 
 namespace NiceTry\Tarpit\Models;
 
+use App\Enums\RequestAction;
 use App\Models\EdgeRequest;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
@@ -44,6 +45,17 @@ class TarpitHold extends Model
     public function edgeRequest(): BelongsTo
     {
         return $this->belongsTo(EdgeRequest::class);
+    }
+
+    /**
+     * Determine if the tarpit itself answered the request: a hang-up or a client that left (logged with
+     * no status), a 404, or a 429. A request it held and let on, then refused further in (the PHP guard's
+     * 403, a lockdown's 503), was blocked by that, not by the tarpit.
+     */
+    public function answeredRequest(): bool
+    {
+        return $this->edgeRequest->action === RequestAction::Blocked
+            && in_array($this->edgeRequest->status_code, [0, 404, 429], true);
     }
 
     protected function casts(): array

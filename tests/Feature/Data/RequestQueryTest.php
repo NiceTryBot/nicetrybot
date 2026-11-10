@@ -40,7 +40,7 @@ test('a search that is not plain text and does not parse is an error', function 
 })->throws(RuleScriptSyntaxError::class, 'status takes a number');
 
 test('rule scripts still need a field before a value', function () {
-    RuleScript::parse("BAN ip FOR 1 DAY WHERE 'curl'");
+    RuleScript::parse("BLOCK ip FOR 1 DAY WHERE 'curl'");
 })->throws(RuleScriptSyntaxError::class, 'Expected a field');
 
 test('the filters change a search\'s WHERE and leave its GROUP BY and HAVING alone', function () {

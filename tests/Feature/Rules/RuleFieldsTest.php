@@ -21,7 +21,7 @@ test('rules:evaluate skips a saved rule that no longer parses, and runs the rest
     $domain = Domain::factory()->for($user->currentTeam)->create();
     $since = (int) EdgeRequest::max('id');
     EdgeRule::factory()->for($user->currentTeam)->create(['name' => 'Saved pages', 'source' => "TAG ip AS 'saved-page' FOR 1 DAY WHERE bookmark IS NOT NULL", 'last_request_id' => $since]);
-    EdgeRule::factory()->for($user->currentTeam)->script("BAN ip FOR 1 DAY WHERE category = 'probe'")->create(['last_request_id' => $since]);
+    EdgeRule::factory()->for($user->currentTeam)->script("BLOCK ip FOR 1 DAY WHERE category = 'probe'")->create(['last_request_id' => $since]);
     EdgeRequest::factory()->for($domain)->create(['client_ip' => '203.0.113.7', 'path' => '/.env']);
 
     $this->artisan('rules:evaluate')

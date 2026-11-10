@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Addons\AddonSwitchboard;
+use App\Enums\NavGroup;
 use Illuminate\Container\Attributes\Singleton;
 
 /**
@@ -46,5 +47,26 @@ class Nav
         usort($items, fn (NavItem $a, NavItem $b) => $a->order <=> $b->order);
 
         return $items;
+    }
+
+    /**
+     * The links as the sidebar draws them: the ungrouped ones, then each group with a link to show.
+     *
+     * @return list<array{group: NavGroup|null, items: list<NavItem>}>
+     */
+    public function groups(): array
+    {
+        $items = $this->items();
+        $groups = [];
+
+        foreach ([null, ...NavGroup::cases()] as $group) {
+            $inGroup = array_values(array_filter($items, fn (NavItem $item): bool => $item->group === $group));
+
+            if ($inGroup !== []) {
+                $groups[] = ['group' => $group, 'items' => $inGroup];
+            }
+        }
+
+        return $groups;
     }
 }

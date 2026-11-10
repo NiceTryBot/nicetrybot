@@ -126,7 +126,7 @@ func TestTagsArriveWithTheCapturesAndNeverRecord(t *testing.T) {
 	}))
 	defer app.Close()
 
-	targets, _, err := fetchTargets(app.Client(), app.URL, "t", "captures", false, "")
+	targets, _, _, err := fetchTargets(app.Client(), app.URL, "t", "captures", false, "")
 	if err != nil || len(targets) != 2 {
 		t.Fatalf("got %+v, %v", targets, err)
 	}

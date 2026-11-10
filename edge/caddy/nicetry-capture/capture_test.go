@@ -87,12 +87,12 @@ func TestAnUnchangedListIsNotFetchedAgain(t *testing.T) {
 	}))
 	defer app.Close()
 
-	targets, etag, err := fetchTargets(app.Client(), app.URL, "t", "captures", false, "")
+	targets, etag, _, err := fetchTargets(app.Client(), app.URL, "t", "captures", false, "")
 	if err != nil || etag != `"v1"` || len(targets) != 1 || !targets[0].Request || targets[0].Watch[0].Value != "globex" {
 		t.Fatalf("first fetch: %+v %q %v", targets, etag, err)
 	}
 
-	targets, etag, err = fetchTargets(app.Client(), app.URL, "t", "captures", false, etag)
+	targets, etag, _, err = fetchTargets(app.Client(), app.URL, "t", "captures", false, etag)
 	if err != nil || targets != nil || etag != `"v1"` {
 		t.Errorf("an unchanged list should keep the last one: %+v %q %v", targets, etag, err)
 	}

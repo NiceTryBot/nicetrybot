@@ -157,7 +157,7 @@ test('an add-on\'s obstacles join the gym after the core\'s, and reach visitors'
     expect(array_slice($keys, 0, count(config('gym.obstacles'))))->toBe(array_map(fn (string $class) => app($class)->key(), config('gym.obstacles')))
         ->and($keys)->toContain('knock');
 
-    $this->get(route('gym.show', $session))->assertOk()->assertSeeHtml('data-test="example-knock"');
+    $this->get(route('gym.show', $session))->assertForbidden()->assertSeeHtml('data-test="example-knock"');
 
     $this->actingAs(User::factory()->create());
     Livewire::test('pages::gym.edit')->assertSeeInOrder(['data-test="obstacle-library"', 'Proof of work', 'Waiting room', 'Type the code', 'Browser check', 'Knock twice'], false);

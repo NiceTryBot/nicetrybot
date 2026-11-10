@@ -382,3 +382,101 @@ func TestApplyFailureIsReportedAndKeptTrying(t *testing.T) {
 		t.Fatalf("lastError = %q", a.lastError)
 	}
 }
+
+type fakeKV struct {
+	values map[string][]byte
+	sets   int
+}
+
+func (f *fakeKV) Get(_ context.Context, key string) ([]byte, error) { return f.values[key], nil }
+
+func (f *fakeKV) Set(_ context.Context, key string, value []byte) error {
+	f.sets++
+	f.values[key] = value
+	return nil
+}
+
+// agentWithStoredList is an agent starting from a stored list that blocks 203.0.113.9, as run() starts one.
+func agentWithStoredList(t *testing.T, url string, nft runner) *agent {
+	t.Helper()
+	kv := &fakeKV{values: map[string][]byte{}}
+	body, err := json.Marshal(Feed{Mode: "enforce", Entries: []FeedEntry{{Address: "203.0.113.9", ExpiresAt: time.Now().Add(time.Hour).Unix()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &lastGood{kv: kv, writes: true}
+	store.save(body)
+
+	a := newAgent(url, "token", "edge", "80, 443", nft)
+	a.last = store
+	if !a.restore() {
+		t.Fatal("nothing restored")
+	}
+	return a
+}
+
+func TestANewEdgeDropsFromTheStoredListWhileTheAppIsUnreachable(t *testing.T) {
+	nft := &fakeNft{}
+	server, _ := feedServer(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) })
+
+	a := agentWithStoredList(t, server.URL, nft)
+	a.tick(context.Background())
+
+	if len(nft.scripts) != 1 || !strings.Contains(nft.scripts[0], "203.0.113.9") {
+		t.Fatalf("scripts = %v", nft.scripts)
+	}
+}
+
+func TestTheAppsAnswerReplacesTheStoredList(t *testing.T) {
+	nft := &fakeNft{}
+	server, _ := feedServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Feed{Mode: "enforce", Entries: []FeedEntry{{Address: "198.51.100.4", ExpiresAt: time.Now().Add(time.Hour).Unix()}}})
+	})
+
+	a := agentWithStoredList(t, server.URL, nft)
+	a.tick(context.Background())
+
+	got := nft.scripts[len(nft.scripts)-1]
+	if !strings.Contains(got, "198.51.100.4") || strings.Contains(got, "203.0.113.9") {
+		t.Fatalf("the app's list should win:\n%s", got)
+	}
+}
+
+func TestAnAddonSwitchedOffStillBeatsTheStoredList(t *testing.T) {
+	nft := &fakeNft{}
+	server, _ := feedServer(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) })
+
+	a := agentWithStoredList(t, server.URL, nft)
+	a.tick(context.Background())
+
+	if len(nft.scripts) != 0 || a.feed != nil {
+		t.Fatalf("a 404 must drop the stored list: scripts=%d feed=%v", len(nft.scripts), a.feed)
+	}
+}
+
+func TestAStoredListOnlyEverComesFromAGoodAnswerAndAWritingAgent(t *testing.T) {
+	kv := &fakeKV{values: map[string][]byte{}}
+	server, _ := feedServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Feed{Mode: "enforce", Entries: []FeedEntry{}})
+	})
+
+	readOnly := newAgent(server.URL, "token", "edge", "80, 443", &fakeNft{})
+	readOnly.last = &lastGood{kv: kv}
+	if err := readOnly.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if kv.sets != 0 {
+		t.Fatalf("an agent not told to write wrote %d times", kv.sets)
+	}
+
+	writer := newAgent(server.URL, "token", "edge", "80, 443", &fakeNft{})
+	writer.last = &lastGood{kv: kv, writes: true}
+	for range 2 {
+		if err := writer.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if kv.sets != 1 {
+		t.Fatalf("sets = %d, want 1 for an unchanged list", kv.sets)
+	}
+}

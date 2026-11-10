@@ -13,8 +13,9 @@ use NiceTry\Tarpit\Models\TarpitHold;
 
 /**
  * Tarpits on the Activity page: a Tarpit badge in the Action column of each request a tarpit touched
- * (in place of Passed, or beside In the gym when a routine took it after), with how long it was held,
- * and a sentence in the request's details saying which tarpit, why, and what came of it.
+ * (in place of Passed or of the tarpit's own Blocked, or beside In the gym when a routine took it after),
+ * with how long it was held, and a sentence in the request's details saying which tarpit, why, and what
+ * came of it.
  */
 class TarpitActivity implements ActionAddon, RequestAddon
 {
@@ -25,6 +26,7 @@ class TarpitActivity implements ActionAddon, RequestAddon
         return array_map(fn (int $id) => ($hold = $holds->get($id)) === null ? null : new ActionBadge(
             badge: view('tarpit::activity.badge', ['hold' => $hold]),
             note: view('tarpit::activity.note', ['hold' => $hold]),
+            replacesBlocked: $hold->answeredRequest(),
         ), $requestIds);
     }
 
@@ -53,7 +55,7 @@ class TarpitActivity implements ActionAddon, RequestAddon
     {
         return TarpitHold::query()
             ->whereIn('edge_request_id', array_values($requestIds))
-            ->with('tarpit:id,name')
+            ->with(['tarpit:id,name', 'edgeRequest:id,action,status_code'])
             ->get()
             ->keyBy('edge_request_id');
     }

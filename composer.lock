@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "8ea37a51a9e7faf6bf478474c8ee6cb2",
+    "content-hash": "fcfc680ef19e1bb32dbf20bc744f4106",
     "packages": [
         {
             "name": "aws/aws-crt-php",
@@ -3943,6 +3943,41 @@
                 "Elastic-2.0"
             ],
             "description": "Transfer: move an origin, with its sites, settings and secret and its team's rules and gym routines, from one NiceTryBot to another, by pulling it from the other panel with an API token or with a transfer file. On the Domains page.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "nicetry/white-list",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/white-list",
+                "reference": "426301971461461ff0a71aac39fa8ab99501a2e9"
+            },
+            "type": "nicetry-addon",
+            "extra": {
+                "nicetry": {
+                    "name": "White List",
+                    "edition": "free"
+                },
+                "laravel": {
+                    "providers": [
+                        "NiceTry\\WhiteList\\WhiteListServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "NiceTry\\WhiteList\\": "src/",
+                    "NiceTry\\WhiteList\\Database\\Factories\\": "database/factories/"
+                }
+            },
+            "license": [
+                "Elastic-2.0"
+            ],
+            "description": "White List: addresses that never meet an enforcement. An administrator lists IPs and CIDR ranges by hand, under a name and a category, and a visitor on one is never sent to the gym, held in a tarpit, blocked, or dropped in the blackhole — while still showing up in Activity and reports. The one place to keep an office, a partner's scanner, or a crawler you trust out of harm's way.",
             "transport-options": {
                 "symlink": true,
                 "relative": true

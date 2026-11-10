@@ -3,17 +3,14 @@
 namespace App\Data;
 
 /**
- * A plain-English request turned into a rule: its name and script, and the gym routine its clients go
- * through, picked from the team's (routineId) or named as a new one (routineName). Neither when the
- * request doesn't ask for the gym.
+ * A plain-English request turned into a rule: its name and script (which carries its own destination
+ * clauses), and a note when Claude had to leave something out or guess.
  */
 readonly class TranslatedRule
 {
     public function __construct(
         public string $name,
         public string $source,
-        public ?int $routineId = null,
-        public ?string $routineName = null,
         public ?string $note = null,
     ) {
         //

@@ -7,6 +7,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use InvalidArgumentException;
 use Throwable;
 
 /**
@@ -74,6 +75,51 @@ class AnthropicClient
     }
 
     /**
+     * Create a message that may call tools, and keep answering them until Claude stops asking, then
+     * get its last message. A tool that throws InvalidArgumentException tells Claude what was wrong, so
+     * it can try again. Too many rounds or too long overall is an error rather than a timed-out page.
+     *
+     * @param  array<string, mixed>  $body  Must include tools and messages.
+     * @param  callable(string, array<string, mixed>): mixed  $runTool  Given a tool's name and input, gets what to send back.
+     * @return array<string, mixed>
+     *
+     * @throws AnthropicException
+     */
+    public function messageWithTools(string $key, array $body, callable $runTool, ?string $workspaceId = null, int $maxRounds = 6, float $maxSeconds = 25.0): array
+    {
+        $startedAt = microtime(true);
+
+        for ($round = 0; $round < $maxRounds; $round++) {
+            $message = $this->message($key, $body, $workspaceId);
+            $calls = self::toolCalls($message);
+
+            if ($calls === [] || ($message['stop_reason'] ?? null) !== 'tool_use') {
+                return $message;
+            }
+
+            if (microtime(true) - $startedAt > $maxSeconds) {
+                break;
+            }
+
+            $body['messages'][] = ['role' => 'assistant', 'content' => $message['content']];
+            $body['messages'][] = ['role' => 'user', 'content' => array_map(fn (array $call): array => $this->answerToolCall($call, $runTool), $calls)];
+        }
+
+        throw new AnthropicException(__('That took Claude too many steps. Try asking something simpler.'));
+    }
+
+    /**
+     * Get the tool calls in a message.
+     *
+     * @param  array<string, mixed>  $message
+     * @return list<array{id: string, name: string, input: array<string, mixed>}>
+     */
+    public static function toolCalls(array $message): array
+    {
+        return array_values(array_filter($message['content'] ?? [], fn (array $block): bool => ($block['type'] ?? null) === 'tool_use'));
+    }
+
+    /**
      * Get the text of a message's text blocks.
      *
      * @param  array<string, mixed>  $message
@@ -84,6 +130,20 @@ class AnthropicClient
             ->where('type', 'text')
             ->pluck('text')
             ->implode('');
+    }
+
+    /**
+     * @param  array{id: string, name: string, input: array<string, mixed>}  $call
+     * @param  callable(string, array<string, mixed>): mixed  $runTool
+     * @return array<string, mixed>
+     */
+    private function answerToolCall(array $call, callable $runTool): array
+    {
+        try {
+            return ['type' => 'tool_result', 'tool_use_id' => $call['id'], 'content' => (string) json_encode($runTool($call['name'], $call['input']))];
+        } catch (InvalidArgumentException $exception) {
+            return ['type' => 'tool_result', 'tool_use_id' => $call['id'], 'content' => $exception->getMessage(), 'is_error' => true];
+        }
     }
 
     private function request(string $key, ?string $workspaceId): PendingRequest

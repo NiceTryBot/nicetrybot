@@ -4,6 +4,7 @@ use App\Actions\Clients\FindCurrentFirefoxReleases;
 use App\Actions\Rules\EvaluateRule;
 use App\Enums\HttpMethod;
 use App\Enums\NetworkKind;
+use App\Enums\RuleAction;
 use App\Models\Domain;
 use App\Models\EdgeRequest;
 use App\Models\EdgeRule;
@@ -22,7 +23,7 @@ function watchingRule(User $user, string $source): EdgeRule
 test('a probe request bans its IP and fingerprint for the rule\'s duration', function () {
     $user = User::factory()->create();
     $domain = Domain::factory()->for($user->currentTeam)->create();
-    $rule = watchingRule($user, "BAN ip, ja4 FOR 30 DAYS WHERE category = 'probe'");
+    $rule = watchingRule($user, "BLOCK ip, ja4 FOR 30 DAYS WHERE category = 'probe'");
     $probe = EdgeRequest::factory()->for($domain)->withFingerprint()->create(['client_ip' => '203.0.113.7', 'path' => '/.env.local']);
     EdgeRequest::factory()->for($domain)->withFingerprint()->create(['client_ip' => '198.51.100.4', 'path' => '/contact']);
 
@@ -37,11 +38,92 @@ test('a probe request bans its IP and fingerprint for the rule\'s duration', fun
         ->and($rule->fresh()->last_request_id)->toBe(EdgeRequest::max('id'));
 });
 
+test('a rule far behind catches up over several runs, saving its place after each', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+    $rule = watchingRule($user, "TAG ip AS 'probe' FOR 1 DAY WHERE category = 'probe'");
+    $start = $rule->last_request_id;
+    $far = $start + EvaluateRule::MOST_REQUESTS_PER_RUN + 10;
+    EdgeRequest::factory()->for($domain)->create(['id' => $start + 5, 'client_ip' => '203.0.113.7', 'path' => '/.env']);
+    EdgeRequest::factory()->for($domain)->create(['id' => $far, 'client_ip' => '198.51.100.4', 'path' => '/.env']);
+
+    expect(app(EvaluateRule::class)->handle($rule))->toBe(1)
+        ->and(Verdict::sole()->client_ip)->toBe('203.0.113.7')
+        ->and($rule->fresh()->last_request_id)->toBe($start + EvaluateRule::MOST_REQUESTS_PER_RUN);
+
+    expect(app(EvaluateRule::class)->handle($rule->fresh()))->toBe(1)
+        ->and($rule->fresh()->last_request_id)->toBe($far);
+});
+
+test('a run with too many clients to record covers fewer requests, and the next carries on', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+    $rule = watchingRule($user, "TAG ip AS 'probe' FOR 1 DAY WHERE category = 'probe'");
+    $start = $rule->last_request_id;
+    EdgeRequest::factory()->for($domain)->create(['id' => $start + 1, 'client_ip' => '203.0.113.1', 'path' => '/.env']);
+    EdgeRequest::factory()->for($domain)->create(['id' => $start + 2, 'client_ip' => '203.0.113.2', 'path' => '/.env']);
+    EdgeRequest::factory()->for($domain)->create(['id' => $start + 3, 'client_ip' => '203.0.113.3', 'path' => '/.env']);
+
+    expect(app(EvaluateRule::class)->handle($rule, mostClients: 1))->toBe(1)
+        ->and(Verdict::sole()->client_ip)->toBe('203.0.113.1')
+        ->and($rule->fresh()->last_request_id)->toBe($start + 1);
+
+    app(EvaluateRule::class)->handle($rule->fresh(), mostClients: 1);
+    app(EvaluateRule::class)->handle($rule->fresh(), mostClients: 1);
+
+    expect(Verdict::pluck('client_ip')->all())->toEqualCanonicalizing(['203.0.113.1', '203.0.113.2', '203.0.113.3'])
+        ->and($rule->fresh()->last_request_id)->toBe($start + 3);
+});
+
+test('a rule catching up dates a verdict from the match, and reaches none that would be over', function () {
+    $user = User::factory()->create();
+    $domain = Domain::factory()->for($user->currentTeam)->create();
+    $rule = watchingRule($user, "BLOCK ip FOR 1 DAY WHERE category = 'probe'");
+    EdgeRequest::factory()->for($domain)->create(['client_ip' => '203.0.113.7', 'path' => '/.env', 'occurred_at' => now()->subHours(40)]);
+    EdgeRequest::factory()->for($domain)->create(['client_ip' => '198.51.100.4', 'path' => '/.env', 'occurred_at' => now()->subHours(6)]);
+
+    expect(app(EvaluateRule::class)->handle($rule))->toBe(1)
+        ->and(Verdict::sole()->client_ip)->toBe('198.51.100.4')
+        ->and(Verdict::sole()->expires_at->diffInMinutes(now()->addHours(18), absolute: true))->toBeLessThan(1);
+});
+
+test('the rule that waited longest goes first, and a run stops starting rules when its time is up', function () {
+    $user = User::factory()->create();
+    $recent = watchingRule($user, "TAG ip AS 'one' FOR 1 DAY WHERE category = 'probe'");
+    $oldest = watchingRule($user, "TAG ip AS 'two' FOR 1 DAY WHERE category = 'probe'");
+    $recent->update(['last_evaluated_at' => now()->subMinute()]);
+    $oldest->update(['last_evaluated_at' => now()->subDay()]);
+    $next = watchingRule($user, "TAG ip AS 'three' FOR 1 DAY WHERE category = 'probe'");
+    $next->update(['last_evaluated_at' => now()->subHour()]);
+    $seen = $recent->fresh()->last_evaluated_at;
+
+    $this->artisan('rules:evaluate', ['--seconds' => 0])->assertSuccessful();
+
+    expect($oldest->fresh()->last_evaluated_at->isToday())->toBeTrue()
+        ->and($oldest->fresh()->last_evaluated_at->greaterThan(now()->subMinute()))->toBeTrue()
+        ->and($next->fresh()->last_evaluated_at->lessThan(now()->subMinutes(30)))->toBeTrue()
+        ->and($recent->fresh()->last_evaluated_at->equalTo($seen))->toBeTrue();
+});
+
+test('a rule that breaks while it runs goes behind the others next time', function () {
+    $user = User::factory()->create();
+    $broken = watchingRule($user, "TAG ip AS 'one' FOR 1 DAY WHERE category = 'probe'");
+    $other = watchingRule($user, "TAG ip AS 'two' FOR 1 DAY WHERE category = 'probe'");
+    $broken->update(['last_evaluated_at' => now()->subDay()]);
+    $other->update(['last_evaluated_at' => now()->subHour()]);
+
+    $this->mock(EvaluateRule::class)->shouldReceive('handle')->once()->andThrow(new RuntimeException('killed'));
+
+    $this->artisan('rules:evaluate', ['--seconds' => 0])->assertFailed();
+
+    expect($broken->fresh()->last_evaluated_at->greaterThan($other->fresh()->last_evaluated_at))->toBeTrue();
+});
+
 test('a new rule never acts on requests from before it existed', function () {
     $user = User::factory()->create();
     $domain = Domain::factory()->for($user->currentTeam)->create();
     EdgeRequest::factory()->for($domain)->create(['path' => '/.env']);
-    $rule = watchingRule($user, "BAN ip FOR 1 DAY WHERE category = 'probe'");
+    $rule = watchingRule($user, "BLOCK ip FOR 1 DAY WHERE category = 'probe'");
 
     expect(app(EvaluateRule::class)->handle($rule))->toBe(0)
         ->and(Verdict::count())->toBe(0);
@@ -50,7 +132,7 @@ test('a new rule never acts on requests from before it existed', function () {
 test('a subject that keeps matching extends its verdict instead of getting another', function () {
     $user = User::factory()->create();
     $domain = Domain::factory()->for($user->currentTeam)->create();
-    $rule = watchingRule($user, "BAN ip FOR 1 DAY WHERE category = 'probe'");
+    $rule = watchingRule($user, "BLOCK ip FOR 1 DAY WHERE category = 'probe'");
 
     EdgeRequest::factory()->for($domain)->create(['client_ip' => '203.0.113.7', 'path' => '/.env']);
     app(EvaluateRule::class)->handle($rule);
@@ -63,20 +145,20 @@ test('a subject that keeps matching extends its verdict instead of getting anoth
 test('two 404s across two hosts within the window ban the IP', function () {
     $user = User::factory()->create();
     [$first, $second] = Domain::factory()->for($user->currentTeam)->count(2)->create();
-    $rule = watchingRule($user, 'BAN ip FOR 1 HOUR WHERE status = 404 WITHIN 10 MINUTES HAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2');
+    $rule = watchingRule($user, 'BLOCK ip FOR 1 HOUR WHERE status = 404 WITHIN 10 MINUTES HAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2');
     EdgeRequest::factory()->for($first)->notFound()->create(['client_ip' => '203.0.113.7', 'occurred_at' => now()->subMinutes(3)]);
     EdgeRequest::factory()->for($second)->notFound()->create(['client_ip' => '203.0.113.7', 'occurred_at' => now()->subMinutes(1)]);
 
     app(EvaluateRule::class)->handle($rule);
 
     expect(Verdict::sole()->client_ip)->toBe('203.0.113.7')
-        ->and(Verdict::sole()->expires_at->diffInMinutes(now()->addHour()))->toBeLessThan(1);
+        ->and(Verdict::sole()->expires_at->diffInMinutes(now()->addMinutes(59), absolute: true))->toBeLessThan(1);
 });
 
 test('404s on a single host, or outside the window, are not a sweep', function () {
     $user = User::factory()->create();
     [$first, $second] = Domain::factory()->for($user->currentTeam)->count(2)->create();
-    $rule = watchingRule($user, 'BAN ip FOR 1 HOUR WHERE status = 404 WITHIN 10 MINUTES HAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2');
+    $rule = watchingRule($user, 'BLOCK ip FOR 1 HOUR WHERE status = 404 WITHIN 10 MINUTES HAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2');
     EdgeRequest::factory()->for($first)->notFound()->count(3)->create(['client_ip' => '203.0.113.7', 'occurred_at' => now()->subMinutes(2)]);
     EdgeRequest::factory()->for($second)->notFound()->create(['client_ip' => '198.51.100.4', 'occurred_at' => now()->subMinutes(30)]);
     EdgeRequest::factory()->for($first)->notFound()->create(['client_ip' => '198.51.100.4', 'occurred_at' => now()->subMinutes(1)]);
@@ -121,9 +203,9 @@ test('quotes and SQL inside rule values are matched as plain text', function (st
         ->and(Verdict::count())->toBe(0)
         ->and(EdgeRequest::count())->toBe(2);
 })->with([
-    'always-true comparison' => ["BAN ip FOR 1 DAY WHERE path = 'x'' OR ''1''=''1'"],
-    'stacked statement' => ["BAN ip FOR 1 DAY WHERE path LIKE '%''; DELETE FROM edge_requests; --%'"],
-    'escaped quote' => ["BAN ip FOR 1 DAY WHERE ua = '\\' OR 1=1 --'"],
+    'always-true comparison' => ["BLOCK ip FOR 1 DAY WHERE path = 'x'' OR ''1''=''1'"],
+    'stacked statement' => ["BLOCK ip FOR 1 DAY WHERE path LIKE '%''; DELETE FROM edge_requests; --%'"],
+    'escaped quote' => ["BLOCK ip FOR 1 DAY WHERE ua = '\\' OR 1=1 --'"],
 ]);
 
 test('UNTIL lifts a verdict once its subject makes a matching request, and only then', function () {
@@ -248,4 +330,14 @@ test('a rule can pick the IPs that took over a visit another IP started on the s
     app(EvaluateRule::class)->handle($rule);
 
     expect(Verdict::pluck('client_ip')->all())->toBe(['203.0.113.2']);
+});
+
+test('a FINGERPRINT rule reaches a tagging verdict like TAG does', function () {
+    $domain = Domain::factory()->create();
+    $rule = EdgeRule::factory()->for($domain->team)->script("FINGERPRINT ip, ja4 AS 'claim-form' FOR 1 DAY WHERE path = '/claim'")->create(['last_request_id' => 0]);
+    EdgeRequest::factory()->for($domain)->create(['path' => '/claim', 'occurred_at' => now()]);
+
+    expect(app(EvaluateRule::class)->handle($rule))->toBe(1)
+        ->and($rule->verdicts()->sole()->tag)->toBe('claim-form')
+        ->and($rule->verdicts()->sole()->action)->toBe(RuleAction::Fingerprint);
 });

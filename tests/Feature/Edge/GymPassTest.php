@@ -46,7 +46,7 @@ test('a pass works on the site it was earned on, not on the team\'s other sites'
     [, , $pass] = passEarnedAtLogin();
 
     checkWithPass('sign.example', $pass)->assertNoContent();
-    checkWithPass('shop.example', $pass)->assertOk();
+    checkWithPass('shop.example', $pass)->assertForbidden();
 });
 
 test('a pass from one routine doesn\'t get anyone past a stricter routine they never cleared', function () {
@@ -54,7 +54,7 @@ test('a pass from one routine doesn\'t get anyone past a stricter routine they n
     GymRoutine::factory()->for($team)->entering([['field' => 'ip', 'operator' => 'in', 'values' => ['198.51.100.0/24']]])->create();
 
     checkWithPass('sign.example', $pass)->assertNoContent();
-    checkWithPass('sign.example', $pass, ip: '198.51.100.9')->assertOk();
+    checkWithPass('sign.example', $pass, ip: '198.51.100.9')->assertForbidden();
 });
 
 test('a pass handed around more networks than one person uses stops working', function () {
@@ -64,17 +64,17 @@ test('a pass handed around more networks than one person uses stops working', fu
         checkWithPass('sign.example', $pass, ip: $ip)->assertNoContent();
     }
 
-    checkWithPass('sign.example', $pass, ip: '100.1.2.3')->assertOk();
-    checkWithPass('sign.example', $pass)->assertOk();
+    checkWithPass('sign.example', $pass, ip: '100.1.2.3')->assertForbidden();
+    checkWithPass('sign.example', $pass)->assertForbidden();
 });
 
 test('a client carrying someone else\'s pass is still judged by its own fingerprint', function () {
     [$team, , $pass] = passEarnedAtLogin();
-    $rule = EdgeRule::factory()->for($team)->script("BAN ja4 FOR 1 DAY WHERE path = '/login'")->create();
+    $rule = EdgeRule::factory()->for($team)->script("BLOCK ja4 FOR 1 DAY WHERE path = '/login'")->create();
     $farm = TlsFingerprint::create(['type' => TlsFingerprintType::Ja4, 'value' => 't13d311000_e8f1e7e78f70_d339722ba4af']);
     Verdict::factory()->for($rule, 'rule')->create(['team_id' => $team->id, 'client_ip' => null, 'ja4_id' => $farm->id]);
     GymRoutine::factory()->for($team)->entering([['field' => 'verdict', 'operator' => 'in', 'values' => [(string) $rule->id]]])->create();
 
     checkWithPass('sign.example', $pass)->assertNoContent();
-    checkWithPass('sign.example', $pass, ja4: $farm->value)->assertOk();
+    checkWithPass('sign.example', $pass, ja4: $farm->value)->assertForbidden();
 });

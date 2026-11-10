@@ -262,10 +262,10 @@ trait WorksWithGyms
     protected function validatedObstacle(mixed $row, int $number, array $routineTypes): array
     {
         $registry = app(ObstacleRegistry::class);
-        $obstacle = is_array($row) && is_string($row['type'] ?? null) ? $registry->find($row['type']) : null;
+        $obstacle = is_array($row) && is_string($row['type'] ?? null) ? ($registry->selectable()[$row['type']] ?? null) : null;
 
         if ($obstacle === null) {
-            $this->fail('obstacles', __('Obstacle :n: type must be one of :types (list-obstacle-types describes them).', ['n' => $number, 'types' => implode(', ', array_keys($registry->all()))]));
+            $this->fail('obstacles', __('Obstacle :n: type must be one of :types (list-obstacle-types describes them).', ['n' => $number, 'types' => implode(', ', array_keys($registry->selectable()))]));
         }
 
         $config = $row['config'] ?? [];

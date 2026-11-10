@@ -12,14 +12,18 @@ use App\Gym\ObstacleRegistry;
 use App\Gym\RoutineTemplates;
 use App\Models\EdgeRequest;
 use App\Models\GymRoutine;
+use App\Models\GymRoutineDailyMetric;
 use App\Models\GymSession;
+use App\Models\GymTeamDailyMetric;
 use App\Models\Team;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Number;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
+use Livewire\Attributes\Url;
 use Livewire\Component;
 
 new #[Title('Bot gym')] class extends Component {
@@ -27,6 +31,19 @@ new #[Title('Bot gym')] class extends Component {
      * How many days the gym's numbers cover.
      */
     public const int DAYS = 7;
+
+    /**
+     * What the activity chart counts each day: "entered" (visitors trained), "cleared", or "hashes"
+     * (bot CPU burned).
+     */
+    #[Url(as: 'chart', except: 'entered')]
+    public string $chartSource = 'entered';
+
+    /**
+     * How many days back the activity chart reaches.
+     */
+    #[Url(as: 'days', except: 14)]
+    public int $chartDays = 14;
 
     public string $testIp = '';
 
@@ -55,19 +72,52 @@ new #[Title('Bot gym')] class extends Component {
     }
 
     /**
+     * The first day the gym's numbers cover: today and the days before it, by calendar day. Finished
+     * days come from the rolled-up metrics (GymTeamDailyMetric, GymRoutineDailyMetric); today is
+     * counted live. Reading summaries keeps the page off a full scan of the huge gym_sessions table.
+     */
+    private function windowStart(): CarbonInterface
+    {
+        return today()->subDays($this::DAYS - 1);
+    }
+
+    /**
      * @return Collection<int, GymRoutine>
      */
     #[Computed]
     public function routines(): Collection
     {
-        $since = now()->subDays($this::DAYS);
+        $routines = $this->team->gymRoutines()->get();
 
-        return $this->team->gymRoutines()
-            ->withCount([
-                'sessions as entered_count' => fn ($query) => $query->where('is_preview', false)->where('started_at', '>=', $since),
-                'sessions as cleared_count' => fn ($query) => $query->where('is_preview', false)->where('started_at', '>=', $since)->where('status', GymSessionStatus::Cleared),
-            ])
-            ->get();
+        $finalized = GymRoutineDailyMetric::query()
+            ->where('team_id', $this->team->id)
+            ->whereBetween('day', [$this->windowStart(), today()->subDay()])
+            ->toBase()
+            ->groupBy('gym_routine_id')
+            ->selectRaw('gym_routine_id')
+            ->selectRaw('sum(entered) as entered')
+            ->selectRaw('sum(cleared) as cleared')
+            ->get()
+            ->keyBy('gym_routine_id');
+
+        $today = $this->team->gymSessions()
+            ->real()
+            ->where('gym_sessions.started_at', '>=', today())
+            ->join('gym_routine_gym_session as pivot', 'pivot.gym_session_id', '=', 'gym_sessions.id')
+            ->toBase()
+            ->groupBy('pivot.gym_routine_id')
+            ->selectRaw('pivot.gym_routine_id as gym_routine_id')
+            ->selectRaw('count(*) as entered')
+            ->selectRaw('sum(case when gym_sessions.status = ? then 1 else 0 end) as cleared', [GymSessionStatus::Cleared->value])
+            ->get()
+            ->keyBy('gym_routine_id');
+
+        foreach ($routines as $routine) {
+            $routine->entered_count = (int) (($finalized[$routine->id]->entered ?? 0) + ($today[$routine->id]->entered ?? 0));
+            $routine->cleared_count = (int) (($finalized[$routine->id]->cleared ?? 0) + ($today[$routine->id]->cleared ?? 0));
+        }
+
+        return $routines;
     }
 
     /**
@@ -76,9 +126,20 @@ new #[Title('Bot gym')] class extends Component {
     #[Computed]
     public function stats(): array
     {
-        $row = $this->team->gymSessions()
+        $finalized = GymTeamDailyMetric::query()
+            ->where('team_id', $this->team->id)
+            ->whereBetween('day', [$this->windowStart(), today()->subDay()])
+            ->toBase()
+            ->selectRaw('coalesce(sum(entered), 0) as entered')
+            ->selectRaw('coalesce(sum(cleared), 0) as cleared')
+            ->selectRaw('coalesce(sum(turned_away), 0) as turned_away')
+            ->selectRaw('coalesce(sum(gave_up), 0) as gave_up')
+            ->selectRaw('coalesce(sum(hashes), 0) as hashes')
+            ->first();
+
+        $today = $this->team->gymSessions()
             ->real()
-            ->where('started_at', '>=', now()->subDays($this::DAYS))
+            ->where('started_at', '>=', today())
             ->toBase()
             ->selectRaw('count(*) as entered')
             ->selectRaw('sum(case when status = ? then 1 else 0 end) as cleared', [GymSessionStatus::Cleared->value])
@@ -88,12 +149,57 @@ new #[Title('Bot gym')] class extends Component {
             ->first();
 
         return [
-            'entered' => (int) $row->entered,
-            'cleared' => (int) $row->cleared,
-            'turned_away' => (int) $row->turned_away,
-            'gave_up' => (int) $row->gave_up,
-            'hashes' => (int) $row->hashes,
+            'entered' => (int) $finalized->entered + (int) $today->entered,
+            'cleared' => (int) $finalized->cleared + (int) $today->cleared,
+            'turned_away' => (int) $finalized->turned_away + (int) $today->turned_away,
+            'gave_up' => (int) $finalized->gave_up + (int) $today->gave_up,
+            'hashes' => (int) $finalized->hashes + (int) $today->hashes,
         ];
+    }
+
+    /**
+     * The activity chart's daily bars: visitors trained, cleared, or bot CPU burned, by calendar day.
+     * Finished days come from the rolled-up metrics; today is counted live, so the page still never
+     * scans the whole gym_sessions table.
+     *
+     * @return array<int, array{key: string, label: string, start: int, end: int, count: int}>
+     */
+    #[Computed]
+    public function chartBuckets(): array
+    {
+        $days = in_array($this->chartDays, [7, 14, 30], true) ? $this->chartDays : 14;
+        $column = in_array($this->chartSource, ['cleared', 'hashes'], true) ? $this->chartSource : 'entered';
+        $start = today()->subDays($days - 1);
+
+        $finalized = GymTeamDailyMetric::query()
+            ->where('team_id', $this->team->id)
+            ->whereBetween('day', [$start, today()->subDay()])
+            ->toBase()
+            ->pluck($column, 'day');
+
+        $today = $this->team->gymSessions()
+            ->real()
+            ->where('started_at', '>=', today())
+            ->toBase()
+            ->selectRaw('count(*) as entered')
+            ->selectRaw('sum(case when status = ? then 1 else 0 end) as cleared', [GymSessionStatus::Cleared->value])
+            ->selectRaw('coalesce(sum(hashes), 0) as hashes')
+            ->first();
+        $todayValue = (int) ($today->{$column} ?? 0);
+
+        return collect(range(0, $days - 1))->map(function (int $index) use ($start, $column, $finalized, $todayValue) {
+            $day = $start->copy()->addDays($index);
+
+            return [
+                'key' => $day->toDateString(),
+                'label' => $day->format('M j'),
+                'start' => $day->copy()->startOfDay()->getTimestamp(),
+                'end' => $day->copy()->endOfDay()->getTimestamp(),
+                'count' => $day->isToday()
+                    ? $todayValue
+                    : (int) ($finalized->get($day->toDateString()) ?? $finalized->get($day->format('Y-m-d H:i:s')) ?? 0),
+            ];
+        })->all();
     }
 
     /**
@@ -230,6 +336,37 @@ new #[Title('Bot gym')] class extends Component {
         <x-ntb.metric :label="__('Gave up or turned away')" :value="Number::format($stats['gave_up'] + $stats['turned_away'])" icon="hand-raised" :hint="__(':gave gave up · :away turned away', ['gave' => Number::format($stats['gave_up']), 'away' => Number::format($stats['turned_away'])])" />
         <x-ntb.metric :label="__('Bot CPU burned')" :value="HashPuzzle::describeSeconds($stats['hashes'] / HashPuzzle::LAPTOP_HASHES_PER_SECOND)" icon="cpu-chip" :hint="__(':hashes hashes, at laptop speed', ['hashes' => Number::abbreviate($stats['hashes'], maxPrecision: 1)])" />
     </div>
+
+    {{-- The gym day by day: who was trained, who cleared, and the bot CPU it cost. --}}
+    <x-ntb.panel class="mb-6" data-test="gym-chart">
+        <x-ntb.count-chart
+            :buckets="$this->chartBuckets"
+            :label="$chartSource === 'cleared' ? __('Cleared the gym') : ($chartSource === 'hashes' ? __('Hashes solved') : __('Visitors trained'))"
+            color="bg-(--chart-human)"
+            height-class="h-40"
+        >
+            <x-slot:heading>
+                <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div class="inline-flex rounded-md border border-line bg-canvas p-0.5 text-xs font-medium dark:border-zinc-700 dark:bg-zinc-900" role="group" aria-label="{{ __('What to chart') }}" data-test="gym-chart-source">
+                        @foreach (['entered' => __('Trained'), 'cleared' => __('Cleared'), 'hashes' => __('Bot CPU')] as $source => $sourceLabel)
+                            <button
+                                type="button"
+                                wire:click="$set('chartSource', '{{ $source }}')"
+                                @class(['rounded px-2.5 py-1 transition', 'bg-white text-ink shadow-sm dark:bg-zinc-700 dark:text-white' => $chartSource === $source, 'text-zinc-500 hover:text-ink dark:text-zinc-400 dark:hover:text-white' => $chartSource !== $source])
+                                aria-pressed="{{ $chartSource === $source ? 'true' : 'false' }}"
+                                data-test="gym-chart-source-{{ $source }}"
+                            >{{ $sourceLabel }}</button>
+                        @endforeach
+                    </div>
+                    <flux:select wire:model.live="chartDays" size="xs" class="w-36" :aria-label="__('Time period')" data-test="gym-chart-days">
+                        @foreach ([7 => __('Last 7 days'), 14 => __('Last 14 days'), 30 => __('Last 30 days')] as $value => $label)
+                            <flux:select.option :value="$value">{{ $label }}</flux:select.option>
+                        @endforeach
+                    </flux:select>
+                </div>
+            </x-slot:heading>
+        </x-ntb.count-chart>
+    </x-ntb.panel>
 
     <div class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_23rem]">
         <div class="min-w-0 space-y-6">

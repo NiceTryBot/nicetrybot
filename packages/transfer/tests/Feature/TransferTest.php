@@ -126,7 +126,7 @@ test('an origin exports with its groups, sites, own modes, secret, rules and rou
             ['hostname' => 'beta.example', 'protection_mode' => 'enforce'],
             ['hostname' => 'shop.quiet.example', 'protection_mode' => null],
         ])
-        ->and($bundle['rules'])->toBe([['name' => 'Probe scanners', 'source' => "BAN ip, ja4 FOR 30 DAYS\nWHERE category = 'probe'", 'enabled' => true]])
+        ->and($bundle['rules'])->toBe([['name' => 'Probe scanners', 'source' => "BLOCK ip, ja4 FOR 30 DAYS\nWHERE category = 'probe'", 'enabled' => true]])
         ->and($bundle['routines'][0]['conditions'][0]['values'])->toBe(['rule:Probe scanners']);
 
     expect($bundle['origin'])->not->toHaveKey('id')->not->toHaveKey('team_id')

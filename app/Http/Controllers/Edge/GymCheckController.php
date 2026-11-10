@@ -12,6 +12,7 @@ use App\Enums\GymExit;
 use App\Enums\GymPassState;
 use App\Enums\GymSessionStatus;
 use App\Enums\ProtectionMode;
+use App\Gym\FrontGates;
 use App\Gym\GymCheckHandlers;
 use App\Gym\GymPipeline;
 use App\Gym\GymVisit;
@@ -21,6 +22,7 @@ use App\Models\Domain;
 use App\Models\EdgeRule;
 use App\Models\GymRoutine;
 use App\Models\GymSession;
+use App\Support\AllowedAddresses;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -77,11 +79,22 @@ class GymCheckController extends Controller
      * so a rule's gym takes the client in on the very request that earned the verdict.
      *
      * Add-ons answer first (GymCheckHandlers), on any domain: a visitor carrying one's own cookie is its.
+     *
+     * Between the allow list and the rules, a front gate (the Bot Bouncer add-on) may hold a blatant
+     * client at the door: its challenge is served in place, and a client it stops never reaches a rule.
      */
-    public function __invoke(Request $request, EnterGym $enterGym, GymCheckHandlers $handlers): Response
+    public function __invoke(Request $request, EnterGym $enterGym, GymCheckHandlers $handlers, FrontGates $frontGates): Response
     {
         if (($answer = $handlers->answer($request)) !== null) {
             return $answer;
+        }
+
+        // An allowed address (the White List or Nice Bots add-ons) never trains: it passes straight
+        // through, on any host, before a routine is ever matched.
+        $clientIp = (string) $request->header('X-NiceTry-Client-Ip');
+
+        if ($clientIp !== '' && app(AllowedAddresses::class)->allows($clientIp)) {
+            return response()->noContent();
         }
 
         $domain = $this->enforcingDomain(Str::lower((string) $request->header('X-NiceTry-Host')));
@@ -94,6 +107,10 @@ class GymCheckController extends Controller
         $pass = $request->cookie(GymSession::PASS_COOKIE);
         $passSession = is_string($pass) ? GymSession::fromPass($pass, $domain->team_id) : null;
         $visitor = $this->visitor($request, $domain, $uri, $passSession ?? $this->cookieSession($request, $domain));
+
+        if (($held = $frontGates->answer($request, $domain, $visitor)) !== null) {
+            return $held;
+        }
 
         $this->reachLiveVerdicts->handle($domain->team, $this->liveRequest($request, $domain, $visitor), $this->flaggedRules($request));
 

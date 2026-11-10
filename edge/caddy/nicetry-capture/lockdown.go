@@ -337,8 +337,27 @@ func sharedLockdowns(endpoint, token, state string, interval time.Duration) *loc
 	return m
 }
 
+// restore starts the lockdowns from their last good copy, for an edge with no state file of its own: a
+// new one, or one built from an image. A state file is this edge's own record, so it wins.
+func (m *lockdownMap) restore(store *lastGood) bool {
+	if m.raw != nil {
+		return false
+	}
+	var raw []byte
+	locked, ok := restoreList(store, "lockdowns", func(body []byte) (map[string]*lockdown, error) {
+		raw = body
+		return parseLockdowns(body)
+	})
+	if ok {
+		m.current.Store(&locked)
+		m.raw = raw
+	}
+	return ok
+}
+
 func (m *lockdownMap) poll(interval time.Duration) {
 	client := &http.Client{Timeout: 10 * time.Second}
+	m.restore(sharedLastGood())
 	for {
 		if err := m.refresh(client); err != nil {
 			caddy.Log().Named("nicetry_lockdown").Warn("keeping the last lockdowns", zap.Error(err))
@@ -356,6 +375,8 @@ func (m *lockdownMap) refresh(client *http.Client) error {
 	}
 	if bytes.Equal(raw, m.raw) {
 		m.etag = etag
+		// Started from its state file, this edge may hold what the shared copy doesn't yet.
+		sharedLastGood().save("lockdowns", raw)
 		return nil
 	}
 	locked, err := parseLockdowns(raw)
@@ -366,6 +387,7 @@ func (m *lockdownMap) refresh(client *http.Client) error {
 	m.etag, m.raw = etag, raw
 	caddy.Log().Named("nicetry_lockdown").Info("lockdowns updated", zap.Int("hosts", len(locked)))
 	m.save()
+	sharedLastGood().save("lockdowns", raw)
 	return nil
 }
 

@@ -42,3 +42,14 @@ test('another team\'s routines never pull in a visitor', function () {
 
     expect(app(EnterGym::class)->handle(Team::factory()->create(), new GymVisitor('203.0.113.7')))->toBeNull();
 });
+
+test('a destination longer than the column is cut to fit, so a bot\'s giant URL can\'t break entering', function () {
+    $team = Team::factory()->create();
+    GymRoutine::factory()->for($team)->entering([])->create();
+    $url = 'https://shop.example.com/?'.str_repeat('a', 4_000);
+
+    $session = app(EnterGym::class)->handle($team, new GymVisitor('203.0.113.7'), $url);
+
+    expect(mb_strlen($session->destination))->toBe(2048)
+        ->and($session->destination)->toBe(mb_substr($url, 0, 2048));
+});

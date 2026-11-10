@@ -17,7 +17,7 @@ test('a backtest counts who a rule would have matched, flags subjects off hostin
     EdgeRequest::factory()->for($domain)->create(['client_ip' => '198.51.100.4', 'path' => '/contact']);
     EdgeRequest::factory()->for($domain)->create(['client_ip' => '198.51.100.5', 'path' => '/.env', 'occurred_at' => now()->subDays(9)]);
 
-    $backtest = app(BacktestRule::class)->handle($user->currentTeam, RuleScript::parse("BAN ip FOR 1 DAY WHERE category = 'probe'"));
+    $backtest = app(BacktestRule::class)->handle($user->currentTeam, RuleScript::parse("BLOCK ip FOR 1 DAY WHERE category = 'probe'"));
 
     expect($backtest->subjectCount)->toBe(2)
         ->and($backtest->requestCount)->toBe(4)
@@ -37,7 +37,7 @@ test('a windowed backtest finds a burst anywhere in the period but not spread-ou
     EdgeRequest::factory()->for($second)->notFound()->create(['client_ip' => '198.51.100.4', 'occurred_at' => now()->subHours(2)]);
 
     $backtest = app(BacktestRule::class)->handle($user->currentTeam, RuleScript::parse(
-        'BAN ip FOR 1 HOUR WHERE status = 404 WITHIN 10 MINUTES HAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2'
+        'BLOCK ip FOR 1 HOUR WHERE status = 404 WITHIN 10 MINUTES HAVING COUNT(*) >= 2 AND COUNT(DISTINCT host) >= 2'
     ));
 
     expect($backtest->subjectCount)->toBe(1)
@@ -66,7 +66,7 @@ test('the rule editor opens before its backtest, which loads after and is kept f
 
     Livewire::test('pages::rules.index')
         ->call('newRule')
-        ->set('source', "BAN ip FOR 1 DAY WHERE category = 'probe'")
+        ->set('source', "BLOCK ip FOR 1 DAY WHERE category = 'probe'")
         ->assertSee('Replaying the last 7 days')
         ->assertDontSee('Subjects matched')
         ->call('loadBacktest')
@@ -75,7 +75,7 @@ test('the rule editor opens before its backtest, which loads after and is kept f
 
     Livewire::test('pages::rules.index')
         ->call('newRule')
-        ->set('source', "BAN ip FOR 1 DAY WHERE category = 'probe'")
+        ->set('source', "BLOCK ip FOR 1 DAY WHERE category = 'probe'")
         ->assertSee('Subjects matched')
         ->assertDontSee('Replaying the last 7 days');
 });
@@ -88,7 +88,7 @@ test('a plain rule\'s backtest counts each subject\'s requests and sites across 
     EdgeRequest::factory()->for($shop)->fromNetwork(7922, 'Comcast', NetworkKind::Unknown)->create(['client_ip' => '203.0.113.7', 'path' => '/.git/config', 'occurred_at' => now()->subHour()]);
     EdgeRequest::factory()->for($shop)->create(['client_ip' => '192.0.2.9', 'path' => '/.env']);
 
-    $backtest = app(BacktestRule::class)->handle($user->currentTeam, RuleScript::parse("BAN ip FOR 1 DAY WHERE category = 'probe'"));
+    $backtest = app(BacktestRule::class)->handle($user->currentTeam, RuleScript::parse("BLOCK ip FOR 1 DAY WHERE category = 'probe'"));
 
     expect($backtest->subjectCount)->toBe(2)
         ->and($backtest->requestCount)->toBe(4)

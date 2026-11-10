@@ -35,6 +35,7 @@ type AskPermission struct {
 
 	endpoint *url.URL
 	client   *http.Client
+	known    func(name string) bool
 }
 
 // CaddyModule returns the Caddy module information.
@@ -53,6 +54,7 @@ func (p *AskPermission) Provision(caddy.Context) error {
 		return fmt.Errorf("nicetry_ask endpoint: %v", err)
 	}
 	p.endpoint = endpoint
+	p.known = originKnown
 	p.client = &http.Client{
 		Timeout: 10 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -72,6 +74,10 @@ func (p *AskPermission) Validate() error {
 
 // CertificateAllowed asks the endpoint about name. Its errors name the endpoint (never the token), and
 // a refusal wraps caddytls.ErrPermissionDenied, so Caddy tells it apart from a failure to ask.
+//
+// Caddy asks before it will even load a certificate it already has, so an edge restarted while the app
+// is down would fail every handshake. When the app can't answer (it's unreachable or erroring, not
+// refusing), a hostname the edge already routes is allowed; the app's own "no" always stands.
 func (p *AskPermission) CertificateAllowed(ctx context.Context, name string) error {
 	ask := *p.endpoint
 	query := ask.Query()
@@ -86,10 +92,16 @@ func (p *AskPermission) CertificateAllowed(ctx context.Context, name string) err
 
 	resp, err := p.client.Do(req)
 	if err != nil {
+		if p.known(name) {
+			return nil
+		}
 		return fmt.Errorf("asking %s whether %s may have a certificate: %v", p.Endpoint, name, err)
 	}
 	_ = resp.Body.Close()
 
+	if resp.StatusCode >= 500 && p.known(name) {
+		return nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("%s: %w (%s answered %d)", name, caddytls.ErrPermissionDenied, p.Endpoint, resp.StatusCode)
 	}

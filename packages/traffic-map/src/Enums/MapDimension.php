@@ -14,6 +14,7 @@ enum MapDimension: string
     case Country = 'country';
     case Path = 'path';
     case Client = 'client';
+    case NetworkCategory = 'category';
 
     public function label(): string
     {
@@ -25,6 +26,7 @@ enum MapDimension: string
             self::Country => __('Country'),
             self::Path => __('Path'),
             self::Client => __('Client'),
+            self::NetworkCategory => __('ASN category'),
         };
     }
 
@@ -38,6 +40,7 @@ enum MapDimension: string
             self::Country => __('One tile per country the traffic came from.'),
             self::Path => __('One tile per path category (probes, assets, pages).'),
             self::Client => __('One tile per client profile (clean, spoofed, outdated).'),
+            self::NetworkCategory => __('One tile per kind of network the traffic came from (hosting, ISP, business).'),
         };
     }
 
@@ -49,6 +52,6 @@ enum MapDimension: string
      */
     public static function forTeam(): array
     {
-        return [self::Domain, self::Country, self::Ip, self::Path, self::BotTag, self::Client];
+        return [self::Domain, self::Country, self::Ip, self::NetworkCategory, self::Path, self::BotTag, self::Client];
     }
 }

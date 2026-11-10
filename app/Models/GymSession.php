@@ -263,6 +263,30 @@ class GymSession extends Model
     }
 
     /**
+     * Determine if the visit ends in a block whatever the visitor does: a routine it's in exits with Block
+     * (routines stack, and the strictest exit wins), like one for countries a site doesn't serve. Activity
+     * shows such a visit as Blocked. A visitor turned away for failing an obstacle was in the gym, so that
+     * isn't one. Needs the routines loaded with their exit actions.
+     */
+    public function endsInBlock(): bool
+    {
+        return $this->status !== GymSessionStatus::Cleared
+            && $this->routines->isNotEmpty()
+            && GymExit::strictest($this->routines->pluck('exit_action')) === GymExit::Block;
+    }
+
+    /**
+     * Determine if the visitor was blocked without ever seeing the gym: the visit ends in a block and no
+     * routine it's in has an obstacle. Needs the routines loaded with their obstacles and exit actions.
+     */
+    public function wasBlockedOutright(): bool
+    {
+        return $this->endsInBlock()
+            && $this->routines->isNotEmpty()
+            && $this->routines->every(fn (GymRoutine $routine) => $routine->obstacles === []);
+    }
+
+    /**
      * Get the seconds the visitor has spent in the gym.
      */
     public function secondsInGym(): int

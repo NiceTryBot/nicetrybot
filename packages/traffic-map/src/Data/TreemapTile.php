@@ -20,6 +20,7 @@ class TreemapTile
         public readonly string $color,
         public readonly bool $hot,
         public readonly string $size,
+        public readonly ?TreemapClient $client = null,
     ) {}
 
     public function suspectPct(): int

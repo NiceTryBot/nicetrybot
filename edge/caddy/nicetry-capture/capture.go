@@ -64,7 +64,7 @@ func (c *Capture) Provision(ctx caddy.Context) error {
 	if c.Interval <= 0 {
 		c.Interval = caddy.Duration(30 * time.Second)
 	}
-	c.targets = sharedTargets(c.Endpoint, c.Token, time.Duration(c.Interval), "captures", false)
+	c.targets = sharedTargets(c.Endpoint, c.Token, time.Duration(c.Interval), "captures", false, "captures")
 	return nil
 }
 
@@ -288,8 +288,9 @@ var (
 )
 
 // sharedTargets returns one poller per endpoint and token, shared by every site and kept across reloads.
-// listKey names the JSON array to read; foldCase makes path globs match regardless of case.
-func sharedTargets(endpoint, token string, interval time.Duration, listKey string, foldCase bool) *targetSet {
+// listKey names the JSON array to read; foldCase makes path globs match regardless of case; name is
+// where the last good copy lives (edge/<name>, lastgood.go).
+func sharedTargets(endpoint, token string, interval time.Duration, listKey string, foldCase bool, name string) *targetSet {
 	pollersMu.Lock()
 	defer pollersMu.Unlock()
 
@@ -301,24 +302,45 @@ func sharedTargets(endpoint, token string, interval time.Duration, listKey strin
 	ts := &targetSet{}
 	ts.current.Store(&[]target{})
 	pollers[key] = ts
-	go ts.poll(endpoint, token, interval, listKey, foldCase)
+	go ts.poll(endpoint, token, interval, listKey, foldCase, name)
 	return ts
 }
 
-func (ts *targetSet) poll(endpoint, token string, interval time.Duration, listKey string, foldCase bool) {
+// restore starts the list from its last good copy, reporting how many targets that gave.
+func (ts *targetSet) restore(store *lastGood, name, listKey string, foldCase bool) (int, bool) {
+	logger := caddy.Log().Named("nicetry_" + listKey)
+
+	body, age, ok := store.restore(name)
+	if !ok {
+		return 0, false
+	}
+	targets, err := parseTargets(body, listKey, foldCase)
+	if err != nil {
+		logger.Warn("couldn't use the stored list", zap.String("list", listKey), zap.Error(err))
+		return 0, false
+	}
+	ts.current.Store(&targets)
+	logger.Info("list restored", zap.String("list", listKey), zap.Int(listKey, len(targets)), zap.Duration("last_changed", age))
+	return len(targets), true
+}
+
+func (ts *targetSet) poll(endpoint, token string, interval time.Duration, listKey string, foldCase bool, name string) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	logger := caddy.Log().Named("nicetry_" + listKey)
 	lastCount := -1
 	etag := ""
 
+	ts.restore(sharedLastGood(), name, listKey, foldCase)
+
 	for {
-		targets, newEtag, err := fetchTargets(client, endpoint, token, listKey, foldCase, etag)
+		targets, newEtag, body, err := fetchTargets(client, endpoint, token, listKey, foldCase, etag)
 		switch {
 		case err != nil:
 			logger.Warn("keeping the last list", zap.String("list", listKey), zap.Error(err))
 		case targets != nil:
 			ts.current.Store(&targets)
 			etag = newEtag
+			sharedLastGood().save(name, body)
 			if len(targets) != lastCount {
 				logger.Info("list updated", zap.String("list", listKey), zap.Int(listKey, len(targets)))
 				lastCount = len(targets)
@@ -328,12 +350,12 @@ func (ts *targetSet) poll(endpoint, token string, interval time.Duration, listKe
 	}
 }
 
-// fetchTargets asks for the current list. An unchanged list (304) comes back as nil, nil; an empty one
-// as an empty, non-nil slice.
-func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase bool, etag string) ([]target, string, error) {
+// fetchTargets asks for the current list, and also returns the body it came in. An unchanged list (304)
+// comes back as nil, nil; an empty one as an empty, non-nil slice.
+func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase bool, etag string) ([]target, string, []byte, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
@@ -345,17 +367,31 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
-		return nil, etag, nil
+		return nil, etag, nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("%s list returned %d", listKey, resp.StatusCode)
+		return nil, "", nil, fmt.Errorf("%s list returned %d", listKey, resp.StatusCode)
 	}
 
+	// A trigger list for rule verdicts lists every client holding one, so it can run large.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, "", nil, err
+	}
+	targets, err := parseTargets(body, listKey, foldCase)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return targets, resp.Header.Get("ETag"), body, nil
+}
+
+// parseTargets reads a list as the app sends it.
+func parseTargets(body []byte, listKey string, foldCase bool) ([]target, error) {
 	type entry struct {
 		ID      int      `json:"id"`
 		Hosts   []string `json:"hosts"`
@@ -380,16 +416,15 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 		} `json:"watch"`
 	}
 
-	// A trigger list for rule verdicts lists every client holding one, so it can run large.
 	var payload map[string]json.RawMessage
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&payload); err != nil {
-		return nil, "", err
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
 	}
 
 	var entries []entry
 	if raw, ok := payload[listKey]; ok {
 		if err := json.Unmarshal(raw, &entries); err != nil {
-			return nil, "", err
+			return nil, err
 		}
 	}
 
@@ -462,7 +497,7 @@ func fetchTargets(client *http.Client, endpoint, token, listKey string, foldCase
 		}
 		targets = append(targets, target{ID: c.ID, Hosts: hosts, Method: method, Path: glob, Clients: clients, Limited: c.Limited, Rules: rules, env: env, Request: c.Request && !tagOnly, Watch: watch, Component: component, TagOnly: tagOnly, ResponseWatch: watches})
 	}
-	return targets, resp.Header.Get("ETag"), nil
+	return targets, nil
 }
 
 // GlobRegexp turns a capture path into an anchored regexp: `*` matches anything, including slashes.

@@ -81,16 +81,23 @@ enum ViewSlot: string
     case ActivityMap = 'activity-map';
 
     /**
-     * The Activity page's right-click menu on a client, after the core's items: menu items. Its views
-     * get the $team, and draw in the menu's Alpine scope, with the client's kind (ip or ja4), value and,
-     * for an IP, its asn if known.
+     * The right-click menu on a client, on the Activity page after the core's items and on the Traffic
+     * Map page on its own: menu items. Its views get the $team, and draw in the menu's Alpine scope, with
+     * open, the client's kind (ip or ja4), value and, for an IP, its asn if known.
      * The menu is hidden until opened, so what an item opens goes in ActivityModals.
      */
     case ActivityClientMenu = 'activity-client-menu';
 
     /**
-     * The end of the Activity page, after its own modals: modals, and whatever else its menu items
-     * open. Its views get the $team.
+     * The end of the Activity and Traffic Map pages, after their own modals: modals, and whatever else
+     * their menu items open. Its views get the $team.
      */
     case ActivityModals = 'activity-modals';
+
+    /**
+     * The admin White List page's "Good bots" tab, which only appears while something fills it: a panel
+     * of ready-made allow lists (the Nice Bots add-on). Admin-only, so the views can embed a Livewire
+     * component behind a @can('administer') check.
+     */
+    case WhiteListGoodBots = 'white-list-good-bots';
 }

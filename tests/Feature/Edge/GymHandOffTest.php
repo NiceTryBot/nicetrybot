@@ -67,7 +67,7 @@ test('a matching visitor gets the gym in place of the page, and a reload carries
     $routine = gymbrosRoutine();
 
     $first = gymCheck('sign.example', '/gymbros?ref=x')
-        ->assertOk()
+        ->assertForbidden()
         ->assertSee('Spot me, bro')
         ->assertDontSee('NiceTry')
         ->assertDontSee('_nicetry', escape: false)
@@ -86,7 +86,7 @@ test('a matching visitor gets the gym in place of the page, and a reload carries
         ->user_agent->toBe('curl/8.7.1');
 
     gymCheck('sign.example', '/gymbros?ref=x', [GymSession::SESSION_COOKIE => $first->getCookie(GymSession::SESSION_COOKIE, decrypt: false)->getValue()])
-        ->assertOk();
+        ->assertForbidden();
 
     expect(GymSession::count())->toBe(1);
 });
@@ -95,7 +95,7 @@ test('a visitor on the domain\'s preview gets the gym too', function () {
     gymbrosRoutine();
 
     gymCheck('sign-example.preview.example', '/gymbros')
-        ->assertOk()
+        ->assertForbidden()
         ->assertSee('Spot me, bro');
 });
 
@@ -120,18 +120,18 @@ test('a valid pass skips the gym, and a forged, expired or other team\'s pass do
 
     gymCheck('sign.example', '/gymbros', [GymSession::PASS_COOKIE => $pass])->assertNoContent();
 
-    gymCheck('sign.example', '/gymbros', [GymSession::PASS_COOKIE => implode('.', [$team, $expires + 86400, $token, Str::afterLast($pass, '.')])])->assertOk();
-    gymCheck('sign.example', '/gymbros', [GymSession::PASS_COOKIE => $otherTeams])->assertOk();
+    gymCheck('sign.example', '/gymbros', [GymSession::PASS_COOKIE => implode('.', [$team, $expires + 86400, $token, Str::afterLast($pass, '.')])])->assertForbidden();
+    gymCheck('sign.example', '/gymbros', [GymSession::PASS_COOKIE => $otherTeams])->assertForbidden();
 
     $this->travel(2)->hours();
-    gymCheck('sign.example', '/gymbros', [GymSession::PASS_COOKIE => $pass])->assertOk();
+    gymCheck('sign.example', '/gymbros', [GymSession::PASS_COOKIE => $pass])->assertForbidden();
 });
 
 test('the page the visitor returns to always stays on the site', function () {
     gymbrosRoutine();
 
     gymCheck('sign.example', '//evil.example/gymbros')->assertNoContent();
-    gymCheck('sign.example', '/gymbros//evil.example')->assertOk();
+    gymCheck('sign.example', '/gymbros//evil.example')->assertForbidden();
 
     expect(GymSession::sole()->destination)->toBe('/gymbros//evil.example');
 });
@@ -215,7 +215,7 @@ test('the reload a background request asks for starts the gym, and a visitor mid
     gymbrosRoutine()->update(['conditions' => []]);
 
     gymCheck('sign.example', '/dashboard/login', [GymSession::SESSION_COOKIE => 'reload'])
-        ->assertOk()
+        ->assertForbidden()
         ->assertSee('Spot me, bro');
 
     $session = GymSession::sole();
@@ -234,11 +234,11 @@ test('a visitor sent to the gym keeps the client hints the edge passes on from t
     gymbrosRoutine();
 
     test()->withToken('edge-token')
-        ->withHeaders(['X-NiceTry-Host' => 'sign.example', 'X-NiceTry-Uri' => '/gymbros', 'X-NiceTry-Client-Ip' => '203.0.113.7', 'Sec-CH-UA' => '"Chromium";v="152"', 'Sec-CH-UA-Platform' => '"iOS"'])
+        ->withHeaders(['X-NiceTry-Host' => 'sign.example', 'X-NiceTry-Uri' => '/gymbros', 'X-NiceTry-Client-Ip' => '203.0.113.7', 'Sec-CH-UA' => '"Chromium";v="152"', 'Sec-CH-UA-Platform' => '"Windows"'])
         ->get(route('edge.gym.check'))
-        ->assertOk();
+        ->assertForbidden();
 
-    expect(GymSession::sole()->clientHint->value)->toBe('"Chromium";v="152" | "iOS"');
+    expect(GymSession::sole()->clientHint->value)->toBe('"Chromium";v="152" | "Windows"');
 });
 
 test('the edge gets its feeds gzipped when it accepts gzip, with ETags from the plain list', function () {
