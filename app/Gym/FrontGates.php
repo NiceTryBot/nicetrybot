@@ -4,6 +4,7 @@ namespace App\Gym;
 
 use App\Addons\AddonSwitchboard;
 use App\Data\GymVisitor;
+use App\Data\LiveRequest;
 use App\Gym\Contracts\FrontGate;
 use App\Models\Domain;
 use Illuminate\Contracts\Container\Container;
@@ -29,10 +30,10 @@ class FrontGates
     /**
      * Get the first gate's answer for this visitor, or null when none holds them.
      */
-    public function answer(Request $request, Domain $domain, GymVisitor $visitor): ?Response
+    public function answer(Request $request, Domain $domain, GymVisitor $visitor, LiveRequest $live): ?Response
     {
         foreach (app(AddonSwitchboard::class)->active($this->container->tagged(self::TAG)) as $gate) {
-            if ($gate instanceof FrontGate && ($response = $gate->handle($request, $domain, $visitor)) !== null) {
+            if ($gate instanceof FrontGate && ($response = $gate->handle($request, $domain, $visitor, $live)) !== null) {
                 return $response;
             }
         }

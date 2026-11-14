@@ -1,6 +1,7 @@
 package nicetrycapture
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -183,5 +184,41 @@ func TestAGymCookieKeepsATaggedBrowserInViewWhenItsFingerprintChanges(t *testing
 	resumed.AddCookie(&http.Cookie{Name: "_q_pass", Value: "p"})
 	if ts.match(resumed) == nil {
 		t.Error("the gym cookie should keep the browser in view")
+	}
+}
+
+func TestTheGymsAnswerIsHeldAsLongAsItAsks(t *testing.T) {
+	check := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "30")
+		w.Header().Set("Nice-Challenge", "https://sign.example/_q/abc")
+		w.Header().Set("X-NiceTry-Hold", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":"verification_required"}`)
+	}))
+	defer check.Close()
+
+	start := time.Now()
+	w, o := serve(gymFor(check.URL), "https://sign.example/gymbros")
+
+	if o.called || w.Code != http.StatusTooManyRequests || time.Since(start) < time.Second {
+		t.Fatalf("expected the answer held a second, got %d after %v (origin called: %v)", w.Code, time.Since(start), o.called)
+	}
+	if w.Header().Get("Nice-Challenge") != "https://sign.example/_q/abc" || w.Header().Get("X-NiceTry-Hold") != "" {
+		t.Errorf("expected the challenge passed on and the hold kept back, got %v", w.Header())
+	}
+}
+
+func TestAHeldAnswerGoesBackWhenTheClientLeaves(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "https://sign.example/gymbros", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	r = r.WithContext(ctx)
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+
+	if held := holdGymAnswer(r, "20"); held > time.Second {
+		t.Errorf("expected the hold to end when the client left, held %v", held)
+	}
+	if held := holdGymAnswer(r, "nonsense"); held != 0 {
+		t.Errorf("expected no hold for a bad header, held %v", held)
 	}
 }

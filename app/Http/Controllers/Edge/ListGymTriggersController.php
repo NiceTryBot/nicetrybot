@@ -45,7 +45,7 @@ class ListGymTriggersController extends Controller
      *
      * Such an edge also gets the add-ons' cookie triggers (GymTriggerSources): limited to no client, so it
      * asks only about requests carrying a gym cookie, or matching one of the trigger's rules, on any
-     * domain, observing or not.
+     * domain, observing or not; or, for one that says it isn't limited, about every request there.
      */
     public function __invoke(Request $request, GymTriggerSources $triggerSources): JsonResponse
     {
@@ -105,7 +105,7 @@ class ListGymTriggersController extends Controller
             'method' => null,
             'path' => $trigger['path'],
             'clients' => [],
-            'limited' => true,
+            'limited' => $trigger['limited'] ?? true,
             'rules' => $trigger['rules'] ?? [],
         ], $triggerSources->cookieTriggers());
 

@@ -1,0 +1,26 @@
+{
+    "name": "nicetry/swarm-mode",
+    "description": "Swarm Mode: when several IPs hit errors on the same URL (or a site's Livewire endpoint) within a minute, that URL or site goes into Swarm Mode for a few minutes, and your rules can act on everyone there. Comes with an editable rule pack: the swarm rules, and a Bouncer rule that has every visitor tick one box while it's on.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\SwarmMode\\": "src/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Swarm Mode",
+            "edition": "free",
+            "needs": [
+                "rule-packs"
+            ]
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\SwarmMode\\SwarmModeServiceProvider"
+            ]
+        }
+    }
+}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +51,19 @@ const (
 // gym no-show), when the request matches one of those rules that one request can decide, or, by the
 // edge's own count, when it collects too many 404s or sends a burst of requests within the tarpit's
 // window. The edge counts on its own because rules land a minute or more after the requests they judge.
+//
+// A tarpit can also hold the origin's answer when its status is one of the tarpit's statuses (a 404, a
+// 403, a 500…, from the rules the app sends that read only the status), before the answer goes back. Any
+// tarpit may have a cooldown ladder: a client quiet for its current try's cooldown (the cooldowns in turn)
+// steps back one try. A request is held by one tarpit at most, and a status hold lets a static asset
+// through when the tarpit spares them: a visitor's broken image, stylesheet or script link never waits.
+//
+// The older trap form (a tarpit that knows nothing of clients, holding requests containing one of its
+// strings or answers with one of its statuses) is still read, for an app that sends it.
+//
+// Swarm mode handles a distributed flood: when more than a tarpit's swarm count of distinct IPs are held
+// within its swarm window (each too quiet on its own to climb the ladder), every new IP skips the ladder
+// and waits the cap at once, until the flood lets up. Such a hold is logged with tarpit_swarm.
 //
 // Holding costs a goroutine and a connection, so each tarpit caps the requests it holds at once, and
 // the handler caps them across every tarpit (max_held). A request past a cap is answered at once: a 429,
@@ -133,18 +148,44 @@ func (t *Tarpit) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 	}
 
-	if !anyCountsNotFound(pits) {
+	// A request for a static asset (a visitor's broken image, stylesheet, script or font link) is let
+	// through a 404 count or status trap that spares assets (skipAssets, from Tarpit Pro): a real page
+	// with one dead reference mustn't tarpit the reader. Probe traps and client tarpits already ran above.
+	isAsset := isAssetPath(cleanedPath(r))
+
+	// A request a tarpit already took isn't held again for its answer's status.
+	var trap *tarpitPit
+	if pit == nil {
+		if t := statusTrap(pits); t != nil && !(t.skipAssets && isAsset) {
+			trap = t
+		}
+	}
+	if trap == nil && !anyCountsNotFound(pits) {
 		return next.ServeHTTP(w, r)
 	}
 	rec := &statusRecorder{ResponseWriter: w}
-	err := next.ServeHTTP(rec, r)
+	var out http.ResponseWriter = rec
+	var trapped *statusTrapWriter
+	if trap != nil {
+		trapped = &statusTrapWriter{ResponseWriter: rec, req: r, statuses: trap.statuses, hold: func() { t.set.holdAnswer(trap, "status", ip, r) }}
+		out = trapped
+	}
+	err := next.ServeHTTP(out, r)
 	status := rec.status()
 	if he, ok := err.(caddyhttp.HandlerError); ok && he.StatusCode != 0 {
 		status = he.StatusCode
+		// Nothing was written: the server answers the error after this returns, so hold it here.
+		if trapped != nil && trap.statuses[status] && !trapped.decided {
+			trapped.decided = true
+			trapped.hold()
+		}
 	}
-	if status == http.StatusNotFound {
+	// Only the origin's 404s count: the gym answering a routine's exit with a 404 isn't the client's.
+	if status == http.StatusNotFound && !gymAnswered(r) {
 		for _, p := range pits {
-			p.countNotFound(ip, time.Now())
+			if !(p.skipAssets && isAsset) {
+				p.countNotFound(ip, time.Now())
+			}
 		}
 	}
 	return err
@@ -161,6 +202,13 @@ type tarpitPit struct {
 	after    string // continue, not_found, or hangup
 	forget   time.Duration
 
+	// catches is what a trap catches: "probe" (a request containing one of probes) or "status" (an answer
+	// whose status is one of statuses). "" for a tarpit its clients are put in.
+	catches   string
+	probes    []string
+	statuses  map[int]bool    // the response statuses a status trap holds (404, 403, 500…)
+	cooldowns []time.Duration // the quiet needed to step back from each strike, in turn
+
 	clients map[string]map[string]string // ip → ja4 ("" for any) → why
 	byJA4   map[string]string            // ja4 → why, for clients listed by fingerprint alone
 	rules   []edgeRule
@@ -168,6 +216,15 @@ type tarpitPit struct {
 
 	notFound *tarpitLimit
 	burst    *tarpitLimit
+
+	// swarmCount and swarmWindow are swarm mode: when more than swarmCount distinct IPs are held within
+	// swarmWindow, every new IP waits the cap at once instead of climbing the ladder. Off when zero.
+	swarmCount  int
+	swarmWindow time.Duration
+
+	// skipAssets lets a static asset through a 404 count or status trap (Tarpit Pro). Off, assets are
+	// held like any other 404.
+	skipAssets bool
 
 	tally *tarpitTally
 }
@@ -186,6 +243,13 @@ type tarpitTally struct {
 	notFound map[string]*tarpitWindow
 	burst    map[string]*tarpitWindow
 	held     atomic.Int64
+
+	// swarm tracks, for swarm mode, each IP last held and whether more than the tarpit's count were held
+	// within its window. swarmOn is recomputed at most once a second (swarmCheckedAt), so the hot path
+	// only reads it.
+	swarm          map[string]time.Time
+	swarmOn        bool
+	swarmCheckedAt time.Time
 }
 
 type tarpitTries struct {
@@ -202,11 +266,17 @@ type tarpitWindow struct {
 }
 
 func newTarpitTally() *tarpitTally {
-	return &tarpitTally{tries: map[string]*tarpitTries{}, notFound: map[string]*tarpitWindow{}, burst: map[string]*tarpitWindow{}}
+	return &tarpitTally{tries: map[string]*tarpitTries{}, notFound: map[string]*tarpitWindow{}, burst: map[string]*tarpitWindow{}, swarm: map[string]time.Time{}}
 }
 
 // admits says why the request belongs in the tarpit, or "" when it doesn't.
 func (p *tarpitPit) admits(r *http.Request, ip, ja4 string, burst bool, now time.Time) string {
+	if p.catches != "" {
+		if p.catches == "probe" && p.probed(r) {
+			return "probe"
+		}
+		return ""
+	}
 	if byJA4, ok := p.clients[ip]; ok {
 		if why, ok := byJA4[""]; ok {
 			return why
@@ -234,6 +304,79 @@ func (p *tarpitPit) admits(r *http.Request, ip, ja4 string, burst bool, now time
 	}
 	return ""
 }
+
+// probed says whether the request's path or query contains one of the trap's strings, ignoring case.
+// The path is the cleaned, decoded one, so %2eenv and /x/../.env are caught as .env.
+func (p *tarpitPit) probed(r *http.Request) bool {
+	query := r.URL.RawQuery
+	if unescaped, err := url.QueryUnescape(query); err == nil {
+		query = unescaped
+	}
+	target := strings.ToLower(cleanedPath(r) + "?" + query)
+	for _, probe := range p.probes {
+		if strings.Contains(target, probe) {
+			return true
+		}
+	}
+	return false
+}
+
+// tarpitAssetExts are the extensions a 404 trap lets through: the static files a browser fetches on its
+// own (styles, scripts, source maps, images, fonts, media). A dead link to one is a page's problem, not a
+// scan, so it never counts as a 404. Probe matching ignores this: a probe string still catches .env & co.
+var tarpitAssetExts = map[string]bool{
+	"css": true, "js": true, "mjs": true, "cjs": true, "map": true,
+	"png": true, "jpg": true, "jpeg": true, "gif": true, "webp": true, "avif": true,
+	"svg": true, "svgz": true, "ico": true, "bmp": true,
+	"woff": true, "woff2": true, "ttf": true, "otf": true, "eot": true,
+	"mp4": true, "webm": true, "mov": true, "mp3": true, "wav": true, "ogg": true, "m4a": true,
+}
+
+// isAssetPath reports whether a path names a static asset by its extension.
+func isAssetPath(p string) bool {
+	ext := strings.ToLower(strings.TrimPrefix(path.Ext(p), "."))
+	return ext != "" && tarpitAssetExts[ext]
+}
+
+// statusTrap is the first of the host's tarpits that holds answers by status, or nil: a status trap, or
+// a tarpit whose rules hold some statuses.
+func statusTrap(pits []*tarpitPit) *tarpitPit {
+	for _, p := range pits {
+		if p.catches == "status" || (p.catches == "" && len(p.statuses) > 0) {
+			return p
+		}
+	}
+	return nil
+}
+
+// statusTrapWriter holds an answer before its header goes back to the client when its status is one the
+// trap holds, and passes every other answer straight through.
+type statusTrapWriter struct {
+	http.ResponseWriter
+	req      *http.Request
+	statuses map[int]bool
+	hold     func()
+	decided  bool
+}
+
+// WriteHeader holds the answer when its status is one the trap holds and it's the origin's: the gym's
+// or the Bot Bouncer's own 403 (or 404, or 429) is never held, or the challenge would wait on itself.
+func (w *statusTrapWriter) WriteHeader(code int) {
+	if !w.decided && code >= 200 {
+		w.decided = true
+		if w.statuses[code] && !gymAnswered(w.req) {
+			w.hold()
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusTrapWriter) Write(b []byte) (int, error) {
+	w.decided = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusTrapWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // countBurst counts the request towards the tarpit's burst limit and says whether the client is over it
 // (or still flagged from going over it).
@@ -302,25 +445,95 @@ func (p *tarpitPit) flagged(windows map[string]*tarpitWindow, ip string, now tim
 }
 
 // try counts the client's request in the tarpit and returns which try it is, from 1. A client that was
-// quiet for the forget time starts over.
+// quiet for the forget time starts over. In a trap each try is a strike, and before counting it the
+// client steps back one strike for each stretch of quiet lasting that strike's cooldown (the trap's
+// cooldowns in turn, the last one holding past the ladder's end).
 func (p *tarpitPit) try(ip string, now time.Time) int {
 	p.tally.mu.Lock()
 	defer p.tally.mu.Unlock()
+	n, _ := p.tryLocked(ip, now)
+	return n
+}
 
+// tryLocked is try's body, with the tally already locked. It also reports whether the client is a
+// newcomer: it had no live strike before this request (brand new, or stepped/forgotten all the way back),
+// which is who swarm mode sends straight to the cap.
+func (p *tarpitPit) tryLocked(ip string, now time.Time) (int, bool) {
 	tries, ok := p.tally.tries[ip]
 	if !ok {
 		if len(p.tally.tries) >= tarpitMaxTracked {
-			return p.free + 1
+			return p.free + 1, true
 		}
 		tries = &tarpitTries{}
 		p.tally.tries[ip] = tries
 	}
-	if now.Sub(tries.last) > p.forget {
+	quiet := now.Sub(tries.last)
+	if quiet > p.forget {
 		tries.n = 0
 	}
+	for len(p.cooldowns) > 0 && tries.n > 0 {
+		step := p.cooldownFor(tries.n)
+		if quiet < step {
+			break
+		}
+		quiet -= step
+		tries.n--
+	}
+	newcomer := tries.n == 0
 	tries.n++
 	tries.last = now
-	return tries.n
+	return tries.n, newcomer
+}
+
+// waitFor counts the request and returns how long to hold it, and whether swarm mode set that wait. In
+// swarm mode (more than swarmCount IPs held within swarmWindow) a newcomer skips the ladder and waits the
+// cap at once. Every held request (its wait over zero) is recorded, so the swarm sustains itself while
+// new IPs keep coming and lapses once they stop.
+func (p *tarpitPit) waitFor(ip string, now time.Time) (int, time.Duration, bool) {
+	p.tally.mu.Lock()
+	defer p.tally.mu.Unlock()
+
+	try, newcomer := p.tryLocked(ip, now)
+	delay := p.delayFor(try)
+	swarmed := false
+	if p.swarmCount > 0 && newcomer && p.swarmActiveLocked(now) {
+		delay, swarmed = p.cap, true
+	}
+	if delay > 0 {
+		if _, ok := p.tally.swarm[ip]; ok || len(p.tally.swarm) < tarpitMaxTracked {
+			p.tally.swarm[ip] = now
+		}
+	}
+	return try, delay, swarmed
+}
+
+// swarmActiveLocked reports whether more than swarmCount distinct IPs have been held within swarmWindow.
+// It re-counts (pruning IPs past the window) at most once a second, so a flood of held requests doesn't
+// each pay an O(n) scan; between recounts the last answer stands.
+func (p *tarpitPit) swarmActiveLocked(now time.Time) bool {
+	if now.Sub(p.tally.swarmCheckedAt) >= time.Second {
+		cutoff := now.Add(-p.swarmWindow)
+		for ip, last := range p.tally.swarm {
+			if last.Before(cutoff) {
+				delete(p.tally.swarm, ip)
+			}
+		}
+		p.tally.swarmOn = len(p.tally.swarm) > p.swarmCount
+		p.tally.swarmCheckedAt = now
+	}
+	return p.tally.swarmOn
+}
+
+// cooldownFor is how long a client must be quiet to step back from the given strike: the trap's cooldowns
+// in turn, the last one holding for every strike past the ladder's end.
+func (p *tarpitPit) cooldownFor(strike int) time.Duration {
+	if len(p.cooldowns) == 0 || strike <= 0 {
+		return 0
+	}
+	if strike > len(p.cooldowns) {
+		strike = len(p.cooldowns)
+	}
+	return p.cooldowns[strike-1]
 }
 
 // delayFor is how long the given try is held: nothing for the free tries, then each delay in turn, and
@@ -364,6 +577,12 @@ func (p *tarpitPit) sweep(now time.Time) {
 			}
 		}
 	}
+	cutoff := now.Add(-p.swarmWindow)
+	for ip, last := range p.tally.swarm {
+		if last.Before(cutoff) {
+			delete(p.tally.swarm, ip)
+		}
+	}
 }
 
 func anyCountsNotFound(pits []*tarpitPit) bool {
@@ -378,23 +597,22 @@ func anyCountsNotFound(pits []*tarpitPit) bool {
 // hold makes the request wait as long as its try calls for. It reports whether it answered the request
 // itself (a 429, a 404, a hang-up, or a client that left), in which case nothing further in runs.
 func (s *tarpitSet) hold(p *tarpitPit, why, ip string, w http.ResponseWriter, r *http.Request, now time.Time) (bool, error) {
-	try := p.try(ip, now)
-	delay := p.delayFor(try)
+	try, delay, swarmed := p.waitFor(ip, now)
 	if delay == 0 {
-		logTarpit(r, p.id, why, try, 0, "free", false)
+		logTarpit(r, p.id, why, try, 0, "free", false, swarmed)
 		return false, nil
 	}
 
 	if !s.acquire(p) {
 		switch p.whenFull {
 		case "pass":
-			logTarpit(r, p.id, why, try, 0, "full", false)
+			logTarpit(r, p.id, why, try, 0, "full", false, swarmed)
 			return false, nil
 		case "hangup":
-			logTarpit(r, p.id, why, try, 0, "full", true)
+			logTarpit(r, p.id, why, try, 0, "full", true, swarmed)
 			return true, hangUp(w)
 		default:
-			logTarpit(r, p.id, why, try, 0, "full", true)
+			logTarpit(r, p.id, why, try, 0, "full", true, swarmed)
 			w.Header().Set("Retry-After", strconv.Itoa(int(delay.Seconds())))
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -403,29 +621,61 @@ func (s *tarpitSet) hold(p *tarpitPit, why, ip string, w http.ResponseWriter, r 
 	}
 	defer s.release(p)
 
-	start := time.Now()
-	timer := time.NewTimer(delay)
-	select {
-	case <-timer.C:
-	case <-r.Context().Done():
-		timer.Stop()
-		logTarpit(r, p.id, why, try, time.Since(start), "left", true)
+	held, left := waitOut(r, delay)
+	if left {
+		logTarpit(r, p.id, why, try, held, "left", true, swarmed)
 		return true, nil
 	}
 
-	held := time.Since(start)
 	switch p.after {
 	case "not_found":
-		logTarpit(r, p.id, why, try, held, "held", true)
+		logTarpit(r, p.id, why, try, held, "held", true, swarmed)
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNotFound)
 		return true, nil
 	case "hangup":
-		logTarpit(r, p.id, why, try, held, "held", true)
+		logTarpit(r, p.id, why, try, held, "held", true, swarmed)
 		return true, hangUp(w)
 	}
-	logTarpit(r, p.id, why, try, held, "held", false)
+	logTarpit(r, p.id, why, try, held, "held", false, swarmed)
 	return false, nil
+}
+
+// holdAnswer makes the origin's answer wait as long as the strike calls for, before it goes back. The
+// origin has already had the request, so nothing the tarpit does here keeps it off: when the tarpit is
+// full, or the client leaves, the answer just goes back.
+func (s *tarpitSet) holdAnswer(p *tarpitPit, why, ip string, r *http.Request) {
+	try, delay, swarmed := p.waitFor(ip, time.Now())
+	if delay == 0 {
+		logTarpit(r, p.id, why, try, 0, "free", false, swarmed)
+		return
+	}
+	if !s.acquire(p) {
+		logTarpit(r, p.id, why, try, 0, "full", false, swarmed)
+		return
+	}
+	defer s.release(p)
+
+	held, left := waitOut(r, delay)
+	outcome := "held"
+	if left {
+		outcome = "left"
+	}
+	logTarpit(r, p.id, why, try, held, outcome, false, swarmed)
+}
+
+// waitOut waits for the delay, or until the client gives up, and says how long it waited and whether
+// the client left.
+func waitOut(r *http.Request, delay time.Duration) (time.Duration, bool) {
+	start := time.Now()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return time.Since(start), false
+	case <-r.Context().Done():
+		return time.Since(start), true
+	}
 }
 
 // acquire takes a hold slot from the tarpit and from the edge, or reports that either is full.
@@ -460,7 +710,7 @@ func hangUp(w http.ResponseWriter) error {
 
 // logTarpit records what the tarpit did in the access log, once per request. A tarpit that answered the
 // request itself kept it off the origin: action blocked.
-func logTarpit(r *http.Request, id int, why string, try int, held time.Duration, outcome string, answered bool) {
+func logTarpit(r *http.Request, id int, why string, try int, held time.Duration, outcome string, answered, swarmed bool) {
 	extra, ok := r.Context().Value(caddyhttp.ExtraLogFieldsCtxKey).(*caddyhttp.ExtraLogFields)
 	if !ok {
 		return
@@ -470,6 +720,9 @@ func logTarpit(r *http.Request, id int, why string, try int, held time.Duration,
 	extra.Add(zap.Int("tarpit_try", try))
 	extra.Add(zap.Int64("tarpit_ms", held.Milliseconds()))
 	extra.Add(zap.String("tarpit_outcome", outcome))
+	if swarmed {
+		extra.Add(zap.Bool("tarpit_swarm", true))
+	}
 	if answered {
 		extra.Add(zap.String("action", "blocked"))
 	}
@@ -654,8 +907,18 @@ func (s *tarpitSet) parse(raw []byte) (*tarpitList, error) {
 			ID   int       `json:"id"`
 			Expr *ruleExpr `json:"expr"`
 		} `json:"rules"`
-		NotFound *limit `json:"not_found"`
-		Burst    *limit `json:"burst"`
+		NotFound   *limit `json:"not_found"`
+		Burst      *limit `json:"burst"`
+		Swarm      *limit `json:"swarm"`
+		SkipAssets bool   `json:"skip_assets"`
+		Statuses   []int  `json:"statuses"`
+		Cooldowns  []int  `json:"cooldowns"`
+		Trap       *struct {
+			Catches   string   `json:"catches"`
+			Strings   []string `json:"strings"`
+			Statuses  []int    `json:"statuses"`
+			Cooldowns []int    `json:"cooldowns"`
+		} `json:"trap"`
 	}
 	if err := json.Unmarshal(rawList, &entries); err != nil {
 		return nil, err
@@ -688,6 +951,44 @@ func (s *tarpitSet) parse(raw []byte) (*tarpitList, error) {
 			byJA4:    map[string]string{},
 			env:      env,
 			tally:    tally,
+		}
+		if e.Swarm != nil && e.Swarm.Count > 0 && e.Swarm.Within > 0 {
+			p.swarmCount = e.Swarm.Count
+			p.swarmWindow = time.Duration(e.Swarm.Within) * time.Second
+		}
+		p.skipAssets = e.SkipAssets
+		for _, seconds := range e.Cooldowns {
+			p.cooldowns = append(p.cooldowns, time.Duration(clamp(seconds, 1, 120))*time.Second)
+		}
+		for _, status := range e.Statuses {
+			if status >= 100 && status <= 599 {
+				if p.statuses == nil {
+					p.statuses = map[int]bool{}
+				}
+				p.statuses[status] = true
+			}
+		}
+		if e.Trap != nil && (e.Trap.Catches == "probe" || e.Trap.Catches == "status") {
+			p.catches = e.Trap.Catches
+			p.cooldowns = nil
+			for _, seconds := range e.Trap.Cooldowns {
+				p.cooldowns = append(p.cooldowns, time.Duration(clamp(seconds, 1, 120))*time.Second)
+			}
+			for _, probe := range e.Trap.Strings {
+				if probe = strings.ToLower(strings.TrimSpace(probe)); probe != "" {
+					p.probes = append(p.probes, probe)
+				}
+			}
+			p.statuses = map[int]bool{}
+			for _, status := range e.Trap.Statuses {
+				if status >= 100 && status <= 599 {
+					p.statuses[status] = true
+				}
+			}
+			// A probe trap with nothing to look for, or a status trap with no status, catches nothing; skip it.
+			if (p.catches == "probe" && len(p.probes) == 0) || (p.catches == "status" && len(p.statuses) == 0) {
+				continue
+			}
 		}
 		for _, d := range e.Delays {
 			p.delays = append(p.delays, time.Duration(clamp(d, 0, 300))*time.Second)

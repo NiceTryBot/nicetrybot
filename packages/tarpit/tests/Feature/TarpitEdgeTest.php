@@ -8,9 +8,11 @@ use App\Models\GymSession;
 use App\Models\Team;
 use App\Models\Verdict;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use NiceTry\Tarpit\Enums\TarpitAfterWait;
 use NiceTry\Tarpit\Enums\TarpitWhenFull;
 use NiceTry\Tarpit\Models\Tarpit;
+use NiceTry\Tarpit\Rules\StatusHolds;
 
 beforeEach(function () {
     config(['services.nicetry_edge.token' => 'edge-token']);
@@ -59,12 +61,41 @@ test('the edge hears each enabled tarpit with its hosts in Enforce mode, its wai
             'clients' => [['ip' => '203.0.113.20', 'ja4' => null, 'why' => 'verdict']],
             'not_found' => ['count' => 5, 'within' => 60],
             'burst' => null,
+            'statuses' => [],
+            'cooldowns' => [],
         ])
         ->and($response->json('tarpits.0.hosts'))->toContain('shop.example')->not->toContain('observed.example')
         ->and($response->json('tarpits.0.rules'))->toHaveCount(1)
         ->and($response->json('tarpits.0.rules.0.id'))->toBe($live->id)
         ->and($response->json('categories'))->not->toBeEmpty()
         ->and($response->json('domains.0.hostname'))->toBe('shop.example');
+});
+
+test('without Tarpit Pro the feed falls back to the free holds', function () {
+    $team = Team::factory()->create();
+    Domain::factory()->for($team)->verified()->enforcing()->create(['hostname' => 'shop.example']);
+
+    $tarpit = Tarpit::factory()->for($team)->create([
+        'max_delay_seconds' => 30,
+        'cooldowns' => [10, 20, 30, 60, 120],
+    ]);
+    $tarpit->rules()->attach(EdgeRule::factory()->for($team)->script("TAG ip AS 'errors' FOR 5 MINUTES WHERE status IN (403, 404, 500)")->create());
+
+    // Pro is on by default in tests (keys aren't enforced), so everything comes through.
+    $on = $this->withToken('edge-token')->getJson(route('edge.tarpits'))->json('tarpits.0');
+    expect($on['skip_assets'])->toBeTrue()
+        ->and($on['statuses'])->toBe([403, 404, 500])
+        ->and($on['cooldowns'])->toBe([10, 20, 30, 60, 120]);
+
+    // Turn Tarpit Pro off: the feed degrades to the free behaviour.
+    AddonSwitch::factory()->create(['slug' => Tarpit::PRO_ADDON]);
+    app(AddonSwitchboard::class)->forget();
+    Cache::flush();
+
+    $off = $this->withToken('edge-token')->getJson(route('edge.tarpits'))->json('tarpits.0');
+    expect($off['skip_assets'])->toBeFalse()
+        ->and($off['statuses'])->toBe([404]) // only the 404 survives
+        ->and($off['cooldowns'])->toBe([10]); // flat: the first value only
 });
 
 test('a tarpit taking no-shows lists clients that left the gym without running its script', function () {
@@ -111,4 +142,48 @@ test('a tarpit naming its domains covers only those', function () {
     $hosts = $this->withToken('edge-token')->getJson(route('edge.tarpits'))->json('tarpits.0.hosts');
 
     expect($hosts)->toContain('shop.example')->not->toContain('blog.example');
+});
+
+test('a status-only rule has the edge hold answers with its statuses; other rules feed requests and verdicts', function () {
+    $team = Team::factory()->create();
+    Domain::factory()->for($team)->verified()->enforcing()->create(['hostname' => 'shop.example']);
+    $statuses = EdgeRule::factory()->for($team)->script("TAG ip, ja4 AS 'errors' FOR 5 MINUTES WHERE (status = 404 OR status IN (403, 429, 500, 502)) AND action = 'passed'")->create();
+    $probes = EdgeRule::factory()->for($team)->script("TAG ip, ja4 AS 'probes' FOR 5 MINUTES WHERE path LIKE '%/.env%' OR path LIKE '%/.git/%'")->create();
+    $mixed = EdgeRule::factory()->for($team)->script("TAG ip AS 'mixed' FOR 5 MINUTES WHERE status = 401 AND path = '/login'")->create();
+    Verdict::factory()->create(['team_id' => $team->id, 'edge_rule_id' => $statuses->id, 'client_ip' => '203.0.113.20']);
+
+    $tarpit = Tarpit::factory()->for($team)->create();
+    $tarpit->rules()->attach([$statuses->id, $probes->id, $mixed->id]);
+
+    $response = $this->withToken('edge-token')->getJson(route('edge.tarpits'))->assertOk();
+
+    // 502 is never held (upstream down); the mixed rule reads more than the status, so it holds no answer.
+    expect($response->json('tarpits.0.statuses'))->toBe([403, 404, 429, 500])
+        ->and($response->json('tarpits.0.rules'))->toHaveCount(1)
+        ->and($response->json('tarpits.0.rules.0.id'))->toBe($probes->id)
+        ->and($response->json('tarpits.0.clients'))->toBe([['ip' => '203.0.113.20', 'ja4' => null, 'why' => 'verdict']]);
+});
+
+test('a trap from before rules filled every tarpit becomes a rule sending its clients there', function () {
+    $team = Team::factory()->create();
+    $status = Tarpit::factory()->for($team)->create(['name' => "Mike's 404s"]);
+    $probe = Tarpit::factory()->for($team)->create(['name' => 'Probes']);
+    DB::table('tarpit_traps')->insert([
+        ['tarpit_id' => $status->id, 'catches' => 1, 'strings' => null, 'statuses' => json_encode([403, 404]), 'cooldowns' => json_encode([10, 20])],
+        ['tarpit_id' => $probe->id, 'catches' => 2, 'strings' => json_encode(['.env', '.git/']), 'statuses' => null, 'cooldowns' => json_encode([30])],
+    ]);
+
+    (require base_path('packages/tarpit/database/migrations/2026_11_13_000003_turn_tarpit_traps_into_rules.php'))->up();
+
+    $statusRule = $status->rules()->sole();
+    $probeRule = $probe->rules()->sole();
+
+    expect(DB::table('tarpit_traps')->count())->toBe(0)
+        ->and($status->fresh()->cooldowns)->toBe([10, 20])
+        ->and($probe->fresh()->cooldowns)->toBe([30])
+        ->and($statusRule->name)->toBe("Mike's 404s")
+        ->and($statusRule->script()->destinations)->toBe(['TARPIT' => "Mike's 404s"])
+        ->and(StatusHolds::of($statusRule->script()))->toBe([403, 404])
+        ->and($probeRule->script()->isLive())->toBeTrue()
+        ->and($probeRule->source)->toContain("path LIKE '%.git/%'");
 });

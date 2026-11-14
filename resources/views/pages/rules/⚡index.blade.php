@@ -25,6 +25,9 @@ use App\Support\RuleDestinationError;
 use App\Support\RuleDestinations;
 use App\Support\RuleFieldDefinition;
 use App\Support\RuleFields;
+use App\Support\RuleFilter;
+use App\Support\RuleFilterCandidate;
+use App\Support\RuleFilters;
 use App\Support\RuleTemplates;
 use App\Support\ViewSlots;
 use Flux\Flux;
@@ -43,14 +46,27 @@ use Livewire\Component;
 
 new #[Title('Rules')] class extends Component
 {
-    #[Url(except: 'rules')]
-    public string $tab = 'rules';
+    /**
+     * Which rules the page shows: those that tag a client (tags), make one wait or keep it out
+     * (timeouts), or put a site or URL into a mode (modes); or the active verdicts.
+     */
+    #[Url(except: RuleBoardColumn::TAB_TIMEOUTS)]
+    public string $tab = RuleBoardColumn::TAB_TIMEOUTS;
 
     /**
      * How the rules are laid out: the board, by what happens to their clients, or the list.
      */
     #[Url(except: 'board')]
     public string $view = 'board';
+
+    /**
+     * What the add-ons' dropdowns narrow the rules to, by filter key (App\Support\RuleFilter). An empty
+     * value is "All active rules".
+     *
+     * @var array<string, string>
+     */
+    #[Url]
+    public array $filters = [];
 
     public bool $isEditing = false;
 
@@ -90,6 +106,16 @@ new #[Title('Rules')] class extends Component
 
     public function mount(): void
     {
+        if (! in_array($this->tab, [RuleBoardColumn::TAB_TAGS, RuleBoardColumn::TAB_TIMEOUTS, RuleBoardColumn::TAB_MODES, 'verdicts'], true)) {
+            $this->tab = RuleBoardColumn::TAB_TIMEOUTS;
+        }
+
+        // Opened without a tab, the page shows Timeouts, or the first tab with rules when it has none.
+        if (request()->query('tab') === null && $this->tabRuleIds[RuleBoardColumn::TAB_TIMEOUTS] === []) {
+            $this->tab = collect([RuleBoardColumn::TAB_TAGS, RuleBoardColumn::TAB_MODES])
+                ->first(fn (string $tab) => $this->tabRuleIds[$tab] !== []) ?? RuleBoardColumn::TAB_TIMEOUTS;
+        }
+
         if ($this->editingId !== null) {
             $this->edit($this->editingId);
         } elseif (is_string($draft = request()->query('draft')) && $this->canManage) {
@@ -126,10 +152,83 @@ new #[Title('Rules')] class extends Component
     #[Computed]
     public function rules(): Collection
     {
-        return $this->team->edgeRules()
+        $rules = $this->team->edgeRules()->getQuery()
             ->withCount(['verdicts as active_verdicts_count' => fn ($query) => $query->active()])
-            ->orderBy('name')
-            ->get();
+            ->orderBy('name');
+
+        app(RuleFilters::class)->apply($rules, $this->team, $this->filters);
+
+        return $rules->get();
+    }
+
+    /**
+     * The add-ons' dropdowns the team has something to pick in, by filter key.
+     *
+     * @return array<string, array{filter: RuleFilter, options: array<string, string>}>
+     */
+    #[Computed]
+    public function ruleFilters(): array
+    {
+        return app(RuleFilters::class)->for($this->team);
+    }
+
+    /**
+     * What each rule falls under in the add-ons' dropdowns (the pack it came from), by rule id, for its
+     * card.
+     *
+     * @return array<int, list<array{filter: string, value: string, label: string}>>
+     */
+    #[Computed]
+    public function ruleLabels(): array
+    {
+        return app(RuleFilters::class)->labels($this->team, $this->rules->modelKeys());
+    }
+
+    /**
+     * The rules the picked dropdowns stand for that the team doesn't have yet, as cards to add.
+     *
+     * @return list<array{filter: string, candidate: RuleFilterCandidate}>
+     */
+    #[Computed]
+    public function filterCandidates(): array
+    {
+        $cards = [];
+
+        foreach (app(RuleFilters::class)->candidates($this->team, $this->filters) as $filter => $candidates) {
+            foreach ($candidates as $candidate) {
+                $cards[] = ['filter' => $filter, 'candidate' => $candidate];
+            }
+        }
+
+        return $cards;
+    }
+
+    /**
+     * Add one of a picked dropdown's candidates to the team's rules: one of a rule pack's rules, say.
+     */
+    public function addFromFilter(string $filter, string $candidate): void
+    {
+        Gate::authorize('create', [EdgeRule::class, $this->team]);
+
+        $added = app(RuleFilters::class)->add($this->team, $this->filters, $filter, $candidate) ?? abort(404);
+        unset($this->rules, $this->ruleFilters, $this->filterCandidates, $this->ruleLabels);
+
+        Flux::toast(variant: 'success', text: $added === [] ? __('Already installed.') : __('Installed: :names.', ['names' => implode(', ', $added)]));
+    }
+
+    /**
+     * Determine if a dropdown narrows the rules, so an empty list says so rather than that there are none.
+     */
+    #[Computed]
+    public function isFiltered(): bool
+    {
+        foreach ($this->ruleFilters as $key => ['options' => $options]) {
+            if (is_string($value = $this->filters[$key] ?? null) && array_key_exists($value, $options)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -144,13 +243,77 @@ new #[Title('Rules')] class extends Component
     }
 
     /**
-     * Determine if the page shows the board. A team without rules gets the list, for its templates. The
-     * board stays put while a rule is edited: the editor opens over it in a modal.
+     * The board's columns under the tab that's open.
+     *
+     * @return list<array{column: RuleBoardColumn, cards: list<array{rule: EdgeRule, destinations: list<RuleDestination>, links: list<RuleDestination>}>}>
+     */
+    #[Computed]
+    public function tabBoard(): array
+    {
+        return array_values(array_filter($this->board, fn (array $lane) => $lane['column']->tab === $this->tab));
+    }
+
+    /**
+     * The ids of the rules under each tab: a rule shows under every tab one of its columns is in.
+     *
+     * @return array<string, list<int>>
+     */
+    #[Computed]
+    public function tabRuleIds(): array
+    {
+        $ids = [RuleBoardColumn::TAB_TAGS => [], RuleBoardColumn::TAB_TIMEOUTS => [], RuleBoardColumn::TAB_MODES => []];
+
+        foreach ($this->board as ['column' => $column, 'cards' => $cards]) {
+            foreach ($cards as ['rule' => $rule]) {
+                $ids[$column->tab][$rule->id] = $rule->id;
+            }
+        }
+
+        return array_map('array_values', $ids);
+    }
+
+    /**
+     * The rules under the tab that's open, for the list.
+     *
+     * @return Collection<int, EdgeRule>
+     */
+    #[Computed]
+    public function tabRules(): Collection
+    {
+        $ids = $this->tabRuleIds[$this->tab] ?? [];
+
+        return $this->rules->filter(fn (EdgeRule $rule) => in_array($rule->id, $ids, true))->values();
+    }
+
+    /**
+     * Where each rule's clients get a JS fingerprint (the Bouncer, a routine with fingerprinting on), by
+     * rule id, for the mark on the list's cards. The board's cards read their own column's destinations.
+     *
+     * @return array<int, list<RuleDestination>>
+     */
+    #[Computed]
+    public function fingerprintingDestinations(): array
+    {
+        $found = [];
+
+        foreach ($this->board as ['cards' => $cards]) {
+            foreach ($cards as ['rule' => $rule, 'destinations' => $destinations]) {
+                $found[$rule->id] = [...($found[$rule->id] ?? []), ...array_filter($destinations, fn (RuleDestination $destination) => $destination->fingerprints)];
+            }
+        }
+
+        return array_filter($found);
+    }
+
+    /**
+     * Determine if the page shows the board. A team without rules gets the list, for its templates, but a
+     * filter that matches nothing keeps the board. The board stays put while a rule is edited: the editor
+     * opens over it in a modal.
      */
     #[Computed]
     public function showsBoard(): bool
     {
-        return $this->view !== 'list' && $this->rules->isNotEmpty();
+        return $this->view !== 'list' && ($this->rules->isNotEmpty() || $this->isFiltered);
     }
 
     /**
@@ -501,17 +664,33 @@ new #[Title('Rules')] class extends Component
 
     <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div class="max-w-full">
-            <flux:radio.group wire:model.live="tab" variant="segmented" size="sm" :aria-label="__('Rules or verdicts')">
-                <flux:radio value="rules" :label="__('Rules').' · '.$this->rules->count()" />
-                <flux:radio value="verdicts" :label="__('Active verdicts').' · '.Number::format($this->activeVerdictCount)" />
+            <flux:radio.group wire:model.live="tab" variant="segmented" size="sm" :aria-label="__('What the rules do')" data-test="rules-tabs">
+                <flux:radio :value="RuleBoardColumn::TAB_TAGS" :label="__('Tags').' · '.count($this->tabRuleIds[RuleBoardColumn::TAB_TAGS])" />
+                <flux:radio :value="RuleBoardColumn::TAB_TIMEOUTS" :label="__('Timeouts').' · '.count($this->tabRuleIds[RuleBoardColumn::TAB_TIMEOUTS])" />
+                <flux:radio :value="RuleBoardColumn::TAB_MODES" :label="__('Modes').' · '.count($this->tabRuleIds[RuleBoardColumn::TAB_MODES])" />
             </flux:radio.group>
         </div>
-        @if ($tab !== 'verdicts' && $this->rules->isNotEmpty())
-            <flux:radio.group wire:model.live="view" variant="segmented" size="sm" :aria-label="__('Board or list')" data-test="rules-view">
-                <flux:radio value="board" :label="__('Board')" />
-                <flux:radio value="list" :label="__('List')" />
-            </flux:radio.group>
+        <div class="flex flex-wrap items-center gap-2">
+            <flux:button size="sm" :variant="$tab === 'verdicts' ? 'primary' : 'outline'" icon="scale" wire:click="$set('tab', '{{ $tab === 'verdicts' ? RuleBoardColumn::TAB_TIMEOUTS : 'verdicts' }}')" data-test="rules-verdicts-button">{{ __('Active verdicts').' · '.Number::format($this->activeVerdictCount) }}</flux:button>
+        @if ($tab !== 'verdicts')
+                {{-- Add-ons' dropdowns, from App\Support\RuleFilters: the rules a pack installed, say. --}}
+                @foreach ($this->ruleFilters as $key => ['filter' => $filter, 'options' => $options])
+                    {{-- Each option is selected on the server too, so the picked pack shows before Livewire loads. --}}
+                    <flux:select wire:model.live="filters.{{ $key }}" size="sm" class="w-96 max-w-full" :aria-label="$filter->label()" data-test="rule-filter-{{ $key }}">
+                        <flux:select.option value="">{{ __('All active rules') }}</flux:select.option>
+                        @foreach ($options as $value => $label)
+                            <flux:select.option :value="$value" :selected="($filters[$key] ?? '') === $value">{{ $filter->label() }}: {{ $label }}</flux:select.option>
+                        @endforeach
+                    </flux:select>
+                @endforeach
+                @if ($this->rules->isNotEmpty() || $this->isFiltered)
+                    <flux:radio.group wire:model.live="view" variant="segmented" size="sm" :aria-label="__('Board or list')" data-test="rules-view">
+                        <flux:radio value="board" :label="__('Board')" />
+                        <flux:radio value="list" :label="__('List')" />
+                    </flux:radio.group>
+                @endif
         @endif
+        </div>
     </div>
 
     @if ($tab === 'verdicts')
@@ -570,11 +749,16 @@ new #[Title('Rules')] class extends Component
             @endif
         </x-ntb.panel>
     @elseif ($this->showsBoard)
-        <x-ntb.rule-board :board="$this->board" :can-manage="$this->canManage" />
+        @if ($this->rules->isEmpty())
+            <div class="mb-4 rounded-xl border border-dashed border-line p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400" data-test="rules-filtered-empty">
+                {{ $this->filterCandidates === [] ? __('None of your rules match the filter. Pick All active rules to see them all.') : __('None of these are installed yet. Install the ones you want.') }}
+            </div>
+        @endif
+        <x-ntb.rule-board :board="$this->tabBoard" :candidates="$this->filterCandidates" :labels="$this->ruleLabels" :can-manage="$this->canManage" />
     @else
         {{-- The list of rules, with templates and add-on links. Opening one brings the editor modal. --}}
         <div class="max-w-xl space-y-3" data-test="rule-list">
-                @forelse ($this->rules as $rule)
+                @forelse ($this->tabRules as $rule)
                     @php($ruleScript = rescue(fn () => $rule->script(), report: false))
                     {{-- The whole card opens the rule, except its switch and gym links. The open card stays put, so unsaved edits survive a stray click. --}}
                     <div
@@ -601,6 +785,10 @@ new #[Title('Rules')] class extends Component
                                     <flux:badge size="sm" :color="$rule->action->color()">
                                         {{ $rule->action->label() }} · {{ $rule->durationLabel() }}
                                     </flux:badge>
+                                    <x-ntb.rule-fingerprint-mark :destinations="$this->fingerprintingDestinations[$rule->id] ?? []" />
+                                    @foreach ($this->ruleLabels[$rule->id] ?? [] as $label)
+                                        <flux:badge size="sm" color="zinc" icon="cube" data-test="rule-card-label">{{ $label['label'] }}</flux:badge>
+                                    @endforeach
                                     @if ($rule->active_verdicts_count > 0)
                                         <span class="text-xs text-zinc-500 dark:text-zinc-400">{{ trans_choice(':count active verdict|:count active verdicts', $rule->active_verdicts_count) }}</span>
                                     @endif
@@ -642,9 +830,13 @@ new #[Title('Rules')] class extends Component
                     </div>
                 @empty
                     <div class="rounded-xl border border-dashed border-line p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                        {{ __('No rules yet. Start from a template, or write your own.') }}
+                        {{ $this->isFiltered ? ($this->filterCandidates === [] ? __('None of your rules match the filter. Pick All active rules to see them all.') : __('None of these are installed yet. Install the ones you want.')) : ($this->rules->isNotEmpty() ? __('None of your rules are under this tab.') : __('No rules yet. Start from a template, or write your own.')) }}
                     </div>
                 @endforelse
+
+                @foreach ($this->filterCandidates as ['filter' => $filterKey, 'candidate' => $candidate])
+                    <x-ntb.rule-candidate :filter="$filterKey" :candidate="$candidate" :can-manage="$this->canManage" />
+                @endforeach
 
                 @if ($this->canManage)
                     <div class="pt-2">
@@ -843,6 +1035,7 @@ new #[Title('Rules')] class extends Component
                                                     <span class="mt-0.5 block text-xs text-zinc-500 dark:text-zinc-400">{{ $destination->note }}</span>
                                                 @endif
                                             </div>
+                                            <x-ntb.rule-fingerprint-mark :destinations="[$destination]" />
                                         </li>
                                     @endforeach
                                 </ul>
@@ -897,7 +1090,7 @@ new #[Title('Rules')] class extends Component
                                             @foreach ($backtest->subjects as $subject)
                                                 <flux:table.row :key="'backtest-'.$loop->index">
                                                     <flux:table.cell class="font-mono text-xs">
-                                                        {{ $subject['client_ip'] ?? '—' }}
+                                                        {{ $subject['scope'] ?? $subject['client_ip'] ?? '—' }}
                                                         @if ($subject['ja4'])
                                                             <span class="mt-0.5 block text-[0.65rem] text-zinc-500 dark:text-zinc-400">{{ $subject['ja4'] }}</span>
                                                         @endif

@@ -9,6 +9,7 @@ use NiceTry\RulePacks\Packs\BrowserImpostors;
 use NiceTry\RulePacks\Packs\FormScripts;
 use NiceTry\RulePacks\Packs\PhpExploits;
 use NiceTry\RulePacks\Packs\Scanners;
+use NiceTry\RulePacks\Support\PackRuleFilter;
 use NiceTry\RulePacks\Support\PackTemplates;
 
 /**
@@ -17,7 +18,8 @@ use NiceTry\RulePacks\Support\PackTemplates;
  * template gallery). Installing never sends anyone anywhere: the rules only tag, and the routines start
  * switched off. Which pack and version each rule and routine came from is kept in rule_pack_installs.
  * Each pack's first rule, and its routines that need none of its rules, join the core's template
- * galleries too. Packs are tagged under RulePacks::TAG, so another add-on can bring its own.
+ * galleries too, and the Rules page gets a "Rule pack" dropdown that shows only what one installed.
+ * Packs are tagged under RulePacks::TAG, so another add-on can bring its own.
  */
 class RulePacksServiceProvider extends AddonServiceProvider
 {
@@ -41,6 +43,8 @@ class RulePacksServiceProvider extends AddonServiceProvider
     protected array $ruleTemplates = [PackTemplates::class];
 
     protected array $routineTemplates = [PackTemplates::class];
+
+    protected array $ruleFilters = [PackRuleFilter::class];
 
     protected array $slots = [
         ViewSlot::RulesGallery->value => 'rule-packs::rules-gallery',

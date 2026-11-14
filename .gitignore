@@ -43,3 +43,4 @@ yarn-error.log
 # Local secrets that must never be committed
 .env.backup-*
 *-credentials.txt
+.vitest/

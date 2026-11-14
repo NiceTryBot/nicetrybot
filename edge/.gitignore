@@ -4,3 +4,6 @@
 
 # Build output
 caddy/caddy-nicetry
+
+# The blackhole agent built for this machine
+blackhole/blackhole

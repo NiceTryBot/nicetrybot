@@ -141,6 +141,22 @@ func TestAResponseOverTheCapGoesOnAsItCame(t *testing.T) {
 	}
 }
 
+func TestARewriteThatWouldComeOutOverTwiceTheCapGoesOnAsItCame(t *testing.T) {
+	for _, ignoreCase := range []string{"false", "true"} {
+		rw := rewriteHandler(t, `{"rewrites":[
+			{"id":1,"hosts":["shop.example"],"find":"b","replace":"bb","ignore_case":false,"in":"html"},
+			{"id":2,"hosts":["shop.example"],"find":"a","replace":"xxxxxxxxxx","ignore_case":`+ignoreCase+`,"in":"html"}
+		]}`, 16)
+
+		if got := serveRewrite(t, rw, "shop.example", &rewriteOrigin{contentType: "text/html", body: "baa"}).Body.String(); got != "bbxxxxxxxxxxxxxxxxxxxx" {
+			t.Errorf("ignore_case %s: a page that stays under twice the cap got %q", ignoreCase, got)
+		}
+		if got := serveRewrite(t, rw, "shop.example", &rewriteOrigin{contentType: "text/html", body: "baAaa"}).Body.String(); got != "baAaa" {
+			t.Errorf("ignore_case %s: a page that would grow past twice the cap got %q", ignoreCase, got)
+		}
+	}
+}
+
 func TestRewritesMustBeAList(t *testing.T) {
 	if _, err := parseRewrites([]byte(`{"something":"else"}`)); err == nil {
 		t.Error("an answer without a rewrites list was taken")
@@ -227,5 +243,19 @@ func TestAHeaderReplacementCantStartAHeaderOfItsOwn(t *testing.T) {
 
 	if got := w.Header().Get("Location"); got != "https://a X-Evil: 1 b/" {
 		t.Errorf("Location %q", got)
+	}
+}
+
+func TestAHeaderRewriteThatWouldComeOutTooLongLeavesTheValueAlone(t *testing.T) {
+	rw := rewriteHandler(t, `{"rewrites":[{"id":1,"hosts":["safe.example"],"find":"a","replace":"`+strings.Repeat("x", 1000)+`","in":"html","headers":true}]}`, rewriteMaxBody)
+	long := "https://example.com/" + strings.Repeat("a", 20)
+
+	w := serveHeaders(t, rw, http.MethodHead, "safe.example", http.Header{"Location": {long}, "X-Short": {"a"}})
+
+	if got := w.Header().Get("Location"); got != long {
+		t.Errorf("Location grew to %d bytes", len(got))
+	}
+	if got := w.Header().Get("X-Short"); got != strings.Repeat("x", 1000) {
+		t.Errorf("X-Short %q", got)
 	}
 }

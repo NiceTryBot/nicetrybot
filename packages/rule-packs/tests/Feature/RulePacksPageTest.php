@@ -22,7 +22,7 @@ test('the Rules page links to the packs, which list each pack with its rules and
 
     $this->get(route('rules.packs'))
         ->assertOk()
-        ->assertSeeInOrder(['Scanners and 404 probes', 'version 1', 'Not installed', 'Secret and source hunters', 'Scanners work for it', 'PHP exploit attempts'])
+        ->assertSeeInOrder(['Scanners and 404 probes', 'version 3', 'Not installed', 'Secret and source hunters', 'Scanners work for it', 'PHP exploit attempts'])
         ->assertSee("WHERE category IN ('probe/creds', 'probe/source')")
         ->assertSeeHtml('data-test="rule-pack-install"');
 });
@@ -126,4 +126,125 @@ test('each pack\'s first rule, and its routines that need none of its rules, joi
         ->assertHasNoErrors();
 
     expect(GymRoutine::sole()->entry()->edgePathGlobs())->toContain('*login*');
+});
+
+test('the Rules page narrows its rules to what one pack installed, never another team\'s, counting an edited rule as installed', function () {
+    $user = User::factory()->create();
+    app(InstallRulePack::class)->handle($user->currentTeam, app(RulePacks::class)->find('ai-crawlers'));
+    $user->currentTeam->edgeRules()->where('name', 'AI training crawlers')->sole()->update(['source' => "TAG ip AS 'ai-training' FOR 30 DAYS WHERE ua LIKE '%GPTBot%'"]);
+    EdgeRule::factory()->for($user->currentTeam)->create(['name' => 'Office uptime monitor']);
+    $other = User::factory()->create();
+    app(InstallRulePack::class)->handle($other->currentTeam, app(RulePacks::class)->find('php-exploits'));
+    $this->actingAs($user);
+
+    $page = Livewire::test('pages::rules.index')
+        ->assertSeeHtml('data-test="rule-filter-pack"')
+        ->assertSee(['All active rules', 'Rule pack: Scanners and 404 probes (0/6 installed)', 'Rule pack: AI crawlers (3/3 installed)'])
+        ->assertSee(['AI training crawlers', 'Office uptime monitor'])
+        ->assertDontSeeHtml('data-test="rule-candidate"');
+
+    $page->set('filters.pack', 'ai-crawlers')
+        ->assertSee(['AI training crawlers', 'AI assistants and answer engines', 'AI crawler names, probing', 'Tags · 3'])
+        ->assertDontSee('Office uptime monitor')
+        ->assertDontSeeHtml('data-test="rule-candidate"');
+
+    $page->set('filters.pack', 'nope')
+        ->assertSee(['AI training crawlers', 'Office uptime monitor', 'Tags · 4']);
+
+    $page->set('filters.pack', '')
+        ->assertSee(['AI training crawlers', 'Office uptime monitor', 'Tags · 4']);
+});
+
+test('a pack the team hasn\'t installed keeps the board, with its rules as cards to install one at a time', function () {
+    $user = User::factory()->create();
+    $this->actingAs($user);
+
+    $page = Livewire::withQueryParams(['filters' => ['pack' => 'php-exploits']])
+        ->test('pages::rules.index')
+        ->assertSee(['None of these are installed yet.', 'Timeouts · 0', 'PHP remote-code attempts', 'Install rule'])
+        ->assertSeeHtml(['data-test="rules-filtered-empty"', 'data-test="rules-view"', 'data-test="rule-board"'])
+        ->assertDontSeeHtml(['data-test="rule-list"', 'data-test="rule-card"']);
+    // Picked on the server too, so the dropdown shows the pack before Livewire loads.
+    expect($page->html())->toMatch('/selected="selected"\s+value="php-exploits"/')
+        // Each card waits in the column its routine acts in: this pack's turns clients away.
+        ->and(substr_count($page->html(), '>PHP remote-code attempts</p>'))->toBe(1);
+    $page->assertSeeHtmlInOrder(['data-test="board-column-blocked"', 'PHP remote-code attempts', 'Exploit attempts are turned away'])
+        ->assertSeeHtml('wire:confirm="Install “PHP remote-code attempts” and switch on “Exploit attempts are turned away”?');
+
+    $page->call('addFromFilter', 'pack', 'php-rce')
+        ->assertDispatched('toast-show', fn (string $event, array $params) => $params['slots']['text'] === 'Installed: PHP remote-code attempts, Exploit attempts are turned away.')
+        ->assertSee(['Rule pack: PHP exploit attempts (1/3 installed)', 'Timeouts · 1'])
+        ->assertSeeHtml('data-test="rule-card"');
+
+    expect($user->currentTeam->edgeRules()->sole())->name->toBe('PHP remote-code attempts')->enabled->toBeTrue()
+        ->and($user->currentTeam->gymRoutines()->sole())->name->toBe('Exploit attempts are turned away')->enabled->toBeTrue()
+        ->and(RulePackInstall::query()->where('team_id', $user->currentTeam->id)->orderBy('item')->pluck('item')->all())->toBe(['exploits-turned-away', 'php-rce']);
+
+    $page->set('view', 'list')
+        ->assertSeeHtml(['data-test="rule-list"', 'data-test="rule-candidate-install"']);
+
+    // A routine the team switched off keeps its switch, and the cards say so (under Tags, now nothing acts).
+    $user->currentTeam->gymRoutines()->sole()->update(['enabled' => false]);
+    $page->set('view', 'board')
+        ->set('tab', 'tags')
+        ->assertSee('Exploit attempts are turned away · off')
+        ->assertDontSeeHtml('wire:confirm')
+        ->call('addFromFilter', 'pack', 'php-shells');
+
+    expect($user->currentTeam->gymRoutines()->sole()->enabled)->toBeFalse()
+        ->and($user->currentTeam->edgeRules()->count())->toBe(2);
+
+    $page->call('addFromFilter', 'pack', 'nope')->assertNotFound();
+    Livewire::withQueryParams([])->test('pages::rules.index')->call('addFromFilter', 'pack', 'php-shells')->assertNotFound();
+    expect($user->currentTeam->edgeRules()->count())->toBe(2);
+});
+
+test('a member sees a pack\'s rules to install but can\'t install one', function () {
+    $owner = User::factory()->create();
+    $member = User::factory()->create();
+    $owner->currentTeam->members()->attach($member, ['role' => TeamRole::Member->value]);
+    $member->switchTeam($owner->currentTeam);
+    $this->actingAs($member);
+
+    Livewire::withQueryParams(['filters' => ['pack' => 'php-exploits']])
+        ->test('pages::rules.index')
+        ->assertSee('PHP remote-code attempts')
+        ->assertDontSeeHtml('data-test="rule-candidate-install"')
+        ->call('addFromFilter', 'pack', 'php-rce')
+        ->assertForbidden();
+
+    expect(EdgeRule::count())->toBe(0);
+});
+
+test('a pack routine left behind when its rules were deleted is switched on by installing one from the board', function () {
+    $user = User::factory()->create();
+    app(InstallRulePack::class)->handle($user->currentTeam, app(RulePacks::class)->find('php-exploits'), ['php-rce']);
+    $user->currentTeam->edgeRules()->sole()->delete();
+    $this->actingAs($user);
+
+    Livewire::withQueryParams(['filters' => ['pack' => 'php-exploits']])
+        ->test('pages::rules.index')
+        ->assertDontSee('Exploit attempts are turned away · off')
+        ->assertSeeHtml('wire:confirm="Install “PHP remote-code attempts” and switch on “Exploit attempts are turned away”?')
+        ->call('addFromFilter', 'pack', 'php-rce');
+
+    $routine = $user->currentTeam->gymRoutines()->sole();
+    expect($routine->enabled)->toBeTrue()
+        ->and($routine->conditions[0]['values'])->toBe([(string) $user->currentTeam->edgeRules()->sole()->id]);
+});
+
+test('a rule a pack installed is labelled with the pack on its card, linking to that pack\'s rules', function () {
+    $user = User::factory()->create();
+    app(InstallRulePack::class)->handle($user->currentTeam, app(RulePacks::class)->find('ai-crawlers'));
+    EdgeRule::factory()->for($user->currentTeam)->create(['name' => 'Office uptime monitor']);
+    $this->actingAs($user);
+
+    $page = Livewire::withQueryParams([])->test('pages::rules.index');
+
+    expect(substr_count($page->html(), 'data-test="rule-card-label"'))->toBe(3);
+    $page->assertSeeHtml(e(route('rules.index', ['filters' => ['pack' => 'ai-crawlers']])))
+        ->set('view', 'list')
+        ->assertSeeHtmlInOrder(['AI assistants and answer engines', 'data-test="rule-card-label"', 'Office uptime monitor']);
+
+    expect(substr_count($page->html(), 'data-test="rule-card-label"'))->toBe(3);
 });

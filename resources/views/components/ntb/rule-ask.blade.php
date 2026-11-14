@@ -38,7 +38,7 @@
         @if ($askError)
             <p class="mt-2 flex gap-2 text-sm text-rose-700 dark:text-rose-300" wire:loading.remove wire:target="ask" data-test="rule-ask-error">
                 <flux:icon.exclamation-triangle variant="mini" class="mt-0.5 size-4 shrink-0" />
-                <span>{{ $askError }}</span>
+                <x-ntb.ask-error :message="$askError" />
             </p>
         @endif
     @else

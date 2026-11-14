@@ -143,3 +143,13 @@ transforms:
         .tarpit_ms = log.tarpit_ms
         .tarpit_outcome = log.tarpit_outcome
       }
+
+      # A honeypot answered (or failed to answer) a trapped 404 (nicetry_honeypot): which one, which trap,
+      # its status, how long it took, and whether it was served.
+      if log.honeypot != null {
+        .honeypot = log.honeypot
+        .honeypot_trap = log.honeypot_trap
+        .honeypot_status = log.honeypot_status
+        .honeypot_ms = log.honeypot_ms
+        .honeypot_outcome = log.honeypot_outcome
+      }

@@ -1,6 +1,8 @@
 package nicetrycapture
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -41,7 +43,7 @@ func TestANewHostIsResolvedOnceForEveryoneAskingAtOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			route, ok := r.lookup("new.example")
+			route, ok := r.lookup(t.Context(), "new.example")
 			if !ok || route.ForwardedHostHeader != "X-Domain" {
 				t.Errorf("lookup = %+v, %v", route, ok)
 			}
@@ -49,7 +51,7 @@ func TestANewHostIsResolvedOnceForEveryoneAskingAtOnce(t *testing.T) {
 	}
 	wg.Wait()
 
-	if _, ok := r.lookup("new.example"); !ok {
+	if _, ok := r.lookup(t.Context(), "new.example"); !ok {
 		t.Error("the answer should be remembered")
 	}
 	if got := hits.Load(); got != 1 {
@@ -63,17 +65,85 @@ func TestAHostNobodyClaimsIsRememberedAndJunkIsNeverSent(t *testing.T) {
 	r := newResolver(app.URL, "t", app.Client())
 
 	for range 3 {
-		if _, ok := r.lookup("stranger.example"); ok {
+		if _, ok := r.lookup(t.Context(), "stranger.example"); ok {
 			t.Fatal("stranger.example shouldn't resolve")
 		}
 	}
 	for _, junk := range []string{"10.0.0.1", "localhost", "", "a..example", "UPPER.example"} {
-		if _, ok := r.lookup(junk); ok {
+		if _, ok := r.lookup(t.Context(), junk); ok {
 			t.Errorf("%q shouldn't resolve", junk)
 		}
 	}
 	if got := hits.Load(); got != 1 {
 		t.Errorf("the app was asked %d times, want 1", got)
+	}
+}
+
+func TestALookupThatCantGetASlotGivesUpWithoutAskingOrRemembering(t *testing.T) {
+	var hits atomic.Int32
+	app := fakeApp(t, &hits)
+	r := newResolver(app.URL, "t", app.Client())
+	for range maxResolving {
+		r.slots <- struct{}{}
+	}
+
+	started := time.Now()
+	if _, ok := r.lookup(t.Context(), "new.example"); ok {
+		t.Fatal("new.example shouldn't resolve while every slot is busy")
+	}
+	if waited := time.Since(started); waited > time.Second {
+		t.Errorf("waited %v for a slot", waited)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("the app was asked %d times, want 0", got)
+	}
+
+	for range maxResolving {
+		<-r.slots
+	}
+	if _, ok := r.lookup(t.Context(), "new.example"); !ok {
+		t.Error("new.example should resolve once a slot is free")
+	}
+}
+
+func TestALookupForAVisitorWhoLeftIsNeverSent(t *testing.T) {
+	var hits atomic.Int32
+	app := fakeApp(t, &hits)
+	r := newResolver(app.URL, "t", app.Client())
+	for range maxResolving {
+		r.slots <- struct{}{}
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, ok := r.lookup(ctx, "new.example"); ok {
+		t.Fatal("a cancelled lookup shouldn't resolve")
+	}
+
+	for range maxResolving {
+		<-r.slots
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("the app was asked %d times, want 0", got)
+	}
+	if len(r.answers) != 0 || len(r.inFlight) != 0 {
+		t.Errorf("answers = %v, in flight = %v; want both empty", r.answers, r.inFlight)
+	}
+}
+
+func TestANewHostIsTurnedAwayWhenTooManyAreWaiting(t *testing.T) {
+	var hits atomic.Int32
+	app := fakeApp(t, &hits)
+	r := newResolver(app.URL, "t", app.Client())
+	for i := range maxPending {
+		r.inFlight[fmt.Sprintf("h%d.example", i)] = &resolveCall{done: make(chan struct{})}
+	}
+
+	if _, ok := r.lookup(t.Context(), "new.example"); ok {
+		t.Fatal("new.example shouldn't resolve while the queue is full")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("the app was asked %d times, want 0", got)
 	}
 }
 

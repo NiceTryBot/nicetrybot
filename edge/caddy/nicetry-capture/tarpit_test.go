@@ -331,3 +331,318 @@ func TestCountsSurviveAPollAndAnAnswerWithoutTarpitsIsRefused(t *testing.T) {
 		t.Errorf("an empty list means no tarpits: %v %v", list, err)
 	}
 }
+
+const probeTrap = `{"tarpits":[{"id":11,"hosts":["probed.example"],"free":0,"delays":[2,4,8,16,30],"cap":30,"max_held":10,
+	"when_full":"reject","after":"not_found","forget":900,"clients":[],"trap":{"catches":"probe","strings":[".ENV"," .git/ "],"cooldowns":[10,20,30,60,120]}}]}`
+
+func TestATrapsStrikesDoubleAndStepBackOneAtATimeAfterQuiet(t *testing.T) {
+	tp := tarpitFor(t, probeTrap, 10)
+	p := tp.set.current.Load().byHost["probed.example"][0]
+	start := time.Now()
+
+	for i, want := range []int{1, 2, 3} {
+		if got := p.try("203.0.113.9", start.Add(time.Duration(i)*time.Second)); got != want {
+			t.Fatalf("strike %d counted as %d", want, got)
+		}
+	}
+	// At strike 3 the step-back costs 30 s (strike 3's cooldown); 49 s of quiet drops to strike 2, and
+	// the 19 s left is short of strike 2's 20 s cooldown.
+	if got := p.try("203.0.113.9", start.Add(2*time.Second+49*time.Second)); got != 3 {
+		t.Errorf("after 49 s quiet the next strike is %d, want 3", got)
+	}
+	// 30 + 20 + 10 s of quiet steps all the way back.
+	if got := p.try("203.0.113.9", start.Add(51*time.Second+60*time.Second)); got != 1 {
+		t.Errorf("after 60 s quiet the next strike is %d, want 1", got)
+	}
+	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second}
+	for i, w := range want {
+		if got := p.delayFor(i + 1); got != w {
+			t.Errorf("strike %d waits %v, want %v", i+1, got, w)
+		}
+	}
+}
+
+func TestAProbeTrapHoldsOnlyRequestsContainingItsStrings(t *testing.T) {
+	tp := tarpitFor(t, probeTrap, 10)
+	quick(tp, []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}, 60*time.Millisecond)
+	o := &countingOrigin{}
+
+	r, extra := tarpitRequest("https://probed.example/shop/products?page=2", "203.0.113.9")
+	r.Host = "probed.example"
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	if _, ok := loggedFields(extra)["tarpit"]; ok || o.count() != 1 {
+		t.Fatalf("an ordinary request should go straight on, logged %v", loggedFields(extra))
+	}
+
+	for i, target := range []string{"https://probed.example/x/../%2eEnv", "https://probed.example/?file=.GIT%2Fconfig"} {
+		r, extra = tarpitRequest(target, "203.0.113.9")
+		r.Host = "probed.example"
+		w := httptest.NewRecorder()
+		start := time.Now()
+		tp.ServeHTTP(w, r, o.handler())
+		fields := loggedFields(extra)
+		if fields["tarpit_why"] != "probe" || fields["tarpit_outcome"] != "held" || fields["tarpit_try"] != int64(i+1) || fields["action"] != "blocked" {
+			t.Errorf("%s logged %v", target, fields)
+		}
+		if held := time.Since(start); held < []time.Duration{20, 40}[i]*time.Millisecond {
+			t.Errorf("strike %d was held %v", i+1, held)
+		}
+		if w.Code != http.StatusNotFound {
+			t.Errorf("after the wait the edge should answer 404, got %d", w.Code)
+		}
+	}
+	if o.count() != 1 {
+		t.Errorf("probes shouldn't reach the origin, reached %d", o.count())
+	}
+}
+
+func TestANotFoundTrapHoldsTheOriginsOwn404sOnly(t *testing.T) {
+	tp := tarpitFor(t, `{"tarpits":[{"id":12,"hosts":["probed.example"],"free":0,"delays":[2,4],"cap":30,"max_held":10,
+		"when_full":"reject","after":"continue","forget":900,"clients":[],"trap":{"catches":"status","strings":[],"statuses":[404],"cooldowns":[10,20,30,60,120]}}]}`, 10)
+	quick(tp, []time.Duration{30 * time.Millisecond}, 30*time.Millisecond)
+
+	ok := &countingOrigin{}
+	r, extra := tarpitRequest("https://probed.example/", "203.0.113.9")
+	r.Host = "probed.example"
+	start := time.Now()
+	tp.ServeHTTP(httptest.NewRecorder(), r, ok.handler())
+	if _, logged := loggedFields(extra)["tarpit"]; logged || time.Since(start) > 20*time.Millisecond {
+		t.Errorf("a 200 shouldn't be held, logged %v", loggedFields(extra))
+	}
+
+	missing := &countingOrigin{status: http.StatusNotFound}
+	r, extra = tarpitRequest("https://probed.example/wp-admin/", "203.0.113.9")
+	r.Host = "probed.example"
+	w := httptest.NewRecorder()
+	start = time.Now()
+	tp.ServeHTTP(w, r, missing.handler())
+	fields := loggedFields(extra)
+	if held := time.Since(start); held < 30*time.Millisecond || w.Code != http.StatusNotFound || missing.count() != 1 {
+		t.Errorf("the 404 should go back after the wait (held %v, status %d, origin %d)", held, w.Code, missing.count())
+	}
+	if fields["tarpit_why"] != "status" || fields["tarpit_outcome"] != "held" || fields["tarpit_try"] != int64(1) {
+		t.Errorf("held 404 logged %v", fields)
+	}
+	if _, blocked := fields["action"]; blocked {
+		t.Errorf("the origin answered, so the tarpit shouldn't log an action")
+	}
+
+	// A 404 the server answers as an error, after the handler returns, is held too.
+	r, extra = tarpitRequest("https://probed.example/gone", "203.0.113.9")
+	r.Host = "probed.example"
+	tp.ServeHTTP(httptest.NewRecorder(), r, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error {
+		return caddyhttp.Error(http.StatusNotFound, nil)
+	}))
+	if fields := loggedFields(extra); fields["tarpit_why"] != "status" || fields["tarpit_try"] != int64(2) {
+		t.Errorf("an error 404 logged %v", fields)
+	}
+}
+
+func TestANotFoundTrapLetsAssets404Through(t *testing.T) {
+	tp := tarpitFor(t, `{"tarpits":[{"id":13,"hosts":["probed.example"],"free":0,"delays":[2,4],"cap":30,"max_held":10,"skip_assets":true,
+		"when_full":"reject","after":"continue","forget":900,"clients":[],"trap":{"catches":"status","strings":[],"statuses":[404],"cooldowns":[10,20,30,60,120]}}]}`, 10)
+	quick(tp, []time.Duration{30 * time.Millisecond, 30 * time.Millisecond}, 30*time.Millisecond)
+	o := &countingOrigin{status: http.StatusNotFound}
+
+	// A missing asset goes straight on and never becomes a strike, however many times it's asked for.
+	for _, target := range []string{"https://probed.example/css/app.css", "https://probed.example/img/logo.png?v=2", "https://probed.example/fonts/i.woff2"} {
+		r, extra := tarpitRequest(target, "203.0.113.9")
+		r.Host = "probed.example"
+		start := time.Now()
+		tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+		if _, logged := loggedFields(extra)["tarpit"]; logged || time.Since(start) > 20*time.Millisecond {
+			t.Errorf("a 404 for %s shouldn't be held, logged %v", target, loggedFields(extra))
+		}
+	}
+
+	// A missing page is the trap's first strike: the asset misses didn't count towards it.
+	r, extra := tarpitRequest("https://probed.example/wp-admin/", "203.0.113.9")
+	r.Host = "probed.example"
+	start := time.Now()
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	fields := loggedFields(extra)
+	if held := time.Since(start); held < 30*time.Millisecond || fields["tarpit_why"] != "status" || fields["tarpit_try"] != int64(1) {
+		t.Errorf("the page 404 should be strike 1, held %v, logged %v", held, fields)
+	}
+}
+
+func TestWithoutSkipAssetsAnAsset404IsHeld(t *testing.T) {
+	// Free behaviour: no skip_assets, so an asset's 404 is held like any other.
+	tp := tarpitFor(t, `{"tarpits":[{"id":15,"hosts":["probed.example"],"free":0,"delays":[2,4],"cap":30,"max_held":10,
+		"when_full":"reject","after":"continue","forget":900,"clients":[],"trap":{"catches":"status","strings":[],"statuses":[404],"cooldowns":[60]}}]}`, 10)
+	quick(tp, []time.Duration{30 * time.Millisecond}, 30*time.Millisecond)
+	o := &countingOrigin{status: http.StatusNotFound}
+
+	r, extra := tarpitRequest("https://probed.example/css/app.css", "203.0.113.9")
+	r.Host = "probed.example"
+	start := time.Now()
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	fields := loggedFields(extra)
+	if held := time.Since(start); held < 30*time.Millisecond || fields["tarpit_why"] != "status" {
+		t.Errorf("without skip_assets the asset 404 should be held, held %v, logged %v", held, fields)
+	}
+}
+
+func TestAStatusTrapHoldsOnlyTheStatusesItsTold(t *testing.T) {
+	tp := tarpitFor(t, `{"tarpits":[{"id":14,"hosts":["probed.example"],"free":0,"delays":[2,4],"cap":30,"max_held":10,
+		"when_full":"reject","after":"continue","forget":900,"clients":[],"trap":{"catches":"status","strings":[],"statuses":[403,500],"cooldowns":[10,20,30,60,120]}}]}`, 10)
+	quick(tp, []time.Duration{30 * time.Millisecond, 30 * time.Millisecond}, 30*time.Millisecond)
+
+	// A 200 and a 404 aren't in the set, so they go straight on and never become a strike.
+	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
+		o := &countingOrigin{status: status}
+		r, extra := tarpitRequest("https://probed.example/page", "203.0.113.9")
+		r.Host = "probed.example"
+		start := time.Now()
+		tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+		if _, logged := loggedFields(extra)["tarpit"]; logged || time.Since(start) > 20*time.Millisecond {
+			t.Errorf("a %d shouldn't be held, logged %v", status, loggedFields(extra))
+		}
+	}
+
+	// A 403 then a 500 are each held, the first strike then the second.
+	for i, status := range []int{http.StatusForbidden, http.StatusInternalServerError} {
+		o := &countingOrigin{status: status}
+		r, extra := tarpitRequest("https://probed.example/admin", "203.0.113.9")
+		r.Host = "probed.example"
+		start := time.Now()
+		tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+		fields := loggedFields(extra)
+		if held := time.Since(start); held < 30*time.Millisecond || fields["tarpit_why"] != "status" || fields["tarpit_try"] != int64(i+1) {
+			t.Errorf("a %d should be strike %d, held %v, logged %v", status, i+1, held, fields)
+		}
+	}
+}
+
+func TestSwarmModeSendsNewIPsStraightToTheCap(t *testing.T) {
+	tp := tarpitFor(t, `{"tarpits":[{"id":20,"hosts":["probed.example"],"free":0,"delays":[1,2],"cap":5,"max_held":100,
+		"when_full":"reject","after":"continue","forget":3600,"clients":[],"swarm":{"count":2,"within":60}}]}`, 10)
+	p := tp.set.current.Load().byHost["probed.example"][0]
+	start := time.Now()
+
+	// Steps are a second apart so swarm is recomputed each time (the hot path throttles it to once a sec).
+	wait := func(ip string, sec int) (time.Duration, bool) {
+		_, delay, swarmed := p.waitFor(ip, start.Add(time.Duration(sec)*time.Second))
+		return delay, swarmed
+	}
+
+	// The first three distinct IPs climb the ladder normally — the count (2) isn't yet exceeded.
+	for i, ip := range []string{"a", "b", "c"} {
+		if delay, swarmed := wait(ip, i); delay != time.Second || swarmed {
+			t.Fatalf("IP %s should be a normal first strike (1 s, not swarm), got %v swarm=%v", ip, delay, swarmed)
+		}
+	}
+	// Now more than two IPs have been held inside the window, so the fourth new IP goes straight to the cap.
+	if delay, swarmed := wait("d", 3); delay != 5*time.Second || !swarmed {
+		t.Errorf("the 4th new IP should be capped by swarm (5 s), got %v swarm=%v", delay, swarmed)
+	}
+	if delay, swarmed := wait("e", 4); delay != 5*time.Second || !swarmed {
+		t.Errorf("a later new IP should also be capped by swarm, got %v swarm=%v", delay, swarmed)
+	}
+	// An IP already climbing keeps its own ladder, not the swarm cap: its second strike is 2 s, not swarmed.
+	if delay, swarmed := wait("a", 5); delay != 2*time.Second || swarmed {
+		t.Errorf("an existing IP's 2nd strike should be the ladder (2 s, not swarm), got %v swarm=%v", delay, swarmed)
+	}
+}
+
+func TestARequestAnotherTarpitTookIsntHeldAgainForIts404(t *testing.T) {
+	tp := tarpitFor(t, `{"tarpits":[
+		{"id":7,"hosts":["probed.example"],"free":1,"delays":[2],"cap":30,"max_held":10,"when_full":"reject","after":"continue","forget":600,
+			"clients":[{"ip":"203.0.113.9","ja4":null,"why":"verdict"}]},
+		{"id":12,"hosts":["probed.example"],"free":0,"delays":[2],"cap":30,"max_held":10,"when_full":"reject","after":"continue","forget":900,
+			"clients":[],"trap":{"catches":"status","strings":[],"statuses":[404],"cooldowns":[10,20,30,60,120]}}]}`, 10)
+	quick(tp, []time.Duration{time.Millisecond}, time.Millisecond)
+	o := &countingOrigin{status: http.StatusNotFound}
+
+	r, extra := tarpitRequest("https://probed.example/missing", "203.0.113.9")
+	r.Host = "probed.example"
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	if fields := loggedFields(extra); fields["tarpit"] != int64(7) {
+		t.Errorf("the listed client's tarpit should take it, logged %v", fields)
+	}
+
+	r, extra = tarpitRequest("https://probed.example/missing", "198.51.100.4")
+	r.Host = "probed.example"
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	if fields := loggedFields(extra); fields["tarpit"] != int64(12) || fields["tarpit_why"] != "status" {
+		t.Errorf("another client's 404 should be the trap's, logged %v", fields)
+	}
+}
+
+func TestARuleTarpitHoldsItsStatusesAndItsClientsAndStepsBack(t *testing.T) {
+	tp := tarpitFor(t, `{"tarpits":[{"id":30,"hosts":["probed.example"],"free":0,"delays":[2,4],"cap":30,"max_held":10,
+		"when_full":"reject","after":"continue","forget":900,"clients":[{"ip":"203.0.113.50","ja4":null,"why":"verdict"}],
+		"statuses":[403,404],"cooldowns":[10,20]}]}`, 10)
+	quick(tp, []time.Duration{30 * time.Millisecond, 30 * time.Millisecond}, 30*time.Millisecond)
+	p := tp.set.current.Load().byHost["probed.example"][0]
+	if len(p.cooldowns) != 2 || !p.statuses[403] || !p.statuses[404] {
+		t.Fatalf("the tarpit should keep its statuses and ladder, got %v %v", p.statuses, p.cooldowns)
+	}
+
+	// Another client's 200 goes straight on; its 404 is held for the status.
+	o := &countingOrigin{status: http.StatusOK}
+	r, extra := tarpitRequest("https://probed.example/page", "198.51.100.7")
+	r.Host = "probed.example"
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	if _, logged := loggedFields(extra)["tarpit"]; logged {
+		t.Errorf("a 200 shouldn't be held, logged %v", loggedFields(extra))
+	}
+	o = &countingOrigin{status: http.StatusNotFound}
+	r, extra = tarpitRequest("https://probed.example/missing", "198.51.100.7")
+	r.Host = "probed.example"
+	start := time.Now()
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	if fields := loggedFields(extra); time.Since(start) < 30*time.Millisecond || fields["tarpit_why"] != "status" {
+		t.Errorf("a 404 should be held for its status, logged %v", fields)
+	}
+
+	// The listed client is held on any request, as before.
+	o = &countingOrigin{status: http.StatusOK}
+	r, extra = tarpitRequest("https://probed.example/page", "203.0.113.50")
+	r.Host = "probed.example"
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	if fields := loggedFields(extra); fields["tarpit_why"] != "verdict" {
+		t.Errorf("the listed client should be held for its verdict, logged %v", fields)
+	}
+
+	// Quiet past its try's cooldown, a client steps back one try.
+	now := time.Now()
+	first := p.try("192.0.2.1", now)
+	second := p.try("192.0.2.1", now.Add(time.Second))
+	third := p.try("192.0.2.1", now.Add(time.Second+25*time.Second))
+	if first != 1 || second != 2 || third != 2 {
+		t.Errorf("tries should go 1, 2, then step back to 2 after 25 s quiet, got %d %d %d", first, second, third)
+	}
+}
+
+func TestTheGymsOwnAnswerIsNeverHeldForItsStatus(t *testing.T) {
+	tp := tarpitFor(t, `{"tarpits":[{"id":31,"hosts":["probed.example"],"free":0,"delays":[2,4],"cap":30,"max_held":10,
+		"when_full":"reject","after":"continue","forget":900,"clients":[],"statuses":[403,404],"not_found":{"count":1,"within":60}}]}`, 10)
+	quick(tp, []time.Duration{30 * time.Millisecond, 30 * time.Millisecond}, 30*time.Millisecond)
+
+	// The Bot Bouncer's challenge page is a 403 the gym writes in place of the origin: never held, never
+	// counted as a 404.
+	gym := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		caddyhttp.SetVar(r.Context(), gymAnsweredVar, true)
+		w.WriteHeader(http.StatusForbidden)
+		return nil
+	})
+	for i := 0; i < 3; i++ {
+		r, extra := tarpitRequest("https://probed.example/", "203.0.113.70")
+		r.Host = "probed.example"
+		start := time.Now()
+		tp.ServeHTTP(httptest.NewRecorder(), r, gym)
+		if _, logged := loggedFields(extra)["tarpit"]; logged || time.Since(start) > 20*time.Millisecond {
+			t.Fatalf("the gym's 403 shouldn't be held, logged %v", loggedFields(extra))
+		}
+	}
+
+	// The origin's own 403 still is.
+	o := &countingOrigin{status: http.StatusForbidden}
+	r, extra := tarpitRequest("https://probed.example/admin", "203.0.113.70")
+	r.Host = "probed.example"
+	tp.ServeHTTP(httptest.NewRecorder(), r, o.handler())
+	if fields := loggedFields(extra); fields["tarpit_why"] != "status" {
+		t.Errorf("the origin's 403 should be held for its status, logged %v", fields)
+	}
+}

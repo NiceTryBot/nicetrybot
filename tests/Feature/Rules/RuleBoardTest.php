@@ -90,10 +90,16 @@ test('the page opens on the board, and opening a rule from it brings the editor 
     $rule = EdgeRule::factory()->for($user->currentTeam)->create(['name' => 'Idle ban', 'action' => RuleAction::Block]);
     $this->actingAs($user);
 
+    // A team with only a rule nothing acts on opens on Tags; Timeouts is a click away.
     Livewire::test('pages::rules.index')
+        ->assertSet('tab', 'tags')
         ->assertSeeHtml('data-test="rule-board"')
-        ->assertSeeHtml('data-test="board-column-blocked"')
         ->assertSeeHtml('data-test="rule-card-idle-block"')
+        ->assertDontSeeHtml('data-test="board-column-blocked"')
+        ->set('tab', 'timeouts')
+        ->assertSeeHtml('data-test="board-column-blocked"')
+        ->assertDontSeeHtml('data-test="rule-card-idle-block"')
+        ->set('tab', 'tags')
         ->assertSet('isEditing', false)
         ->call('edit', $rule->id)
         ->assertSet('isEditing', true)

@@ -307,6 +307,8 @@ test('a rule can pick clients by what their parts give away', function (string $
 })->with([
     'spoofed and outdated' => ["TAG ip AS 'x' FOR 1 DAY WHERE client = 'spoofed' AND client = 'outdated'", ['203.0.113.1']],
     'outdated, not behind a corporate gateway' => ["TAG ip AS 'x' FOR 1 DAY WHERE client = 'outdated' AND client != 'corporate'", ['203.0.113.1', '203.0.113.2', '203.0.113.5']],
+    'far behind the current release' => ["TAG ip AS 'x' FOR 1 DAY WHERE client.behind > 4", ['203.0.113.1', '203.0.113.2', '203.0.113.4', '203.0.113.5']],
+    'not far behind' => ["TAG ip AS 'x' FOR 1 DAY WHERE client.behind <= 4", ['203.0.113.3']],
     'either kind' => ["TAG ip AS 'x' FOR 1 DAY WHERE client IN ('spoofed', 'corporate')", ['203.0.113.1', '203.0.113.3', '203.0.113.4']],
 ]);
 

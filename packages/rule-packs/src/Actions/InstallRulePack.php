@@ -2,7 +2,9 @@
 
 namespace NiceTry\RulePacks\Actions;
 
+use App\Actions\Rules\SaveEdgeRule;
 use App\Data\GymCondition;
+use App\Data\RuleScript;
 use App\Data\RuleScriptSyntaxError;
 use App\Enums\GymExit;
 use App\Enums\GymField;
@@ -10,6 +12,7 @@ use App\Enums\GymOperator;
 use App\Gym\ObstacleRegistry;
 use App\Models\GymRoutine;
 use App\Models\Team;
+use App\Support\RuleDestinationHandlers;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -20,7 +23,7 @@ use NiceTry\RulePacks\Support\PackFingerprint;
 
 class InstallRulePack
 {
-    public function __construct(private ObstacleRegistry $obstacles)
+    public function __construct(private ObstacleRegistry $obstacles, private SaveEdgeRule $saveEdgeRule)
     {
         //
     }
@@ -33,11 +36,22 @@ class InstallRulePack
      * and the team hasn't; one the team has edited is left alone. A rule that doesn't parse (it reads a
      * field of an add-on that isn't installed) is left out, and so is a routine left with none of its
      * rules; one already installed that stops parsing is kept as it is. New rules watch from now on, as a
-     * rule saved on the Rules page does.
+     * rule saved on the Rules page does. A rule's destination clauses (BOUNCER, say) are linked as saving
+     * it on the Rules page links them, and since one acts on clients at once, such a rule starts switched
+     * off unless $routinesStartOn says acting is wanted. An update drops what the pack no longer has: an
+     * item the team hasn't changed is deleted, one it has stays as its own.
+     *
+     * Given $only, it installs just those of the pack's rules (one picked on the Rules page, say), and the
+     * pack's routines that take any of them; the rest of the pack is left as it is. With $routinesStartOn,
+     * a routine it adds starts switched on, sending the rule's clients through it at once; one the team
+     * already has keeps its switch, unless none of the rules it took are left (it was only ever waiting
+     * for them).
+     *
+     * @param  list<string>|null  $only
      */
-    public function handle(Team $team, RulePack $pack): PackChanges
+    public function handle(Team $team, RulePack $pack, ?array $only = null, bool $routinesStartOn = false): PackChanges
     {
-        return DB::transaction(function () use ($team, $pack): PackChanges {
+        return DB::transaction(function () use ($team, $pack, $only, $routinesStartOn): PackChanges {
             $installs = RulePackInstall::query()
                 ->where('team_id', $team->id)
                 ->where('pack', $pack->key())
@@ -47,15 +61,20 @@ class InstallRulePack
                 ->keyBy('item');
             $rulesStartOn = $this->routinesTakingEveryVerdict($team)->isEmpty();
             $lastRequestId = (int) DB::table('edge_requests')->max('id');
-            $changes = ['added' => [], 'updated' => [], 'kept' => [], 'unavailable' => []];
+            $changes = ['added' => [], 'updated' => [], 'removed' => [], 'kept' => [], 'unavailable' => []];
             $ruleIds = [];
             $addedRules = false;
+            $installedRules = $installs->filter(fn (RulePackInstall $install) => $install->rule !== null)->keys()->all();
 
             foreach ($pack->rules() as $key => $rule) {
                 $install = $installs->get($key);
 
                 if ($install?->rule !== null) {
                     $ruleIds[$key] = $install->rule->id;
+                }
+
+                if ($only !== null && ! in_array($key, $only, true)) {
+                    continue;
                 }
 
                 try {
@@ -70,15 +89,32 @@ class InstallRulePack
                     continue;
                 }
 
-                $attributes = ['name' => $rule['name'], 'source' => $rule['source'], 'action' => $script->action, 'duration_seconds' => $script->durationSeconds];
-
-                if ($install?->rule !== null) {
-                    $this->refresh($install, $attributes, PackFingerprint::ofRule($rule['name'], $rule['source']), $pack, $changes);
+                // A rule naming a destination the installer may not send clients to (BLACKHOLE, for anyone
+                // but an administrator) is left out, as one reading a missing add-on's field is.
+                if (! $this->maySendTo($team, $script)) {
+                    if ($install?->rule === null) {
+                        $changes['unavailable'][] = $rule['name'];
+                    }
 
                     continue;
                 }
 
-                $edgeRule = $team->edgeRules()->create([...$attributes, 'enabled' => $rulesStartOn, 'last_request_id' => $lastRequestId]);
+                $attributes = ['name' => $rule['name'], 'source' => $rule['source'], 'action' => $script->action, 'duration_seconds' => $script->durationSeconds];
+
+                if ($install?->rule !== null) {
+                    $source = $install->rule->source;
+                    $this->refresh($install, $attributes, PackFingerprint::ofRule($rule['name'], $rule['source']), $pack, $changes);
+
+                    if ($install->rule->source !== $source) {
+                        $this->saveEdgeRule->reconcileDestinations($install->rule, $script);
+                    }
+
+                    continue;
+                }
+
+                $startsOn = $rulesStartOn && ($pack->startsOn($key) ?? ($script->destinations === [] || $routinesStartOn));
+                $edgeRule = $team->edgeRules()->create([...$attributes, 'enabled' => $startsOn, 'last_request_id' => $lastRequestId]);
+                $this->saveEdgeRule->reconcileDestinations($edgeRule, $script);
                 $ruleIds[$key] = $edgeRule->id;
                 $this->record($team, $pack, $key, $install, ['edge_rule_id' => $edgeRule->id, 'fingerprint' => PackFingerprint::of($edgeRule)]);
                 $changes['added'][] = $rule['name'];
@@ -86,7 +122,7 @@ class InstallRulePack
             }
 
             foreach ($pack->routines() as $key => $routine) {
-                if (isset($pack->rules()[$key])) {
+                if (isset($pack->rules()[$key]) || ($only !== null && array_intersect($routine['rules'], $only) === [])) {
                     continue;
                 }
 
@@ -106,12 +142,20 @@ class InstallRulePack
                 if ($install?->routine !== null) {
                     $this->refresh($install, $attributes, PackFingerprint::ofRoutine($attributes), $pack, $changes);
 
+                    if ($routinesStartOn && array_intersect($routine['rules'], $installedRules) === []) {
+                        $install->routine->update(['enabled' => true]);
+                    }
+
                     continue;
                 }
 
-                $gymRoutine = $team->gymRoutines()->create([...$attributes, 'enabled' => false, 'position' => (int) $team->gymRoutines()->max('position') + 1]);
+                $gymRoutine = $team->gymRoutines()->create([...$attributes, 'enabled' => $routinesStartOn, 'position' => (int) $team->gymRoutines()->max('position') + 1]);
                 $this->record($team, $pack, $key, $install, ['gym_routine_id' => $gymRoutine->id, 'fingerprint' => PackFingerprint::of($gymRoutine)]);
                 $changes['added'][] = $routine['name'];
+            }
+
+            if ($only === null) {
+                $this->dropRetired($installs, $pack, $changes);
             }
 
             return new PackChanges(...$changes, rulesStartOff: $addedRules && ! $rulesStartOn);
@@ -157,6 +201,37 @@ class InstallRulePack
         }
 
         $install->update(['version' => $pack->version()]);
+    }
+
+    /**
+     * Drop the items the team installed that the pack no longer has: delete one the team hasn't changed,
+     * and keep one it has as its own, as uninstalling does.
+     *
+     * @param  Collection<string, RulePackInstall>  $installs
+     * @param  array{added: list<string>, updated: list<string>, removed: list<string>, kept: list<string>, unavailable: list<string>}  $changes
+     */
+    private function dropRetired(Collection $installs, RulePack $pack, array &$changes): void
+    {
+        foreach ($installs as $key => $install) {
+            if (isset($pack->rules()[$key]) || isset($pack->routines()[$key])) {
+                continue;
+            }
+
+            $item = $install->routine ?? $install->rule;
+            $isEdited = $item !== null && $install->isEdited();
+            $install->delete();
+
+            if ($item === null) {
+                continue;
+            }
+
+            if ($isEdited) {
+                $changes['kept'][] = $item->name;
+            } else {
+                $item->delete();
+                $changes['removed'][] = $item->name;
+            }
+        }
     }
 
     /**
@@ -211,5 +286,21 @@ class InstallRulePack
             'pass_seconds' => $routine['pass_seconds'],
             'one_try' => false,
         ];
+    }
+
+    /**
+     * Determine if the person installing may send clients everywhere the script names.
+     */
+    private function maySendTo(Team $team, RuleScript $script): bool
+    {
+        foreach (array_keys($script->destinations) as $keyword) {
+            $handler = app(RuleDestinationHandlers::class)->keyword($keyword);
+
+            if ($handler !== null && ! $handler->managedBy($team)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

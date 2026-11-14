@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -26,7 +27,18 @@ func init() {
 var gymCookies = map[string]bool{"_q_pass": true, "_q_session": true, remoteTagCookie: true}
 
 // gymHeaders are the only headers of the gym's answer passed on to the visitor.
-var gymHeaders = []string{"Content-Type", "Cache-Control", "Set-Cookie", "Location", "X-Robots-Tag", "Retry-After", "Nice-Mode", "Nice-Timestamp"}
+var gymHeaders = []string{"Content-Type", "Cache-Control", "Set-Cookie", "Location", "X-Robots-Tag", "Retry-After", "Nice-Mode", "Nice-Timestamp", "Nice-Challenge"}
+
+const (
+	// gymMostHold is the longest the gym's answer may ask the edge to hold it (X-NiceTry-Hold).
+	gymMostHold = 30 * time.Second
+	// gymMostHeld caps the answers held at once across the edge: each keeps a connection open, so
+	// past it an answer goes back at once.
+	gymMostHeld = 500
+)
+
+// gymHeld counts the gym answers being held right now.
+var gymHeld atomic.Int64
 
 // Gym is the nicetry_gym handler. For requests on a gym trigger (host + path glob, polled from
 // NiceTryBot), it asks the check endpoint whether the visitor trains first. 204 lets the request
@@ -87,6 +99,32 @@ func (g *Gym) Validate() error {
 	return nil
 }
 
+// holdGymAnswer waits as long as the gym's answer asks (X-NiceTry-Hold, in seconds, at most
+// gymMostHold) before it goes back: the Bouncer asks it of an unverified script's API call, so a script
+// hammering the API waits on every call, like a tarpit. It ends early when the client gives up, and
+// doesn't wait at all past gymMostHeld held answers. It returns how long it waited.
+func holdGymAnswer(r *http.Request, header string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(header))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	delay := min(time.Duration(seconds)*time.Second, gymMostHold)
+	if gymHeld.Add(1) > gymMostHeld {
+		gymHeld.Add(-1)
+		return 0
+	}
+	defer gymHeld.Add(-1)
+
+	start := time.Now()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-r.Context().Done():
+	}
+	return time.Since(start)
+}
+
 func (g *Gym) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	// The gym's own requests (/_q/…) and the edge diagnostic are never sent to the gym. The path is
 	// cleaned first: /_q/../login reaches the origin as /login.
@@ -142,7 +180,13 @@ func (g *Gym) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.H
 	}
 	if extra, ok := r.Context().Value(caddyhttp.ExtraLogFieldsCtxKey).(*caddyhttp.ExtraLogFields); ok {
 		extra.Add(zap.String("action", action))
+		if held := holdGymAnswer(r, resp.Header.Get("X-NiceTry-Hold")); held > 0 {
+			extra.Add(zap.Int64("gym_hold_ms", held.Milliseconds()))
+		}
+	} else {
+		holdGymAnswer(r, resp.Header.Get("X-NiceTry-Hold"))
 	}
+	caddyhttp.SetVar(r.Context(), gymAnsweredVar, true)
 	w.WriteHeader(resp.StatusCode)
 	_, err = io.Copy(w, io.LimitReader(resp.Body, 4<<20))
 	return err
@@ -151,6 +195,17 @@ func (g *Gym) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.H
 // gymPathVar holds the judged path a request's trigger matched, when it isn't the path as sent
 // (/index.php/login for a trigger on /login*).
 const gymPathVar = "nicetry_gym_path"
+
+// gymAnsweredVar marks a request the gym (or the Bot Bouncer) answered in place of the origin, so the
+// handlers around it (the tarpit's status holds and 404 counts) don't take the gym's own 403, 404 or 429
+// for the origin's.
+const gymAnsweredVar = "nicetry_gym_answered"
+
+// gymAnswered says whether the gym answered the request in place of the origin.
+func gymAnswered(r *http.Request) bool {
+	answered, _ := caddyhttp.GetVar(r.Context(), gymAnsweredVar).(bool)
+	return answered
+}
 
 // describe is what NiceTryBot hears about a visitor's request: who, what, and the gym's own cookies.
 func (g *Gym) describe(r *http.Request) http.Header {

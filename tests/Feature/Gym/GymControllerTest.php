@@ -4,6 +4,7 @@ use App\Enums\ClientPlatform;
 use App\Enums\GymExit;
 use App\Enums\GymSessionStatus;
 use App\Gym\HashPuzzle;
+use App\Models\Domain;
 use App\Models\GymRoutine;
 use App\Models\GymSession;
 use Illuminate\Support\Facades\Crypt;
@@ -49,6 +50,25 @@ test('a visitor who solves the proof of work reloads the page they asked for, ca
         ->exit_action->toBe(GymExit::Continue)
         ->hashes->toBe(4096);
 });
+
+test('a pass earned on www still counts after the origin redirects to the bare domain, when the site serves both', function (bool $servesWww, ?string $cookieDomain) {
+    config(['services.nicetry_edge.token' => 'edge-token']);
+    $routine = GymRoutine::factory()->obstacles(['proof-of-work' => ['difficulty' => 12]])->create(['pass_seconds' => 3600]);
+    $domain = Domain::factory()->for($routine->team)->verified()->enforcing()->create(['hostname' => 'shop.example', 'serves_www' => $servesWww]);
+    $session = gymSessionIn($routine, ['domain_id' => $domain->id, 'destination' => '/']);
+    $step = $routine->obstacles[0]['id'];
+    $this->get(route('gym.show', $session));
+    $challenge = $session->fresh()->state($step)->get('challenge');
+
+    $response = $this->withHeaders(['Authorization' => 'Bearer edge-token', 'X-Forwarded-Host' => 'www.shop.example'])
+        ->postJson(route('gym.attempt', $session), ['step' => $step, 'challenge' => $challenge, 'nonce' => solvePuzzle($challenge, 12)])
+        ->assertCookie(GymSession::PASS_COOKIE, encrypted: false);
+
+    expect($response->getCookie(GymSession::PASS_COOKIE, decrypt: false)->getDomain())->toBe($cookieDomain);
+})->with([
+    'serves www' => [true, 'shop.example'],
+    'doesn\'t serve www' => [false, null],
+]);
 
 test('a wrong proof of work is refused with a fresh challenge', function () {
     $routine = GymRoutine::factory()->obstacles(['proof-of-work' => ['difficulty' => 12]])->create();

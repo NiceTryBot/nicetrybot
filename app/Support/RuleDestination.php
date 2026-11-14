@@ -10,6 +10,7 @@ final readonly class RuleDestination
     /**
      * @param  string|null  $column  The board column it puts the rule in. Null for a link that doesn't act on the client (a routine that's off, a bucket reading the rule): it shows on the rule's cards, and leaves the rule where it is.
      * @param  string|null  $note  A short qualifier, like the domains it skips.
+     * @param  bool  $fingerprints  Whether it takes a JS fingerprint of the clients it gets (the Bouncer, a routine with fingerprinting on), for the mark on the rule's card.
      */
     public function __construct(
         public ?string $column,
@@ -17,6 +18,7 @@ final readonly class RuleDestination
         public string $icon,
         public ?string $url = null,
         public ?string $note = null,
+        public bool $fingerprints = false,
     ) {
         //
     }

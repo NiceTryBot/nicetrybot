@@ -109,7 +109,7 @@ func (o *Origins) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	host := strings.ToLower(hostOnly(r.Host))
 	route, ok := (*o.origins.current.Load())[host]
 	if !ok && o.resolver != nil {
-		route, ok = o.resolver.lookup(host)
+		route, ok = o.resolver.lookup(r.Context(), host)
 	}
 	if !ok {
 		return next.ServeHTTP(w, r)

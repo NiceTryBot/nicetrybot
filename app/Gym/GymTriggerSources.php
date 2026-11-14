@@ -24,7 +24,7 @@ class GymTriggerSources
     /**
      * Every source's cookie triggers, those without hosts left out.
      *
-     * @return list<array{hosts: list<string>, path: string, rules?: list<array{id: int, expr: array<string, mixed>}>}>
+     * @return list<array{hosts: list<string>, path: string, rules?: list<array{id: int, expr: array<string, mixed>}>, limited?: bool}>
      */
     public function cookieTriggers(): array
     {

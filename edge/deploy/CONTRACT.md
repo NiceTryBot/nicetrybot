@@ -64,6 +64,8 @@ permission module sends it as a header, so the token is never in a URL or in Cad
 | `GET /caddy/blackhole` (the `nicetry-blackhole` agent, with the Blackhole add-on) | every 30 s, ETag | `{"mode":"observe"\|"enforce","entries":[{"address","expires_at"}],"protect":[...]}` (must name `entries`). `expires_at` is always a time: an entry with no end is sent with one about a day away, moved on each hour, so the kernel always holds a timeout. A 404 means the add-on is off: the agent removes its table. |
 | `POST /caddy/blackhole/report` (the same agent) | every 30 s | Takes `{"edge","version","mode","entries","error","counters":[{"address","packets","bytes"}]}`, answers 204. |
 | `GET /caddy/rewrite-feed` | every 10 s, ETag | `{"rewrites":[...]}` (must name the key) |
+| `GET /caddy/honeypot-feed` (with the Honeypots add-on) | every 10 s, ETag | `{"honeypots":[...]}` (must name the key) |
+| `GET /caddy/assets-feed` (with the Offload Assets add-on) | every 10 s, ETag | `{"assets":{"domain","pull_host","pull_aliases","secret_sha256","style","extensions","skip_paths","sites":[{"key","site","to","hosts","on"}]}}` (must name `assets`; an empty `domain` means no CDN). `to` (optional) is the site's CDN base URL, no trailing slash: `https://<key>.<domain>` in host style, `https://cdn.<domain>/<key>` in path style; `style` (optional, `host`\|`path`) only describes the `to`s. `pull_aliases` (optional) are other hostnames pulls arrive under (a CDN that can't set the origin Host, e.g. Cloudflare below Enterprise, pulls as its own hostname), treated exactly as `pull_host`. A 404 means the add-on is off: no CDN. |
 | `POST /caddy/ingest` | Vector, every ~2 s | 2xx. Body below. |
 
 Polls that fail keep the last list, so sites stay up while the app restarts.
@@ -115,6 +117,41 @@ upgrade, and a body over 4 MB pass untouched. A rewritten response gets its new 
 `Accept-Ranges` and `Content-MD5`. With `headers` set, the same replacement also runs on every response's header
 values (HEAD included, whatever the body), except `Content-Length`, `Content-Encoding`, `Content-Type`,
 `Transfer-Encoding`, `Connection` and `Trailer`; line breaks in `replace` become spaces there.
+
+A request on a hostname with honeypot traps (`GET /caddy/honeypot-feed`:
+`{"honeypots":[{"id","honeypot","hosts","origin","secret","timeout","globs","regexes"}]}`) whose path fits one of a
+trap's patterns (a glob matches the whole path in any case, `*` is anything; a regex matches anywhere, as written)
+and that the origin answers with a 404 is answered by the trap's honeypot instead: the visitor's method, path,
+query, headers and body (up to 1 MiB) go to `origin` with `Host` set to the honeypot's hostname,
+`X-Forwarded-Host` the visited hostname, `X-Forwarded-For` the visitor and `X-NiceTry-Origin-Secret` the trap's
+`secret`, within `timeout` seconds (default 30). Its answer goes out with `X-Robots-Tag: noindex, nofollow`,
+without its `Server`, `Date` or framing headers; if it can't answer, the origin's own 404 goes out. Any other
+status, an allowed client, an upgrade and a bigger body pass untouched. Logged as `honeypot`, `honeypot_trap`,
+`honeypot_status`, `honeypot_ms` and `honeypot_outcome` (`served` or `failed`).
+
+A rewrite with `assets` (`{"to","extensions","skip_paths"}`, the Offload Assets add-on; its `find` is empty) moves
+URLs of files with those extensions under the base URL `to` (`https://<key>.<asset domain>` in host style,
+`https://cdn.<asset domain>/<key>` in path style; a trailing slash is dropped, and a `to` that isn't `https`, has a
+query or fragment, or has a path with anything but `A-Za-z0-9._~%/-` turns the rewrite off) in HTML pages only
+(never stylesheets or scripts, so what the CDN pulls is byte for byte the origin's): absolute ones on the entry's hosts (`https://`, `//`, and JSON-escaped `https:\/\/`) and
+root-relative ones after a quote, `(`, `=` or a srcset comma. Files under `skip_paths`, and service or web worker
+scripts (`sw.js`, `*-sw.js`, `*worker*.js`), stay put, and so does any `<script>` or `<link>` tag with an `integrity`
+attribute (moved, a same-origin one without `crossorigin` would fail its check); pages under `skip_paths` aren't
+rewritten at all.
+
+Offload Assets pulls (from any pull CDN, in either style): a request to the feed's `pull_host` (or one of its `pull_aliases`) carrying `X-NiceTry-Assets` whose SHA-256 is `secret_sha256`,
+for `GET`/`HEAD /<key>/<path>` with a listed extension, is served as `<path>` on that key's `site` (through the
+site's origin, lockdown included; past the tarpit, gym and verdict; not logged, without cookies), and its answer
+carries `Access-Control-Allow-Origin: *` (no credentials), cached with the file: CloudFront's CORS policy drops the
+header when the browser sends `Priority`, as Chrome does. An SVG's answer (a `.svg`/`.svgz` path, or
+`Content-Type: image/svg+xml`) also carries `Content-Security-Policy: sandbox`, added to any the origin sent, so an
+SVG opened as a document can't run script on the CDN's hostname (shared by every site in path style). Anything
+else on the pull host or an alias (no secret, a wrong one, a page, an unknown key) is a 404; ACME HTTP challenges
+are still answered first, by Caddy before any handler. A visitor's `GET`/`HEAD` for a listed file on a host of a site that's `on` gets
+`302 Location: <to><path>?<query>`, or `https://<key>.<domain><path>?<query>` when the site has no usable `to`
+(the same test as the rewrite's) (`Cache-Control: public, max-age=3600`), logged with
+`bot_tag` `s3_assets`, unless it's a classic script or stylesheet (`Sec-Fetch-Dest` `script`/`style` with
+`Sec-Fetch-Mode: no-cors`), which an integrity attribute may pin: that one is served by the site. A visitor's own `X-NiceTry-Assets` never reaches an origin.
 
 ## Ingest body
 

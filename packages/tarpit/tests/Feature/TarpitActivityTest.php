@@ -121,3 +121,20 @@ test('Activity shows Tarpit in place of Blocked when the tarpit answered, and be
 
     Livewire::test('pages::activity.index')->call('inspect', $hungUp->id)->assertSeeHtml('data-test="tarpit-details"');
 });
+
+test('a trap\'s holds import with what it caught', function () {
+    Storage::fake('edge-logs');
+    $domain = Domain::factory()->verified()->enforcing()->create(['hostname' => 'shop.example']);
+    $tarpit = Tarpit::factory()->for($domain->team)->create();
+
+    Storage::disk('edge-logs')->put('raw/dt=2026-10-27/hh=21/node-1.ndjson.gz', gzencode(collect([
+        tarpitLogLine(['path' => '/.env', 'tarpit' => $tarpit->id, 'tarpit_why' => 'probe', 'tarpit_try' => 1, 'tarpit_ms' => 2001, 'tarpit_outcome' => 'held']),
+        tarpitLogLine(['path' => '/admin', 'status' => 403, 'tarpit' => $tarpit->id, 'tarpit_why' => 'status', 'tarpit_try' => 2, 'tarpit_ms' => 4001, 'tarpit_outcome' => 'held']),
+        tarpitLogLine(['path' => '/missing', 'status' => 404, 'tarpit' => $tarpit->id, 'tarpit_why' => 'got_404', 'tarpit_try' => 3, 'tarpit_ms' => 8001, 'tarpit_outcome' => 'held']),
+    ])->map(fn (array $line) => json_encode($line))->implode("\n")));
+
+    app(ImportEdgeLogFile::class)->handle('raw/dt=2026-10-27/hh=21/node-1.ndjson.gz');
+
+    // 'status' is the current name, 'got_404' the old one; both read as "the origin answered with a status it traps".
+    expect(TarpitHold::orderBy('id')->pluck('reason')->all())->toBe([TarpitReason::Probe, TarpitReason::GotStatus, TarpitReason::GotStatus]);
+});

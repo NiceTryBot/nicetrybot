@@ -13,9 +13,12 @@ enum TarpitReason: int
     case NotFound = 4;
     case Burst = 5;
     case Client = 6;
+    case Probe = 7;
+    case GotStatus = 8;
 
     /**
-     * Get the reason the edge logged, by its name there.
+     * Get the reason the edge logged, by its name there. `got_404` is the old name for a status trap's
+     * catch, kept so holds logged before the trap took other statuses still read.
      */
     public static function fromSlug(?string $slug): ?self
     {
@@ -26,6 +29,8 @@ enum TarpitReason: int
             'not_found' => self::NotFound,
             'burst' => self::Burst,
             'client' => self::Client,
+            'probe' => self::Probe,
+            'status', 'got_404' => self::GotStatus,
             default => null,
         };
     }
@@ -42,6 +47,8 @@ enum TarpitReason: int
             self::NotFound => __('the client collected too many 404s'),
             self::Burst => __('the client sent a burst of requests'),
             self::Client => __('the client was on its list'),
+            self::Probe => __('the request contained one of its strings'),
+            self::GotStatus => __('the origin answered with a status it traps'),
         };
     }
 }

@@ -81,7 +81,7 @@ test('installing a pack adds its rules switched on and only tagging, its routine
     $rules = $team->edgeRules()->orderBy('id')->get();
     $routine = $team->gymRoutines()->sole();
 
-    expect($changes->added)->toBe(['Secret and source hunters', 'CMS and admin probes that miss', 'Wordlist sweep', '404s across your sites', 'Scanners work for it'])
+    expect($changes->added)->toBe(['Secret and source hunters', 'CMS and admin probes that miss', 'Wordlist sweep', '404s across your sites', 'Missing a lot, never browsing', 'Livewire calls that keep failing', 'Scanners work for it'])
         ->and($changes->rulesStartOff)->toBeFalse()
         ->and($rules->pluck('enabled')->unique()->all())->toBe([true])
         ->and($rules->pluck('action')->unique()->all())->toBe([RuleAction::Tag])
@@ -92,11 +92,13 @@ test('installing a pack adds its rules switched on and only tagging, its routine
         ->and($routine->obstacles[0])->toMatchArray(['type' => 'proof-of-work', 'config' => ['difficulty' => 20, 'display' => 'quiet'], 'escalate' => 'waiting-room']);
 
     expect(RulePackInstall::query()->where('team_id', $team->id)->orderBy('id')->get(['pack', 'item', 'version', 'edge_rule_id', 'gym_routine_id'])->toArray())->toBe([
-        ['pack' => 'scanners', 'item' => 'secret-hunters', 'version' => 1, 'edge_rule_id' => $rules[0]->id, 'gym_routine_id' => null],
-        ['pack' => 'scanners', 'item' => 'cms-probes', 'version' => 1, 'edge_rule_id' => $rules[1]->id, 'gym_routine_id' => null],
-        ['pack' => 'scanners', 'item' => 'wordlist-sweep', 'version' => 1, 'edge_rule_id' => $rules[2]->id, 'gym_routine_id' => null],
-        ['pack' => 'scanners', 'item' => 'multi-site-404s', 'version' => 1, 'edge_rule_id' => $rules[3]->id, 'gym_routine_id' => null],
-        ['pack' => 'scanners', 'item' => 'scanners-work', 'version' => 1, 'edge_rule_id' => null, 'gym_routine_id' => $routine->id],
+        ['pack' => 'scanners', 'item' => 'secret-hunters', 'version' => 3, 'edge_rule_id' => $rules[0]->id, 'gym_routine_id' => null],
+        ['pack' => 'scanners', 'item' => 'cms-probes', 'version' => 3, 'edge_rule_id' => $rules[1]->id, 'gym_routine_id' => null],
+        ['pack' => 'scanners', 'item' => 'wordlist-sweep', 'version' => 3, 'edge_rule_id' => $rules[2]->id, 'gym_routine_id' => null],
+        ['pack' => 'scanners', 'item' => 'multi-site-404s', 'version' => 3, 'edge_rule_id' => $rules[3]->id, 'gym_routine_id' => null],
+        ['pack' => 'scanners', 'item' => 'missing-a-lot', 'version' => 3, 'edge_rule_id' => $rules[4]->id, 'gym_routine_id' => null],
+        ['pack' => 'scanners', 'item' => 'livewire-failing', 'version' => 3, 'edge_rule_id' => $rules[5]->id, 'gym_routine_id' => null],
+        ['pack' => 'scanners', 'item' => 'scanners-work', 'version' => 3, 'edge_rule_id' => null, 'gym_routine_id' => $routine->id],
     ]);
 });
 
@@ -162,10 +164,10 @@ test('an update rewrites what the team hasn\'t changed, keeps what it has, and b
 
     expect($changes->updated)->toBe(['Secret and source hunters'])
         ->and($changes->kept)->toBe(['Wordlist sweep'])
-        ->and($changes->added)->toBe(['CMS and admin probes that miss', '404s across your sites', 'Scanners work for it'])
+        ->and($changes->added)->toBe(['CMS and admin probes that miss', '404s across your sites', 'Missing a lot, never browsing', 'Livewire calls that keep failing', 'Scanners work for it'])
         ->and($older->fresh())->name->toBe('Secret and source hunters')->source->toBe(rulePack('scanners')->rules()['secret-hunters']['source'])->duration_seconds->toBe(7 * 86400)
         ->and($edited->fresh()->source)->toContain('AND status = 404')
-        ->and(RulePackInstall::query()->pluck('version')->unique()->all())->toBe([1])
+        ->and(RulePackInstall::query()->pluck('version')->unique()->all())->toBe([3])
         ->and(RulePackInstall::query()->where('item', 'secret-hunters')->sole()->isEdited())->toBeFalse()
         ->and(RulePackInstall::query()->where('item', 'wordlist-sweep')->sole()->isEdited())->toBeTrue();
 });
@@ -209,7 +211,7 @@ test('uninstalling a pack deletes what the team hasn\'t changed and keeps what i
 
     $changes = app(UninstallRulePack::class)->handle($team, rulePack('browser-impostors'));
 
-    expect($changes->removed)->toBe(['Spoofed browsers wait', 'Outdated browsers wait', 'Spoofed browser', 'Headless browser'])
+    expect($changes->removed)->toBe(['Spoofed browsers wait', 'Outdated browsers wait', 'Spoofed browser', 'Chrome on HTTP/1.1 only', 'Headless browser'])
         ->and($changes->kept)->toBe(['Outdated browser'])
         ->and($team->edgeRules()->pluck('name')->all())->toBe(['Outdated browser'])
         ->and($team->gymRoutines()->count())->toBe(0)

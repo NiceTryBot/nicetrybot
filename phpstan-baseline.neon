@@ -229,13 +229,13 @@ parameters:
 			path: app/Actions/Rules/BacktestRule.php
 
 		-
-			message: '#^Method App\\Actions\\Rules\\BacktestRule\:\:groupedSubjects\(\) should return Illuminate\\Support\\Collection\<int, object\{subject_ip\: string\|null, subject_ja4\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}\> but returns Illuminate\\Support\\Collection\<int, object\{subject_ip\: mixed, subject_ja4\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}&stdClass\>\.$#'
+			message: '#^Method App\\Actions\\Rules\\BacktestRule\:\:groupedSubjects\(\) should return Illuminate\\Support\\Collection\<int, object\{subject_ip\: string\|null, subject_ja4\: int\|null, subject_domain\: int\|null, subject_path\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}\> but returns Illuminate\\Support\\Collection\<int, object\{subject_ip\: string\|null, subject_ja4\: int\|null, subject_domain\: int\|null, subject_path\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}&stdClass\>\.$#'
 			identifier: return.type
 			count: 1
 			path: app/Actions/Rules/BacktestRule.php
 
 		-
-			message: '#^Method App\\Actions\\Rules\\BacktestRule\:\:replayedSubjects\(\) should return Illuminate\\Support\\Collection\<int, object\{subject_ip\: string\|null, subject_ja4\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}\> but returns Illuminate\\Support\\Collection\<int, object\{subject_ip\: mixed, subject_ja4\: int\|null, requests\: int\<0, max\>, hosts\: int\<0, max\>, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}&stdClass\>\.$#'
+			message: '#^Method App\\Actions\\Rules\\BacktestRule\:\:replayedSubjects\(\) should return Illuminate\\Support\\Collection\<int, object\{subject_ip\: string\|null, subject_ja4\: int\|null, subject_domain\: int\|null, subject_path\: int\|null, requests\: int, hosts\: int, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}\> but returns Illuminate\\Support\\Collection\<int, object\{subject_ip\: string\|null, subject_ja4\: int\|null, subject_domain\: int\|null, subject_path\: int\|null, requests\: int\<0, max\>, hosts\: int\<0, max\>, first_seen\: string, last_seen\: string, last_id\: int, hosting\: bool\}&stdClass\>\.$#'
 			identifier: return.type
 			count: 1
 			path: app/Actions/Rules/BacktestRule.php
@@ -259,7 +259,7 @@ parameters:
 			path: app/Actions/Rules/BacktestRule.php
 
 		-
-			message: '#^Parameter \$subjects of class App\\Data\\RuleBacktest constructor expects list\<array\{client_ip\: string\|null, ja4\: string\|null, network\: string\|null, is_hosting\: bool, country\: string\|null, requests\: int, hosts\: int, first_seen\: string, \.\.\.\}\>, array\<int, array\{client_ip\: string\|null, ja4\: mixed, network\: mixed, is_hosting\: bool, country\: mixed, requests\: int, hosts\: int, first_seen\: string, \.\.\.\}\> given\.$#'
+			message: '#^Parameter \$subjects of class App\\Data\\RuleBacktest constructor expects list\<array\{scope\: string\|null, client_ip\: string\|null, ja4\: string\|null, network\: string\|null, is_hosting\: bool, country\: string\|null, requests\: int, hosts\: int, \.\.\.\}\>, array\<int, array\{scope\: string\|null, client_ip\: string\|null, ja4\: mixed, network\: mixed, is_hosting\: bool, country\: mixed, requests\: int, hosts\: int, \.\.\.\}\> given\.$#'
 			identifier: argument.type
 			count: 1
 			path: app/Actions/Rules/BacktestRule.php

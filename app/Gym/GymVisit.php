@@ -4,8 +4,10 @@ namespace App\Gym;
 
 use App\Enums\GymExit;
 use App\Enums\GymSessionStatus;
+use App\Http\Middleware\AuthenticateEdge;
 use App\Models\GymSession;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -90,7 +92,7 @@ class GymVisit
 
         if ($exit === GymExit::Continue && ! $this->session->is_preview) {
             return redirect()->away($this->session->destination ?? '/')
-                ->withCookie($this->session->passCookie($this->plan->passSeconds, $this->request->isSecure()));
+                ->withCookie($this->session->passCookie($this->plan->passSeconds, $this->request->isSecure(), $this->passDomain()));
         }
 
         return self::page('gym.exit', [
@@ -98,6 +100,24 @@ class GymVisit
             'plan' => $this->plan,
             'exit' => $exit,
         ], $exit->status() ?? 200);
+    }
+
+    /**
+     * Get the domain the pass is set for: the site's hostname when it serves www too and the visitor is
+     * on either name, so a pass earned on www.site still counts after the origin redirects to site (or
+     * the other way). Otherwise null, which keeps the pass to the host the visitor is on. The gym check
+     * names that host in X-NiceTry-Host; an attempt arrives on the host itself.
+     */
+    private function passDomain(): ?string
+    {
+        $domain = $this->session->domain;
+        $host = Str::lower((string) ((AuthenticateEdge::isFromEdge($this->request) ? $this->request->header('X-NiceTry-Host') : null) ?: $this->request->getHost()));
+
+        if ($domain === null || ! in_array($host, [$domain->hostname, 'www.'.$domain->hostname], true) || ! $domain->servesWww()) {
+            return null;
+        }
+
+        return $domain->hostname;
     }
 
     /**

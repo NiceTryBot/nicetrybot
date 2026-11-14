@@ -25,15 +25,10 @@ use NiceTry\Tarpit\Enums\TarpitOutcome;
 use NiceTry\Tarpit\Enums\TarpitWhenFull;
 use NiceTry\Tarpit\Models\Tarpit;
 use NiceTry\Tarpit\Models\TarpitHold;
+use NiceTry\Tarpit\Rules\StatusHolds;
 
 new #[Title('Tarpits')] class extends Component
 {
-    /**
-     * A rule to send to a new tarpit, from the Rules page's "New tarpit".
-     */
-    #[Url(as: 'rule', except: null)]
-    public ?int $forRule = null;
-
     /**
      * How far back the activity chart reaches.
      */
@@ -65,10 +60,12 @@ new #[Title('Tarpits')] class extends Component
     /** @var list<int|string> */
     public array $domainIds = [];
 
-    /** @var list<int|string> */
-    public array $ruleIds = [];
+    /**
+     * The quiet needed to step back each try, in seconds and in turn (Tarpit Pro); blank for none.
+     */
+    public string $cooldowns = '';
 
-    public bool $takesGymNoShows = true;
+    public bool $takesGymNoShows = false;
 
     public bool $countsNotFound = false;
 
@@ -81,6 +78,9 @@ new #[Title('Tarpits')] class extends Component
     public int $burstCount = 30;
 
     public int $burstWithin = 10;
+
+
+
 
     public int $freeTries = 1;
 
@@ -96,16 +96,6 @@ new #[Title('Tarpits')] class extends Component
 
     public int $forgetMinutes = 15;
 
-    public function mount(): void
-    {
-        if ($this->forRule !== null && $this->canManage && $this->team->edgeRules()->whereKey($this->forRule)->exists()) {
-            $this->create();
-            $this->ruleIds = [$this->forRule];
-        }
-
-        $this->forRule = null;
-    }
-
     #[Computed]
     public function team(): Team
     {
@@ -119,13 +109,23 @@ new #[Title('Tarpits')] class extends Component
     }
 
     /**
+     * Whether Tarpit Pro is on, which unlocks holding any status, asset-safe 404s, the cooldown ladder
+     * Off, the editor shows the free behaviour and an upsell.
+     */
+    #[Computed]
+    public function pro(): bool
+    {
+        return Tarpit::proIsOn();
+    }
+
+    /**
      * @return Collection<int, Tarpit>
      */
     #[Computed]
     public function tarpits(): Collection
     {
         return $this->team->tarpits()
-            ->with(['rules:edge_rules.id,edge_rules.name,edge_rules.enabled', 'domains:domains.id,domains.hostname'])
+            ->with(['rules:edge_rules.id,edge_rules.name,edge_rules.enabled,edge_rules.source', 'domains:domains.id,domains.hostname'])
             ->orderBy('name')
             ->get();
     }
@@ -244,14 +244,23 @@ new #[Title('Tarpits')] class extends Component
     }
 
     /**
-     * The team's rules, to pick from.
+     * The statuses a rule has its tarpit hold the origin's answer on, when it reads nothing but the status.
      *
-     * @return \Illuminate\Support\Collection<int, \App\Models\EdgeRule>
+     * @return list<int>|null
      */
-    #[Computed]
-    public function rules(): \Illuminate\Support\Collection
+    public function statusesHeldBy(\App\Models\EdgeRule $rule): ?array
     {
-        return $this->team->edgeRules()->orderBy('name')->get(['id', 'name', 'enabled']);
+        $script = rescue(fn () => $rule->script(), report: false);
+
+        return $script === null ? null : StatusHolds::of($script);
+    }
+
+    /**
+     * Determine if one request decides the rule, so its tarpit holds the very request it matches.
+     */
+    public function holdsTheRequest(\App\Models\EdgeRule $rule): bool
+    {
+        return rescue(fn () => $rule->script()->isLive(), false, report: false);
     }
 
     /**
@@ -279,7 +288,7 @@ new #[Title('Tarpits')] class extends Component
         Gate::authorize('create', [Tarpit::class, $this->team]);
 
         $this->resetValidation();
-        $this->reset(['editingId', 'name', 'enabled', 'allDomains', 'domainIds', 'ruleIds', 'takesGymNoShows', 'countsNotFound', 'notFoundCount', 'notFoundWithin', 'countsBursts', 'burstCount', 'burstWithin', 'freeTries', 'delays', 'maxDelay', 'maxHeld', 'whenFull', 'afterWait', 'forgetMinutes']);
+        $this->reset(['editingId', 'name', 'enabled', 'allDomains', 'domainIds', 'cooldowns', 'takesGymNoShows', 'countsNotFound', 'notFoundCount', 'notFoundWithin', 'countsBursts', 'burstCount', 'burstWithin', 'freeTries', 'delays', 'maxDelay', 'maxHeld', 'whenFull', 'afterWait', 'forgetMinutes']);
         $this->name = $this->tarpits->isEmpty() ? __('Probers') : '';
 
         Flux::modal('tarpit-editor')->show();
@@ -290,7 +299,7 @@ new #[Title('Tarpits')] class extends Component
      */
     public function edit(int $tarpitId): void
     {
-        $tarpit = $this->team->tarpits()->with(['rules:edge_rules.id', 'domains:domains.id'])->findOrFail($tarpitId);
+        $tarpit = $this->team->tarpits()->with('domains:domains.id')->findOrFail($tarpitId);
         Gate::authorize('update', $tarpit);
 
         $this->resetValidation();
@@ -299,7 +308,7 @@ new #[Title('Tarpits')] class extends Component
         $this->enabled = $tarpit->enabled;
         $this->allDomains = $tarpit->all_domains;
         $this->domainIds = $tarpit->domains->modelKeys();
-        $this->ruleIds = $tarpit->rules->modelKeys();
+        $this->cooldowns = implode(', ', $tarpit->cooldowns ?? []);
         $this->takesGymNoShows = $tarpit->takes_gym_no_shows;
         $this->countsNotFound = $tarpit->not_found_count !== null;
         $this->notFoundCount = $tarpit->not_found_count ?? 10;
@@ -330,8 +339,7 @@ new #[Title('Tarpits')] class extends Component
             'name' => ['required', 'string', 'max:80', Rule::unique('tarpits', 'name')->where('team_id', $this->team->id)->ignore($this->editingId)],
             'domainIds' => ['array', Rule::requiredIf(! $this->allDomains)],
             'domainIds.*' => ['integer', Rule::exists('domains', 'id')->where('team_id', $this->team->id)],
-            'ruleIds' => ['array'],
-            'ruleIds.*' => ['integer', Rule::exists('edge_rules', 'id')->where('team_id', $this->team->id)],
+            'cooldowns' => ['nullable', 'string', 'regex:/^\s*\d{1,3}(\s*,\s*\d{1,3}){0,9}\s*$/'],
             'notFoundCount' => ['integer', 'min:2', 'max:1000'],
             'notFoundWithin' => ['integer', 'min:5', 'max:3600'],
             'burstCount' => ['integer', 'min:5', 'max:10000'],
@@ -345,16 +353,16 @@ new #[Title('Tarpits')] class extends Component
             'forgetMinutes' => ['integer', 'min:1', 'max:1440'],
         ], [
             'delays.regex' => __('List up to ten waits in seconds, like 2, 8, 24.'),
+            'cooldowns.regex' => __('List up to ten cooldowns in seconds, like 10, 20, 30.'),
             'domainIds.required' => __('Pick at least one domain, or cover them all.'),
         ]);
 
+        // Tarpit Pro unlocks the ladder; without it, keep what was set but save no new one.
+        $pro = $this->pro;
         $delays = array_map(fn (string $seconds) => max(0, min((int) trim($seconds), $this->maxDelay)), explode(',', $this->delays));
-
-        if (! $this->countsNotFound && ! $this->countsBursts && ! $this->takesGymNoShows && $this->ruleIds === []) {
-            $this->addError('ruleIds', __('Nobody would ever go in: pick a rule, take the gym\'s no-shows, or count 404s or bursts.'));
-
-            return;
-        }
+        $cooldowns = $pro && trim($this->cooldowns) !== ''
+            ? array_map(fn (string $seconds) => max(1, min((int) trim($seconds), Tarpit::LONGEST_COOLDOWN)), explode(',', $this->cooldowns))
+            : ($pro ? null : $tarpit?->cooldowns);
 
         $attributes = [
             'name' => trim($this->name),
@@ -367,6 +375,7 @@ new #[Title('Tarpits')] class extends Component
             'when_full' => TarpitWhenFull::from($this->whenFull),
             'after_wait' => TarpitAfterWait::from($this->afterWait),
             'forget_after_seconds' => $this->forgetMinutes * 60,
+            'cooldowns' => $cooldowns,
             'takes_gym_no_shows' => $this->takesGymNoShows,
             'not_found_count' => $this->countsNotFound ? $this->notFoundCount : null,
             'not_found_within_seconds' => $this->notFoundWithin,
@@ -376,7 +385,6 @@ new #[Title('Tarpits')] class extends Component
 
         DB::transaction(function () use (&$tarpit, $attributes) {
             $tarpit = $tarpit === null ? $this->team->tarpits()->create($attributes) : tap($tarpit)->update($attributes);
-            $tarpit->rules()->sync(array_map('intval', $this->ruleIds));
             $tarpit->domains()->sync($this->allDomains ? [] : array_map('intval', $this->domainIds));
         });
         Tarpit::forgetFeed();
@@ -531,9 +539,21 @@ new #[Title('Tarpits')] class extends Component
                         <dl class="mt-3 grid gap-x-6 gap-y-1 text-xs text-zinc-500 sm:grid-cols-[auto_1fr] dark:text-zinc-400">
                             <dt class="font-medium text-zinc-700 dark:text-zinc-200">{{ __('Who goes in') }}</dt>
                             <dd class="flex flex-wrap gap-1">
-                                @foreach ($tarpit->rules as $rule)
-                                    <a href="{{ route('rules.index', ['rule' => $rule->id]) }}" wire:navigate><flux:badge size="sm" icon="scale">{{ $rule->name }}{{ $rule->enabled ? '' : ' ('.__('off').')' }}</flux:badge></a>
-                                @endforeach
+                                @forelse ($tarpit->rules as $rule)
+                                    @php($held = $this->statusesHeldBy($rule))
+                                    <a href="{{ route('rules.index', ['rule' => $rule->id]) }}" wire:navigate data-test="tarpit-rule">
+                                        <flux:badge size="sm" icon="scale">
+                                            {{ $rule->name }}{{ $rule->enabled ? '' : ' ('.__('off').')' }}
+                                            @if ($held)
+                                                <span class="ms-1 font-mono">· {{ implode(', ', $held) }}</span>
+                                            @elseif ($this->holdsTheRequest($rule))
+                                                <span class="ms-1">· {{ __('on the request') }}</span>
+                                            @endif
+                                        </flux:badge>
+                                    </a>
+                                @empty
+                                    <span data-test="tarpit-no-rules">{{ __('No rule sends clients here yet. Add TARPIT \':name\' to one.', ['name' => $tarpit->name]) }}</span>
+                                @endforelse
                                 @if ($tarpit->takes_gym_no_shows)
                                     <flux:badge size="sm" icon="fire">{{ __('Gym no-shows') }}</flux:badge>
                                 @endif
@@ -573,7 +593,7 @@ new #[Title('Tarpits')] class extends Component
         @empty
             <x-ntb.panel>
                 <x-ntb.empty-state :heading="__('No tarpits yet.')">
-                    {{ __('Start with one for probers: send the "Probers, for a tarpit" rule to it, take the gym\'s no-shows, and count 404s at the edge.') }}
+                    {{ __('Rules fill tarpits. On the Rules page, start from "Error answers, to a tarpit" or "Probe paths, to a tarpit": saving one makes its tarpit, here.') }}
                     @if ($this->canManage)
                         <x-slot:actions>
                             <flux:button variant="primary" icon="plus" wire:click="create">{{ __('New tarpit') }}</flux:button>
@@ -598,30 +618,39 @@ new #[Title('Tarpits')] class extends Component
 
             <flux:fieldset>
                 <flux:legend>{{ __('Who goes in') }}</flux:legend>
-                <div class="space-y-4">
-                    <flux:checkbox.group wire:model="ruleIds" :label="__('Clients of these rules')" :description="__('Everyone holding one of their verdicts. A rule one request can decide (like a probe path) also holds the very request that matches.')">
-                        @forelse ($this->rules as $rule)
-                            <flux:checkbox :value="$rule->id" :label="$rule->name.($rule->enabled ? '' : ' ('.__('off').')')" />
+                <flux:text class="text-sm">
+                    {{ __('Rules decide who goes in: add TARPIT \':name\' to a rule to send its clients here. Each holds its clients for as long as its verdict lasts; one request can decide (a probe path) also holds that very request, and one that reads only the status (status IN (403, 404)) holds the origin\'s answer with it.', ['name' => trim($name) !== '' ? trim($name) : __('name')]) }}
+                    <flux:link :href="route('rules.index')" wire:navigate>{{ __('Rules') }} →</flux:link>
+                </flux:text>
+                @if ($editingId !== null)
+                    @php($editing = $this->tarpits->firstWhere('id', $editingId))
+                    <div class="mt-3 flex flex-wrap gap-1" data-test="tarpit-editor-rules">
+                        @forelse ($editing?->rules ?? [] as $rule)
+                            <a href="{{ route('rules.index', ['rule' => $rule->id]) }}" wire:navigate><flux:badge size="sm" icon="scale">{{ $rule->name }}{{ $rule->enabled ? '' : ' ('.__('off').')' }}</flux:badge></a>
                         @empty
-                            <p class="text-sm text-zinc-500">{{ __('No rules yet.') }} <flux:link :href="route('rules.index')" wire:navigate>{{ __('Write one') }}</flux:link></p>
+                            <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ __('No rule sends clients here yet.') }}</p>
                         @endforelse
-                    </flux:checkbox.group>
-                    @error('ruleIds') <p class="text-sm text-rose-700 dark:text-rose-300">{{ $message }}</p> @enderror
-
-                    <flux:checkbox wire:model="takesGymNoShows" :label="__('Gym no-shows')" :description="__('Clients sent to the gym in the last day that never ran its script (Gave up · 0 s). Browsers run it on their own.')" />
-
-                    <div class="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
-                        <flux:checkbox wire:model.live="countsNotFound" :label="__('404 collectors')" :description="__('Counted at the edge, so it works at once.')" />
-                        <flux:input type="number" wire:model="notFoundCount" :label="__('404s')" min="2" class="w-24" :disabled="! $countsNotFound" />
-                        <flux:input type="number" wire:model="notFoundWithin" :label="__('within (s)')" min="5" class="w-28" :disabled="! $countsNotFound" />
                     </div>
+                @endif
 
-                    <div class="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
-                        <flux:checkbox wire:model.live="countsBursts" :label="__('Bursts')" :description="__('A rate limit: too many requests from one IP, counted at the edge.')" />
-                        <flux:input type="number" wire:model="burstCount" :label="__('requests')" min="5" class="w-24" :disabled="! $countsBursts" />
-                        <flux:input type="number" wire:model="burstWithin" :label="__('within (s)')" min="1" class="w-28" :disabled="! $countsBursts" />
+                <details class="mt-4 rounded-lg border border-line p-3 dark:border-zinc-800" @if ($takesGymNoShows || $countsNotFound || $countsBursts) open @endif data-test="tarpit-without-rule">
+                    <summary class="cursor-pointer text-sm font-medium">{{ __('Also put in, without a rule') }}</summary>
+                    <div class="mt-3 space-y-4">
+                        <flux:checkbox wire:model="takesGymNoShows" :label="__('Gym no-shows')" :description="__('Clients sent to the gym in the last day that never ran its script (Gave up · 0 s). Browsers run it on their own.')" />
+
+                        <div class="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+                            <flux:checkbox wire:model.live="countsNotFound" :label="__('404 collectors')" :description="__('Counted at the edge, so it works at once.')" />
+                            <flux:input type="number" wire:model="notFoundCount" :label="__('404s')" min="2" class="w-24" :disabled="! $countsNotFound" />
+                            <flux:input type="number" wire:model="notFoundWithin" :label="__('within (s)')" min="5" class="w-28" :disabled="! $countsNotFound" />
+                        </div>
+
+                        <div class="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+                            <flux:checkbox wire:model.live="countsBursts" :label="__('Bursts')" :description="__('A rate limit: too many requests from one IP, counted at the edge.')" />
+                            <flux:input type="number" wire:model="burstCount" :label="__('requests')" min="5" class="w-24" :disabled="! $countsBursts" />
+                            <flux:input type="number" wire:model="burstWithin" :label="__('within (s)')" min="1" class="w-28" :disabled="! $countsBursts" />
+                        </div>
                     </div>
-                </div>
+                </details>
             </flux:fieldset>
 
             <flux:fieldset>
@@ -633,6 +662,9 @@ new #[Title('Tarpits')] class extends Component
                     <flux:input type="number" wire:model="maxHeld" :label="__('Held at once, per edge')" min="1" :max="Tarpit::MOST_HELD" :description="__('Each held request keeps a connection open.')" />
                     <flux:input type="number" wire:model="forgetMinutes" :label="__('Start over after (min quiet)')" min="1" max="1440" />
                 </div>
+                @if ($this->pro)
+                    <flux:input wire:model="cooldowns" :label="__('Step back a try after (s quiet)')" :description="__('Optional. The quiet needed to drop one try, one per try in turn. At 10, 20, 30, 60, 120 a client five tries in drops back one after 120 s without a request, and clears in a few minutes. Blank, only the start-over time resets it.')" placeholder="10, 20, 30, 60, 120" class="mt-4 max-w-md" data-test="tarpit-cooldown" />
+                @endif
             </flux:fieldset>
 
             <div class="grid gap-6 sm:grid-cols-2">

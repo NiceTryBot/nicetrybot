@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/tarpit-pro",
+    "description": "Tarpit Pro: hold any answer status your rules name (401, 403, 405, 429, 500 — not just 404), spare static assets so a visitor's broken link never waits, and step each client back on its own cooldown ladder.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\TarpitPro\\": "src/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Tarpit Pro",
+            "edition": "paid",
+            "needs": ["tarpit"]
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\TarpitPro\\TarpitProServiceProvider"
+            ]
+        }
+    }
+}

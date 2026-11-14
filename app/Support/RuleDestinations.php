@@ -43,7 +43,7 @@ class RuleDestinations
         }
 
         $columns = [
-            new RuleBoardColumn(RuleBoardColumn::TAG_ONLY, __('Tag only'), __('Recorded, and searchable by tag. Nothing happens to the client.'), 'tag', order: 10),
+            new RuleBoardColumn(RuleBoardColumn::TAG_ONLY, __('Tag only'), __('Recorded, and searchable by tag. Nothing happens to the client.'), 'tag', order: 10, tab: RuleBoardColumn::TAB_TAGS),
             ...array_merge(...array_map(fn (RuleDestinationSource $source) => $source->columns(), $sources)),
         ];
         usort($columns, fn (RuleBoardColumn $first, RuleBoardColumn $second) => $first->order <=> $second->order);

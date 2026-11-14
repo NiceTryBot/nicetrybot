@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\AddServerTiming;
+use App\Http\Middleware\LockOriginToEdge;
 use App\Http\Middleware\SetTeamUrlDefaults;
 use App\Http\Middleware\TrustEdgeForwardedHost;
 use App\Http\Middleware\UseVaporSourceIp;
@@ -21,7 +22,7 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->prepend([AddServerTiming::class, UseVaporSourceIp::class]);
+        $middleware->prepend([AddServerTiming::class, LockOriginToEdge::class, UseVaporSourceIp::class]);
 
         // Proxies may say who the visitor is and how they arrived, but not which host they asked for:
         // only the edge may, with its token (TrustEdgeForwardedHost).

@@ -67,6 +67,16 @@ abstract class RulePack
     }
 
     /**
+     * Whether one of the pack's rules starts switched on when it's installed, or null to leave it to the
+     * install: on when it only tags, off when it sends clients somewhere. A pack overrides it for a rule
+     * that names a destination but acts on no client (one that turns a mode on, say).
+     */
+    public function startsOn(string $rule): ?bool
+    {
+        return null;
+    }
+
+    /**
      * Parse one of the pack's rules with the fields installed now.
      *
      * @throws RuleScriptSyntaxError When it doesn't parse, e.g. it reads a field of an add-on that

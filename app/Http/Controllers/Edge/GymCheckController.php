@@ -12,6 +12,7 @@ use App\Enums\GymExit;
 use App\Enums\GymPassState;
 use App\Enums\GymSessionStatus;
 use App\Enums\ProtectionMode;
+use App\Gym\BackgroundRequests;
 use App\Gym\FrontGates;
 use App\Gym\GymCheckHandlers;
 use App\Gym\GymPipeline;
@@ -24,28 +25,20 @@ use App\Models\GymRoutine;
 use App\Models\GymSession;
 use App\Support\AllowedAddresses;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
-use stdClass;
 use Symfony\Component\HttpFoundation\Response;
 
 class GymCheckController extends Controller
 {
-    /**
-     * The session cookie a background request's reload carries before the visitor has a session: no
-     * token matches it, so it only gets the reload asked about.
-     */
-    private const string RELOAD_MARKER = 'reload';
-
     /**
      * How many networks (/24 for IPv4, /48 for IPv6) one pass may come from before it's taken for a pass
      * being shared around a crowd of clients. A real visitor moves between a few: home, mobile data, work.
      */
     private const int MAX_PASS_NETWORKS = 4;
 
-    public function __construct(private GymPipeline $pipeline, private MatchGymRoutines $matchGymRoutines, private ReachLiveVerdicts $reachLiveVerdicts)
+    public function __construct(private GymPipeline $pipeline, private MatchGymRoutines $matchGymRoutines, private ReachLiveVerdicts $reachLiveVerdicts, private BackgroundRequests $backgroundRequests)
     {
         //
     }
@@ -108,11 +101,13 @@ class GymCheckController extends Controller
         $passSession = is_string($pass) ? GymSession::fromPass($pass, $domain->team_id) : null;
         $visitor = $this->visitor($request, $domain, $uri, $passSession ?? $this->cookieSession($request, $domain));
 
-        if (($held = $frontGates->answer($request, $domain, $visitor)) !== null) {
+        $live = $this->liveRequest($request, $domain, $visitor);
+
+        if (($held = $frontGates->answer($request, $domain, $visitor, $live)) !== null) {
             return $held;
         }
 
-        $this->reachLiveVerdicts->handle($domain->team, $this->liveRequest($request, $domain, $visitor), $this->flaggedRules($request));
+        $this->reachLiveVerdicts->handle($domain->team, $live, $this->flaggedRules($request));
 
         $routines = $this->matchGymRoutines->handle($domain->team, $visitor);
 
@@ -125,14 +120,8 @@ class GymCheckController extends Controller
             return $allowed;
         }
 
-        if ($this->isBackgroundRequest($request)) {
-            $response = $this->reloadPage($uri, $this->pageTheyAreOn($request, $domain));
-
-            if (! $request->hasCookie(GymSession::SESSION_COOKIE)) {
-                $response->headers->setCookie(cookie(GymSession::SESSION_COOKIE, self::RELOAD_MARKER, 5, secure: $request->isSecure(), sameSite: 'lax'));
-            }
-
-            return $response;
+        if ($this->backgroundRequests->isBackground($request)) {
+            return $this->backgroundRequests->reload($request, $domain, $uri);
         }
 
         $session = $this->resumableSession($request, $domain) ?? $enterGym->handle($domain->team, $visitor, destination: $uri, domain: $domain);
@@ -278,18 +267,6 @@ class GymCheckController extends Controller
     }
 
     /**
-     * Determine if the request was made by a script on a page rather than by the browser loading one.
-     */
-    private function isBackgroundRequest(Request $request): bool
-    {
-        $accept = (string) $request->header('Accept');
-
-        return $request->hasHeader('X-Livewire')
-            || $request->header('X-Requested-With') === 'XMLHttpRequest'
-            || (str_contains($accept, 'json') && ! str_contains($accept, 'text/html'));
-    }
-
-    /**
      * Find the active, enforcing domain the edge served a hostname as: its own domain (or the one it's
      * the preview of), or site for www.site when site serves www.
      */
@@ -303,33 +280,6 @@ class GymCheckController extends Controller
 
         return $enforcing()->servedAs($hostname)->first()
             ?? ($bare === null ? null : $enforcing()->where('hostname', $bare)->servingWww()->first());
-    }
-
-    /**
-     * Get the page a background request came from (its Referer on the same domain), or the home page.
-     */
-    private function pageTheyAreOn(Request $request, Domain $domain): string
-    {
-        $referer = parse_url((string) $request->header('Referer'));
-
-        if (! is_array($referer) || ! in_array(Str::lower($referer['host'] ?? ''), $domain->edgeHostnames(), true)) {
-            return '/';
-        }
-
-        return '/'.ltrim($referer['path'] ?? '/', '/').(isset($referer['query']) ? '?'.$referer['query'] : '');
-    }
-
-    /**
-     * Tell a background request's page to reload, in Livewire v2's response format when it's a
-     * Livewire v2 message so its script follows the redirect.
-     */
-    private function reloadPage(string $uri, string $page): JsonResponse
-    {
-        $body = str_starts_with($uri, '/livewire/message/')
-            ? ['effects' => ['html' => null, 'dirty' => [], 'redirect' => $page], 'serverMemo' => new stdClass]
-            : ['redirect' => $page];
-
-        return response()->json($body)->header('Cache-Control', 'no-store, private');
     }
 
     /**

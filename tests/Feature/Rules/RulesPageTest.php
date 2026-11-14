@@ -297,7 +297,8 @@ test('Claude\'s errors show beside the ask box and leave the editor closed', fun
         ->set('question', 'tag phpmyadmin probes')
         ->call('ask')
         ->assertSet('isEditing', false)
-        ->assertSee('Anthropic didn’t accept your API key. Check it in Settings → Artificial Intelligence.');
+        ->assertSee(['Anthropic didn’t accept your API key. Check it in', 'Settings → Artificial Intelligence'])
+        ->assertSeeHtml('href="'.route('ai.edit').'"');
 });
 
 test('without an Anthropic key the ask box says how to connect Claude', function () {

@@ -2062,7 +2062,7 @@ new #[Title('Activity')] class extends Component
                         @if ($askError)
                             <p class="flex gap-2 text-sm text-rose-700 dark:text-rose-300" data-test="ask-error">
                                 <flux:icon.exclamation-triangle variant="mini" class="mt-0.5 size-4 shrink-0" />
-                                <span>{{ $askError }}</span>
+                                <x-ntb.ask-error :message="$askError" />
                             </p>
                         @endif
 

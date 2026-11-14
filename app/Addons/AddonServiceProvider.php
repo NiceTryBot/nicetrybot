@@ -34,6 +34,8 @@ use App\Support\ClientAddons;
 use App\Support\DomainRecords;
 use App\Support\EdgeLineAddon;
 use App\Support\EdgeLineAddons;
+use App\Support\HoneypotFeed;
+use App\Support\HoneypotFeedContributor;
 use App\Support\HostnameClaimer;
 use App\Support\HostnameClaimers;
 use App\Support\LivewireComponentSource;
@@ -52,6 +54,8 @@ use App\Support\RuleDestinations;
 use App\Support\RuleDestinationSource;
 use App\Support\RuleFieldDefinition;
 use App\Support\RuleFields;
+use App\Support\RuleFilter;
+use App\Support\RuleFilters;
 use App\Support\RuleTemplates;
 use App\Support\RuleTemplateSource;
 use App\Support\SettingsNav;
@@ -93,7 +97,7 @@ use ReflectionClass;
  *   a visitor carrying a gym cookie is asked about at all ($gymTriggerSources)
  * - the $policies for its models, registered with the Gate rather than left to its guessing
  * - its entries in the edge's capture feed ($captureFeed), lockdown feed ($lockdownFeed), tarpit
- *   feed ($tarpitFeed) and rewrite feed ($rewriteFeed), its
+ *   feed ($tarpitFeed), rewrite feed ($rewriteFeed) and honeypot feed ($honeypotFeed), its
  *   models that point at a domain ($domainRecords, moved with it when www. folds), what names
  *   Livewire components for a team ($livewireComponentSources), what adds a domain for a hostname
  *   the edge hasn't heard of ($hostnameClaimers), and the hostnames of its own the edge may get a
@@ -107,7 +111,8 @@ use ReflectionClass;
  *   about requests on the Activity page ($requestAddons: marks in the list, details and buttons;
  *   $actionAddons: badges in the Action column)
  * - where rules can send their clients, for the Rules page's board: $ruleDestinations
- *   (App\Support\RuleDestinationSource)
+ *   (App\Support\RuleDestinationSource), and the dropdowns that narrow its board and list:
+ *   $ruleFilters (App\Support\RuleFilter)
  *
  * Anything else goes in registerAddon() and bootAddon(); tag classes into a registry there with
  * $this->tag(), so they're known as the add-on's.
@@ -198,6 +203,11 @@ abstract class AddonServiceProvider extends ServiceProvider
     protected array $rewriteFeed = [];
 
     /**
+     * @var list<class-string<HoneypotFeedContributor>>
+     */
+    protected array $honeypotFeed = [];
+
+    /**
      * IP addresses and CIDR ranges the add-on keeps past every enforcement (gym, tarpit, block,
      * blackhole), gathered with the core's by AllowedAddresses.
      *
@@ -273,6 +283,11 @@ abstract class AddonServiceProvider extends ServiceProvider
     protected array $ruleDestinationHandlers = [];
 
     /**
+     * @var list<class-string<RuleFilter>>
+     */
+    protected array $ruleFilters = [];
+
+    /**
      * Tools the add-on gives AI agents on the MCP server (each a Laravel\Mcp\Server\Tool).
      *
      * @var list<class-string<Tool>>
@@ -310,6 +325,7 @@ abstract class AddonServiceProvider extends ServiceProvider
         $this->app->tag($this->lockdownFeed, LockdownFeed::TAG);
         $this->app->tag($this->tarpitFeed, TarpitFeed::TAG);
         $this->app->tag($this->rewriteFeed, RewriteFeed::TAG);
+        $this->app->tag($this->honeypotFeed, HoneypotFeed::TAG);
         $this->app->tag($this->allowedAddresses, AllowedAddresses::TAG);
         $this->app->tag($this->domainRecords, DomainRecords::TAG);
         $this->app->tag($this->livewireComponentSources, LivewireComponentSources::TAG);
@@ -322,16 +338,17 @@ abstract class AddonServiceProvider extends ServiceProvider
         $this->app->tag($this->actionAddons, ActionAddons::TAG);
         $this->app->tag($this->ruleDestinations, RuleDestinations::TAG);
         $this->app->tag($this->ruleDestinationHandlers, RuleDestinationHandlers::TAG);
+        $this->app->tag($this->ruleFilters, RuleFilters::TAG);
         $this->app->tag($this->mcpTools, McpTools::TAG);
         $this->app->make(RuleFields::class)->add(...$this->ruleFields);
 
         $addons->claim($this->addon()->slug, [
             ...$this->gymAddons, ...$this->clientAddons, ...$this->visitorData, ...$this->obstacles, ...$this->attemptListeners,
             ...$this->gymCheckHandlers, ...$this->frontGates, ...$this->gymTriggerSources,
-            ...$this->captureFeed, ...$this->lockdownFeed, ...$this->tarpitFeed, ...$this->rewriteFeed, ...$this->allowedAddresses, ...$this->domainRecords, ...$this->livewireComponentSources,
+            ...$this->captureFeed, ...$this->lockdownFeed, ...$this->tarpitFeed, ...$this->rewriteFeed, ...$this->honeypotFeed, ...$this->allowedAddresses, ...$this->domainRecords, ...$this->livewireComponentSources,
             ...$this->hostnameClaimers, ...$this->certificateHostnames,
             ...$this->ruleTemplates, ...$this->routineTemplates, ...$this->edgeLineAddons, ...$this->requestAddons,
-            ...$this->actionAddons, ...$this->ruleDestinations, ...$this->ruleDestinationHandlers, ...$this->mcpTools,
+            ...$this->actionAddons, ...$this->ruleDestinations, ...$this->ruleDestinationHandlers, ...$this->ruleFilters, ...$this->mcpTools,
         ]);
 
         $this->registerAddon();

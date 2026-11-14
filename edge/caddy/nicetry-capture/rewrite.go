@@ -32,6 +32,8 @@ func init() {
 const (
 	rewriteMaxPayload = 16 << 20
 	rewriteMaxBody    = 4 << 20
+	// A rewritten header value can't grow past this (or its own length, if that's longer).
+	rewriteMaxHeader = 16 << 10
 )
 
 // Rewrite is the nicetry_rewrite handler. It polls NiceTryBot for the teams' response rewrites (text to
@@ -46,6 +48,15 @@ const (
 // max_body. So do HEAD requests' and upgrades' (WebSockets). A rewrite that covers headers too changes
 // every response's header values (Set-Cookie's Domain, Location, CORS origins), whatever its body,
 // except the ones that frame it (lengths, encodings, type).
+//
+// A rewrite can't blow a response up: a body whose rewrite would come out over twice max_body goes on as
+// it came, and so does a header value whose rewrite would come out over 16 KiB.
+//
+// An asset rewrite (the S3 Assets add-on, an entry with `assets`) moves the URLs of a site's static files
+// to its CDN host, in HTML pages only: absolute ones on the site's hostnames (also protocol-relative,
+// and JSON-escaped in inline scripts) and root-relative ones in attributes, srcset and url(). Never in
+// a stylesheet or script, so a file the CDN pulls is byte for byte the origin's and its Subresource
+// Integrity hash still holds. Pages under its skip paths are left as they are.
 type Rewrite struct {
 	Endpoint string         `json:"endpoint,omitempty"`
 	Token    string         `json:"token,omitempty"`
@@ -84,7 +95,7 @@ func (rw *Rewrite) Validate() error {
 }
 
 func (rw *Rewrite) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	rules := rw.rewrites.lookup(strings.ToLower(hostOnly(r.Host)))
+	rules := rulesForPath(rw.rewrites.lookup(strings.ToLower(hostOnly(r.Host))), r.URL.Path)
 	if len(rules) == 0 || r.Header.Get("Upgrade") != "" {
 		return next.ServeHTTP(w, r)
 	}
@@ -120,24 +131,72 @@ type rewriteRule struct {
 	replace  []byte
 	pattern  *regexp.Regexp // set when the rewrite ignores case
 	htmlOnly bool
+	assets   *assetRewrite // set for an asset rewrite, which find and replace don't apply to
 
 	headers       bool   // header values too
 	headerReplace []byte // replace with line breaks as spaces, so it can't start a header of its own
 }
 
-func (rule rewriteRule) apply(body []byte) []byte {
-	return rule.replaceIn(body, rule.replace)
-}
-
-func (rule rewriteRule) applyHeader(value string) string {
-	return string(rule.replaceIn([]byte(value), rule.headerReplace))
-}
-
-func (rule rewriteRule) replaceIn(text, replace []byte) []byte {
-	if rule.pattern != nil {
-		return rule.pattern.ReplaceAllLiteral(text, replace)
+// apply rewrites body, or says (false) it would come out over limit.
+func (rule rewriteRule) apply(body []byte, limit int) ([]byte, bool) {
+	if rule.assets != nil {
+		return rule.assets.apply(body), true
 	}
-	return bytes.ReplaceAll(text, rule.find, replace)
+	return rule.replaceIn(body, rule.replace, limit)
+}
+
+// applyHeader rewrites a header value, leaving it as it was if the rewrite would come out too long.
+func (rule rewriteRule) applyHeader(value string) string {
+	out, ok := rule.replaceIn([]byte(value), rule.headerReplace, max(rewriteMaxHeader, len(value)))
+	if !ok {
+		return value
+	}
+	return string(out)
+}
+
+// replaceIn replaces every match in text with replace, giving up (false) as soon as the result would be
+// longer than limit, so a short find with a long replacement can't make one response take gigabytes.
+func (rule rewriteRule) replaceIn(text, replace []byte, limit int) ([]byte, bool) {
+	var out []byte
+	done := 0
+	for done < len(text) {
+		start, end := rule.match(text, done)
+		if start < 0 || end <= start {
+			break
+		}
+		if len(out)+(start-done)+len(replace) > limit {
+			return text, false
+		}
+		if out == nil {
+			out = make([]byte, 0, min(len(text), limit))
+		}
+		out = append(out, text[done:start]...)
+		out = append(out, replace...)
+		done = end
+	}
+	if out == nil {
+		return text, len(text) <= limit
+	}
+	if len(out)+len(text)-done > limit {
+		return text, false
+	}
+	return append(out, text[done:]...), true
+}
+
+// match finds the rule's next match in text at or after from, or -1.
+func (rule rewriteRule) match(text []byte, from int) (start, end int) {
+	if rule.pattern != nil {
+		loc := rule.pattern.FindIndex(text[from:])
+		if loc == nil {
+			return -1, -1
+		}
+		return from + loc[0], from + loc[1]
+	}
+	i := bytes.Index(text[from:], rule.find)
+	if i < 0 {
+		return -1, -1
+	}
+	return from + i, from + i + len(rule.find)
 }
 
 func anyHeaderRule(rules []rewriteRule) bool {
@@ -285,7 +344,13 @@ func (w *rewriteWriter) finish() error {
 
 	body := w.buf.Bytes()
 	for _, rule := range w.applying {
-		body = rule.apply(body)
+		rewritten, ok := rule.apply(body, 2*w.max)
+		if !ok {
+			// Rewritten it would be too big to hold, so it goes on as the origin sent it.
+			body = w.buf.Bytes()
+			break
+		}
+		body = rewritten
 	}
 
 	h := w.Header()
@@ -316,6 +381,23 @@ func rewriteContentKind(contentType string) (html, text bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// rulesForPath leaves out the asset rewrites whose skip paths cover the page's path.
+func rulesForPath(rules []rewriteRule, p string) []rewriteRule {
+	for i, rule := range rules {
+		if rule.assets == nil || !rule.assets.skipped(p) {
+			continue
+		}
+		kept := append([]rewriteRule{}, rules[:i]...)
+		for _, rest := range rules[i+1:] {
+			if rest.assets == nil || !rest.assets.skipped(p) {
+				kept = append(kept, rest)
+			}
+		}
+		return kept
+	}
+	return rules
 }
 
 type rewriteMap struct {
@@ -425,6 +507,11 @@ func parseRewrites(raw []byte) (map[string][]rewriteRule, error) {
 			IgnoreCase bool     `json:"ignore_case"`
 			In         string   `json:"in"`
 			Headers    bool     `json:"headers"`
+			Assets     *struct {
+				To         string   `json:"to"`
+				Extensions []string `json:"extensions"`
+				SkipPaths  []string `json:"skip_paths"`
+			} `json:"assets"`
 		} `json:"rewrites"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
@@ -436,6 +523,17 @@ func parseRewrites(raw []byte) (map[string][]rewriteRule, error) {
 
 	rewrites := map[string][]rewriteRule{}
 	for _, entry := range *payload.Rewrites {
+		if entry.Assets != nil {
+			assets := newAssetRewrite(entry.Hosts, entry.Assets.To, entry.Assets.Extensions, entry.Assets.SkipPaths)
+			if assets == nil {
+				continue
+			}
+			for _, host := range entry.Hosts {
+				host = strings.ToLower(host)
+				rewrites[host] = append(rewrites[host], rewriteRule{htmlOnly: true, assets: assets})
+			}
+			continue
+		}
 		if entry.Find == "" {
 			continue
 		}

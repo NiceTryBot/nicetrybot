@@ -6,6 +6,7 @@ use App\Http\Controllers\Edge\GymReportController;
 use App\Http\Controllers\Edge\IngestEdgeLogsController;
 use App\Http\Controllers\Edge\ListAllowedAddressesController;
 use App\Http\Controllers\Edge\ListGymTriggersController;
+use App\Http\Controllers\Edge\ListHoneypotsController;
 use App\Http\Controllers\Edge\ListLiveTailsController;
 use App\Http\Controllers\Edge\ListLockdownsController;
 use App\Http\Controllers\Edge\ListOriginsController;
@@ -32,5 +33,6 @@ Route::middleware([AuthenticateEdge::class, CompressEdgeFeeds::class])->group(fu
     Route::get('caddy/lockdowns', ListLockdownsController::class)->middleware('cache.headers:no_cache;etag')->name('edge.lockdowns');
     Route::get('caddy/tarpit-feed', ListTarpitsController::class)->middleware('cache.headers:no_cache;etag')->name('edge.tarpits');
     Route::get('caddy/rewrite-feed', ListRewritesController::class)->middleware('cache.headers:no_cache;etag')->name('edge.rewrites');
+    Route::get('caddy/honeypot-feed', ListHoneypotsController::class)->middleware('cache.headers:no_cache;etag')->name('edge.honeypots');
     Route::post('caddy/ingest', IngestEdgeLogsController::class)->name('edge.ingest');
 });

@@ -2,6 +2,7 @@
 
 namespace App\Enums;
 
+use App\Data\BrowserReleases;
 use App\Support\RuleFieldDefinition;
 use Closure;
 use Illuminate\Database\Query\Builder;
@@ -22,6 +23,7 @@ enum RuleField: string implements RuleFieldDefinition
     case Ja4h = 'ja4h';
     case ClientHints = 'hints';
     case Client = 'client';
+    case ClientBehind = 'client.behind';
     case Language = 'lang';
     case Host = 'host';
     case Path = 'path';
@@ -63,6 +65,7 @@ enum RuleField: string implements RuleFieldDefinition
             self::Ja4h => 'ja4h_fingerprints.value',
             self::ClientHints => 'client_hints.value',
             self::Client => 'edge_requests.user_agent_id',
+            self::ClientBehind => self::versionsBehindSql(),
             self::Language => 'edge_requests.accept_language',
             self::Host => 'domains.hostname',
             self::Path => 'request_paths.path',
@@ -120,7 +123,7 @@ enum RuleField: string implements RuleFieldDefinition
      */
     public function isLive(): bool
     {
-        return ! in_array($this, [self::Ja3, self::Ja4h, self::ClientHints, self::Client, self::Status, self::Duration, self::Action, self::NetworkCategory], true);
+        return ! in_array($this, [self::Ja3, self::Ja4h, self::ClientHints, self::Client, self::ClientBehind, self::Status, self::Duration, self::Action, self::NetworkCategory], true);
     }
 
     /**
@@ -128,7 +131,7 @@ enum RuleField: string implements RuleFieldDefinition
      */
     public function isNumeric(): bool
     {
-        return in_array($this, [self::Status, self::Duration, self::Asn], true);
+        return in_array($this, [self::Status, self::Duration, self::Asn, self::ClientBehind], true);
     }
 
     /**
@@ -142,9 +145,13 @@ enum RuleField: string implements RuleFieldDefinition
     public function storedValues(int|string $literal): array
     {
         return match ($this) {
-            self::Status, self::Duration, self::Asn => is_int($literal)
+            self::Status, self::Duration, self::Asn, self::ClientBehind => is_int($literal)
                 ? [$literal]
-                : throw new InvalidArgumentException(__(':field takes a number, like :example.', ['field' => $this->value, 'example' => $this === self::Status ? '404' : '1000'])),
+                : throw new InvalidArgumentException(__(':field takes a number, like :example.', ['field' => $this->value, 'example' => match ($this) {
+                    self::Status => '404',
+                    self::ClientBehind => '4',
+                    default => '1000',
+                }])),
             self::Category => $this->categoryValues((string) $literal),
             self::Method => [HttpMethod::fromVerb((string) $literal) !== HttpMethod::Other || strtoupper((string) $literal) === 'OTHER'
                 ? HttpMethod::fromVerb((string) $literal)->value
@@ -207,6 +214,36 @@ enum RuleField: string implements RuleFieldDefinition
     }
 
     /**
+     * Get the SQL expression for how many major versions behind the current release a request's browser
+     * is: a Chrome or Firefox whose current version is known, by its user agent's profile. Null for any
+     * other browser, a version the user agent doesn't give, or a still-supported Firefox ESR. The current
+     * versions are whole numbers, so they're written into the expression rather than bound.
+     */
+    private static function versionsBehindSql(): string
+    {
+        $releases = BrowserReleases::now();
+        $branches = [];
+
+        foreach ([ClientBrowser::Chromium, ClientBrowser::Firefox] as $browser) {
+            if (($current = $releases->current($browser)) === null) {
+                continue;
+            }
+
+            $supported = array_map('intval', $releases->supportedOlderVersions($browser));
+            $branches[] = 'when uap_behind.browser = '.$browser->value
+                .($supported === [] ? '' : ' and uap_behind.major_version not in ('.implode(', ', $supported).')')
+                .' then '.$current.' - uap_behind.major_version';
+        }
+
+        if ($branches === []) {
+            return 'cast(null as integer)';
+        }
+
+        return '(select case '.implode(' ', $branches).' end from user_agent_profiles as uap_behind'
+            .' where uap_behind.user_agent_id = edge_requests.user_agent_id)';
+    }
+
+    /**
      * Get the field as people say it.
      */
     public function englishName(): string
@@ -220,6 +257,7 @@ enum RuleField: string implements RuleFieldDefinition
             self::Ja4h => __('header fingerprint'),
             self::ClientHints => __('client hints'),
             self::Client => __('client'),
+            self::ClientBehind => __('versions behind'),
             self::Language => __('accept-language'),
             self::Host => __('host'),
             self::Path => __('path'),
@@ -245,7 +283,7 @@ enum RuleField: string implements RuleFieldDefinition
     public function group(): string
     {
         return match ($this) {
-            self::Ip, self::Ja4, self::Ja4Alpn, self::Ja3, self::UserAgent, self::Ja4h, self::ClientHints, self::Client, self::Language => __('Client'),
+            self::Ip, self::Ja4, self::Ja4Alpn, self::Ja3, self::UserAgent, self::Ja4h, self::ClientHints, self::Client, self::ClientBehind, self::Language => __('Client'),
             self::Host, self::Path, self::Category, self::Status, self::Method, self::Duration, self::Action, self::Tag => __('Request'),
             self::Asn, self::Network, self::NetworkKind, self::NetworkCategory, self::Country, self::Region, self::City => __('Network & place'),
         };
@@ -261,6 +299,7 @@ enum RuleField: string implements RuleFieldDefinition
             self::Ja4h => __('JA4H-style: method, version, cookie/referer, header count, language, then hashes'),
             self::ClientHints => __("Sec-CH-UA | platform, e.g. LIKE '%HeadlessChrome%'"),
             self::Client => __("'spoofed', 'outdated', 'corporate' (behind a corporate security gateway) or 'hopped' (took over another IP's visit)"),
+            self::ClientBehind => __('major versions behind the current Chrome or Firefox, e.g. client.behind > 4; a supported Firefox ESR has none'),
             self::Language => __("e.g. 'en-US,en;q=0.9'; missing is a script tell"),
             self::Category => __("a family like 'probe' or a slug like 'probe/creds'"),
             self::NetworkKind => __("'hosting' for cloud and datacenter networks"),

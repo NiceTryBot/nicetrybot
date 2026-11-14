@@ -43,6 +43,8 @@ LISTS = {
     "/caddy/lockdowns": {"lockdowns": []},
     "/caddy/tarpit-feed": {"tarpits": []},
     "/caddy/rewrite-feed": {"rewrites": []},
+    "/caddy/honeypot-feed": {"honeypots": []},
+    "/caddy/assets-feed": {"assets": {"domain": "", "pull_host": "", "secret_sha256": "", "extensions": [], "skip_paths": [], "sites": []}},
 }
 
 

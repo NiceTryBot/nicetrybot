@@ -155,7 +155,9 @@ test('when Claude can\'t help, the search stays as it was and says why', functio
         ->call('$refresh')
         ->assertSet('search', 'status = 500')
         ->assertSet('askError', 'Anthropic didn’t accept your API key. Check it in Settings → Artificial Intelligence.')
-        ->assertSee('Anthropic didn’t accept your API key.');
+        ->assertSee('Anthropic didn’t accept your API key.')
+        ->assertSeeHtml('href="'.route('ai.edit').'"')
+        ->assertSeeHtml('data-test="ask-error-settings-link"');
 });
 
 test('a question that isn\'t about requests leaves the search alone, with Claude\'s reason', function () {

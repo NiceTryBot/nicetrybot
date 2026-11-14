@@ -54,6 +54,14 @@ return [
     'release' => env('NICETRY_RELEASE') ?: null,
 
     /*
+     * The hostnames this panel is served on through a NiceTryBot edge, comma-separated (like
+     * "app.example.com"). Set, the panel answers only requests the edge sends for them, with the
+     * domain's origin secret; everything else, the origin's own hostname included, gets a 404. Empty
+     * (the default) serves the panel directly on any hostname.
+     */
+    'edge_only_hosts' => env('NICETRY_EDGE_ONLY_HOSTS', ''),
+
+    /*
      * Whether a self-hosted panel asks once a day for the newest release (`nicetry:check-release`), to
      * show administrators an update notice, and where releases are published: the same
      * NICETRY_RELEASE_BASE the installer downloads from.

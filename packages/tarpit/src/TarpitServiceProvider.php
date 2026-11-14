@@ -7,6 +7,7 @@ use App\Enums\NavGroup;
 use App\Models\EdgeRequest;
 use App\Models\Team;
 use App\Support\NavItem;
+use NiceTry\RulePacks\RulePacks;
 use NiceTry\Tarpit\Activity\TarpitActivity;
 use NiceTry\Tarpit\Edge\TarpitHolds;
 use NiceTry\Tarpit\Edge\TarpitList;
@@ -14,6 +15,7 @@ use NiceTry\Tarpit\Models\Tarpit;
 use NiceTry\Tarpit\Models\TarpitHold;
 use NiceTry\Tarpit\Policies\TarpitPolicy;
 use NiceTry\Tarpit\Rules\TarpitField;
+use NiceTry\Tarpit\Rules\TarpitPack;
 use NiceTry\Tarpit\Rules\TarpitRuleDestinationHandler;
 use NiceTry\Tarpit\Rules\TarpitRuleDestinations;
 use NiceTry\Tarpit\Rules\TarpitTemplates;
@@ -24,7 +26,8 @@ use NiceTry\Tarpit\Rules\TarpitTemplates;
  * Rules page, by the gym's no-shows, or by the edge's own count of 404s and bursts. Its tarpits go to
  * the edge in the core's tarpit feed; what they did to each request comes back on the log lines, is
  * kept beside the request, shows on Activity as a Tarpit badge, and can be searched for there (and
- * tested in rules) with the tarpit and tarpit.outcome fields.
+ * tested in rules) with the tarpit and tarpit.outcome fields. With Rule packs installed it offers a
+ * pack too, Tarpit traps, of rules the edge acts on as each request happens.
  */
 class TarpitServiceProvider extends AddonServiceProvider
 {
@@ -53,6 +56,14 @@ class TarpitServiceProvider extends AddonServiceProvider
     protected array $ruleFields = [TarpitField::class];
 
     protected array $slots = [];
+
+    protected function registerAddon(): void
+    {
+        // The tarpit's rule pack, when the Rule packs add-on is here to offer it.
+        if (class_exists(RulePacks::class)) {
+            $this->tag([TarpitPack::class], RulePacks::TAG);
+        }
+    }
 
     protected function bootAddon(): void
     {

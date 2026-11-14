@@ -56,6 +56,16 @@ class EdgeRule extends Model
     }
 
     /**
+     * Get the verdicts a rule over host and path reached on sites and paths.
+     *
+     * @return HasMany<ScopeVerdict, $this>
+     */
+    public function scopeVerdicts(): HasMany
+    {
+        return $this->hasMany(ScopeVerdict::class);
+    }
+
+    /**
      * Parse the rule's script. Saved rules always parse, because they're validated on save.
      */
     public function script(): RuleScript

@@ -36,14 +36,27 @@ class AddonSwitchboard
     }
 
     /**
-     * The slugs of the add-ons that are off: turned off by an administrator (installed or not), or
-     * paid and unlicensed.
+     * The slugs of the add-ons that are off: turned off by an administrator (installed or not), paid
+     * and unlicensed, or needing one that is.
      *
      * @return list<string>
      */
     public function off(): array
     {
-        return array_values(array_unique([...($this->off ??= $this->load()), ...$this->licences->unlicensed()]));
+        $outright = $this->offOutright();
+        $waiting = array_filter($this->addons->all(), fn (Addon $addon): bool => array_intersect($addon->needs, $outright) !== []);
+
+        return array_values(array_unique([...$outright, ...array_map(fn (Addon $addon): string => $addon->slug, $waiting)]));
+    }
+
+    /**
+     * The add-ons that are off and keeping this one off with them.
+     *
+     * @return list<Addon>
+     */
+    public function waitingOn(Addon $addon): array
+    {
+        return array_values(array_filter(array_map($this->addons->find(...), array_intersect($addon->needs, $this->offOutright()))));
     }
 
     /**
@@ -89,6 +102,16 @@ class AddonSwitchboard
     {
         Cache::forget(self::CACHE_KEY);
         $this->off = null;
+    }
+
+    /**
+     * The slugs of the add-ons that are off in their own right: turned off, or paid and unlicensed.
+     *
+     * @return list<string>
+     */
+    private function offOutright(): array
+    {
+        return array_values(array_unique([...($this->off ??= $this->load()), ...$this->licences->unlicensed()]));
     }
 
     /**

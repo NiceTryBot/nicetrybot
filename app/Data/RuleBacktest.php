@@ -8,7 +8,7 @@ namespace App\Data;
 readonly class RuleBacktest
 {
     /**
-     * @param  list<array{client_ip: ?string, ja4: ?string, network: ?string, is_hosting: bool, country: ?string, requests: int, hosts: int, first_seen: string, last_seen: string}>  $subjects  The busiest matched subjects.
+     * @param  list<array{scope: ?string, client_ip: ?string, ja4: ?string, network: ?string, is_hosting: bool, country: ?string, requests: int, hosts: int, first_seen: string, last_seen: string}>  $subjects  The busiest matched subjects.
      */
     public function __construct(
         public int $days,

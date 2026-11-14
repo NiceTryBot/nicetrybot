@@ -1,0 +1,24 @@
+{
+    "name": "nicetry/honeypots",
+    "description": "Honeypots: send the 404s bots hit on paths you choose (api/*, admin/*, .env) to a honeypot of your own, like a Galah server, at the edge. Pages your sites really serve are never touched.",
+    "type": "nicetry-addon",
+    "version": "1.0.0",
+    "license": "Elastic-2.0",
+    "autoload": {
+        "psr-4": {
+            "NiceTry\\Honeypots\\": "src/",
+            "NiceTry\\Honeypots\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "extra": {
+        "nicetry": {
+            "name": "Honeypots",
+            "edition": "free"
+        },
+        "laravel": {
+            "providers": [
+                "NiceTry\\Honeypots\\HoneypotsServiceProvider"
+            ]
+        }
+    }
+}

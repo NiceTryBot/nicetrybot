@@ -19,7 +19,7 @@ class BrowserImpostors extends RulePack
 
     public function version(): int
     {
-        return 1;
+        return 2;
     }
 
     public function name(): string
@@ -29,7 +29,7 @@ class BrowserImpostors extends RulePack
 
     public function description(): string
     {
-        return 'Clients whose parts disagree: a browser’s name on a script’s TLS, an iPhone with Chrome’s handshake, Chrome without its client hints, headless Chrome, or a browser far behind the current release. Real people sit behind a few, so the routines are waiting rooms, not walls.';
+        return 'Clients whose parts disagree: a browser’s name on a script’s TLS, Chrome’s name on a connection that only speaks HTTP/1.1, an iPhone with Chrome’s handshake, Chrome without its client hints, headless Chrome, or a browser far behind the current release. Real people sit behind a few, so the routines are waiting rooms, not walls.';
     }
 
     public function icon(): string
@@ -47,6 +47,18 @@ class BrowserImpostors extends RulePack
                     -- A client whose user agent, TLS and client hints tell different stories.
                     TAG ip, ja4 AS 'spoofed-browser' FOR 1 DAY
                     WHERE client = 'spoofed'
+                    RULE,
+            ],
+            'chrome-on-http1' => [
+                'name' => 'Chrome on HTTP/1.1 only',
+                'blurb' => 'Chrome’s name on a connection that offers only HTTP/1.1, which Chrome never does. Judged on the first request.',
+                'source' => <<<'RULE'
+                    -- Chrome's name on a connection that offers only HTTP/1.1. Chrome, Edge and every
+                    -- browser built on them offer HTTP/2 first, so this is a script wearing their user
+                    -- agent. The edge judges it on the first request, before the logs do.
+                    TAG ip, ja4 AS 'chrome-on-http1' FOR 1 DAY
+                    WHERE ua LIKE '%Chrome/%'
+                      AND ja4.alpn = 'h1'
                     RULE,
             ],
             'headless-browser' => [
@@ -79,9 +91,9 @@ class BrowserImpostors extends RulePack
         return [
             'impostors-wait' => [
                 'name' => 'Spoofed browsers wait',
-                'blurb' => 'Spoofed and headless clients wait 20 seconds, then a browser check; a code if they still look automated.',
+                'blurb' => 'Spoofed and headless clients, and Chrome on HTTP/1.1, wait 20 seconds, then a browser check; a code if they still look automated.',
                 'icon' => 'clock',
-                'rules' => ['spoofed-browser', 'headless-browser'],
+                'rules' => ['spoofed-browser', 'chrome-on-http1', 'headless-browser'],
                 'match_all' => true,
                 'conditions' => [],
                 'obstacles' => [

@@ -5,6 +5,7 @@ namespace App\Actions\Rules;
 use App\Enums\RuleSubject;
 use App\Enums\TlsFingerprintType;
 use App\Models\EdgeRule;
+use App\Models\ScopeVerdict;
 use App\Models\TlsFingerprint;
 use App\Models\Verdict;
 use Carbon\CarbonImmutable;
@@ -81,6 +82,8 @@ class EvaluateRule
                 ->selectRaw(implode(', ', [
                     in_array(RuleSubject::Ip, $script->subjects, true) ? 'edge_requests.client_ip as client_ip' : 'null as client_ip',
                     in_array(RuleSubject::Ja4, $script->subjects, true) ? 'edge_requests.ja4_id as ja4_id' : 'null as ja4_id',
+                    in_array(RuleSubject::Host, $script->subjects, true) ? 'edge_requests.domain_id as domain_id' : 'null as domain_id',
+                    in_array(RuleSubject::Path, $script->subjects, true) ? 'edge_requests.path_id as path_id' : 'null as path_id',
                     'count(*) as matched',
                     'min(edge_requests.occurred_at) as first_matched_at',
                     'max(edge_requests.occurred_at) as last_matched_at',
@@ -99,7 +102,9 @@ class EvaluateRule
         $reached = 0;
 
         foreach ($groups as $group) {
-            $reached += $this->record($rule, $group, $script->isAggregate(), $now) ? 1 : 0;
+            $reached += ($script->isScoped()
+                ? $this->recordScope($rule, $group, $script->isAggregate(), $now)
+                : $this->record($rule, $group, $script->isAggregate(), $now)) ? 1 : 0;
         }
 
         $this->liftUntil($rule, $since, $latestId, $now);
@@ -119,6 +124,10 @@ class EvaluateRule
     {
         $now ??= CarbonImmutable::now();
         $subjects = $rule->script()->subjects;
+
+        if ($rule->script()->isScoped()) {
+            return false;
+        }
 
         return $this->record($rule, (object) [
             'client_ip' => in_array(RuleSubject::Ip, $subjects, true) ? $ip : null,
@@ -155,6 +164,54 @@ class EvaluateRule
                 $verdict->update(['lifted_at' => $now]);
             }
         }
+    }
+
+    /**
+     * Record a matched site or path: extend its scope verdict if one is in force, otherwise reach a new
+     * one. Unlike a client's, a scope's verdict runs on from its latest match, so a mode a rule turns on
+     * stays on for as long as what turned it on keeps happening, and ends a full duration after it stops.
+     */
+    private function recordScope(EdgeRule $rule, object $group, bool $isAggregate, CarbonImmutable $now): bool
+    {
+        $domainId = data_get($group, 'domain_id') === null ? null : (int) data_get($group, 'domain_id');
+        $pathId = data_get($group, 'path_id') === null ? null : (int) data_get($group, 'path_id');
+        $matched = (int) data_get($group, 'matched');
+        $firstMatchedAt = (string) data_get($group, 'first_matched_at');
+        $lastMatchedAt = (string) data_get($group, 'last_matched_at');
+        $verdict = ScopeVerdict::query()
+            ->active()
+            ->where('edge_rule_id', $rule->id)
+            ->where(fn ($query) => $domainId === null ? $query->whereNull('domain_id') : $query->where('domain_id', $domainId))
+            ->where(fn ($query) => $pathId === null ? $query->whereNull('path_id') : $query->where('path_id', $pathId))
+            ->first();
+        $expiresAt = $rule->duration_seconds === null ? null : CarbonImmutable::parse($lastMatchedAt)->addSeconds($rule->duration_seconds);
+
+        if ($verdict !== null) {
+            $verdict->update([
+                'matched_requests' => $isAggregate ? max($verdict->matched_requests, $matched) : $verdict->matched_requests + $matched,
+                'last_matched_at' => $lastMatchedAt,
+                'expires_at' => $expiresAt === null || $verdict->expires_at === null ? null : max($expiresAt, CarbonImmutable::parse($verdict->expires_at)),
+            ]);
+
+            return false;
+        }
+
+        if ($expiresAt?->lessThanOrEqualTo($now)) {
+            return false;
+        }
+
+        $rule->scopeVerdicts()->create([
+            'team_id' => $rule->team_id,
+            'tag' => $rule->script()->tag,
+            'domain_id' => $domainId,
+            'path_id' => $pathId,
+            'matched_requests' => $matched,
+            'first_matched_at' => $firstMatchedAt,
+            'last_matched_at' => $lastMatchedAt,
+            'expires_at' => $expiresAt,
+        ]);
+
+        return true;
     }
 
     /**

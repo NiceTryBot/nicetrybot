@@ -17,10 +17,15 @@ use Symfony\Component\HttpFoundation\IpUtils;
  * doesn't know yet, like the status before the origin answers, are unknown, and an expression that
  * depends on them evaluates to null rather than true or false. An edge that describes the client
  * ($described) also tells its language, place, network and edge tag, each of which may be missing.
- * The network category stays unknown: it's judged from the logs (RuleField::isLive()).
+ * The network category stays unknown: it's judged from the logs (RuleField::isLive()). Whoever holds
+ * the whole request (the gym check, say) can add what it works out for itself in $known, by field key:
+ * a field it names is known, and a list value (the client's kinds) matches when any of it does.
  */
 readonly class LiveRequest
 {
+    /**
+     * @param  array<string, int|string|list<string>|null>  $known  Fields the caller worked out itself, by key.
+     */
     public function __construct(
         public string $method,
         public string $host,
@@ -37,8 +42,24 @@ readonly class LiveRequest
         public ?int $asn = null,
         public ?string $network = null,
         public ?string $tag = null,
+        public array $known = [],
     ) {
         //
+    }
+
+    /**
+     * Get a copy that also knows these fields' values, keyed by the field's key (e.g. 'client' => a list
+     * of the client's kinds, 'tor' => the address when it's an exit node, else null).
+     *
+     * @param  array<string, int|string|list<string>|null>  $known
+     */
+    public function withKnown(array $known): self
+    {
+        return new self(
+            $this->method, $this->host, $this->path, $this->status, $this->ip, $this->ja4, $this->userAgent, $this->described,
+            $this->language, $this->countryCode, $this->region, $this->city, $this->asn, $this->network, $this->tag,
+            [...$this->known, ...$known],
+        );
     }
 
     /**
@@ -56,7 +77,7 @@ readonly class LiveRequest
             'like' => $this->like($node['field'], $node['pattern'], $node['negated']),
             'in' => $this->in($node['field'], $node['values'], $node['negated']),
             'cidr' => $this->ip === null ? null : IpUtils::checkIp($this->ip, $node['range']),
-            'null' => $this->isKnown($node['field']) ? ($this->value($node['field']) === null) !== $node['negated'] : null,
+            'null' => $this->isKnown($node['field']) ? in_array($this->value($node['field']), [null, []], true) !== $node['negated'] : null,
             default => null,
         };
     }
@@ -70,14 +91,25 @@ readonly class LiveRequest
             RuleField::Method, RuleField::Host, RuleField::Path, RuleField::Category, RuleField::Ip, RuleField::Ja4, RuleField::Ja4Alpn, RuleField::UserAgent => true,
             RuleField::Language, RuleField::Country, RuleField::Region, RuleField::City, RuleField::Asn, RuleField::Network, RuleField::NetworkKind, RuleField::Tag => $this->described,
             RuleField::Status => $this->status !== null,
-            default => false,
+            default => array_key_exists(self::key($field), $this->known),
         };
+    }
+
+    /**
+     * Get the key a field is written as in a script, e.g. 'client.behind'.
+     */
+    private static function key(RuleFieldDefinition $field): string
+    {
+        return (string) $field->value;
     }
 
     /**
      * Get the field's value in the form rules store it (method and category as their numbers).
      */
-    private function value(RuleFieldDefinition $field): int|string|null
+    /**
+     * @return int|string|list<string>|null
+     */
+    private function value(RuleFieldDefinition $field): int|string|array|null
     {
         return match ($field) {
             RuleField::Method => HttpMethod::fromVerb($this->method)->value,
@@ -97,7 +129,7 @@ readonly class LiveRequest
             RuleField::Network => $this->network,
             RuleField::NetworkKind => $this->asn === null ? null : NetworkKind::forAsn($this->asn)->value,
             RuleField::Tag => $this->tag,
-            default => null,
+            default => $this->known[self::key($field)] ?? null,
         };
     }
 
@@ -117,6 +149,14 @@ readonly class LiveRequest
             $stored = $field->storedValues($literal);
         } catch (InvalidArgumentException) {
             return false;
+        }
+
+        if (is_array($value)) {
+            return match ($operator) {
+                '=' => in_array($stored[0], $value, true),
+                '!=' => ! in_array($stored[0], $value, true),
+                default => false,
+            };
         }
 
         if ($field === RuleField::Category) {
@@ -151,8 +191,9 @@ readonly class LiveRequest
         }
 
         $regex = '/^'.str_replace(['%', '_'], ['.*', '.'], preg_quote(Str::lower($pattern), '/')).'$/s';
+        $matches = collect(is_array($value) ? $value : [$value])->contains(fn (int|string $one) => preg_match($regex, Str::lower((string) $one)) === 1);
 
-        return (preg_match($regex, Str::lower((string) $value)) === 1) !== $negated;
+        return $matches !== $negated;
     }
 
     /**
@@ -180,7 +221,9 @@ readonly class LiveRequest
             }
         }
 
-        return in_array($value, $stored) !== $negated;
+        $matches = is_array($value) ? array_intersect($value, $stored) !== [] : in_array($value, $stored);
+
+        return $matches !== $negated;
     }
 
     private function and(?bool $left, ?bool $right): ?bool

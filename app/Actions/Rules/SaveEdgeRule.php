@@ -7,6 +7,7 @@ use App\Models\EdgeRule;
 use App\Models\Team;
 use App\Support\RuleDestinationError;
 use App\Support\RuleDestinationHandlers;
+use App\Support\ScopedRuleDestination;
 use Illuminate\Support\Facades\DB;
 
 class SaveEdgeRule
@@ -47,11 +48,11 @@ class SaveEdgeRule
 
     /**
      * Link the destinations the script names and unlink the ones it no longer names, through each
-     * installed destination handler.
+     * installed destination handler. Rule packs call this too, for the rules they install.
      *
      * @throws RuleDestinationError
      */
-    private function reconcileDestinations(EdgeRule $rule, RuleScript $script): void
+    public function reconcileDestinations(EdgeRule $rule, RuleScript $script): void
     {
         foreach (app(RuleDestinationHandlers::class)->all() as $handler) {
             $named = array_key_exists($handler->keyword(), $script->destinations);
@@ -62,6 +63,12 @@ class SaveEdgeRule
                 }
 
                 continue;
+            }
+
+            if ($named && $script->isScoped() !== $handler instanceof ScopedRuleDestination) {
+                throw new RuleDestinationError($script->isScoped()
+                    ? __(':keyword acts on clients, so its rule tags ip or ja4, not host or path.', ['keyword' => $handler->keyword()])
+                    : __(':keyword acts on a site or path, so its rule tags host or path, not ip or ja4.', ['keyword' => $handler->keyword()]));
             }
 
             $named

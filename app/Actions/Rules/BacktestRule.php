@@ -46,6 +46,8 @@ class BacktestRule
         $networks = DB::table('networks')->whereIn('asn', $latest->pluck('asn')->filter()->unique()->values())->pluck('name', 'asn');
         $countries = DB::table('locations')->whereIn('id', $latest->pluck('location_id')->filter()->unique()->values())->pluck('country_code', 'id');
         $ja4s = DB::table('tls_fingerprints')->whereIn('id', $top->pluck('subject_ja4')->filter()->unique()->values())->pluck('value', 'id');
+        $hosts = DB::table('domains')->whereIn('id', $top->pluck('subject_domain')->filter()->unique()->values())->pluck('hostname', 'id');
+        $paths = DB::table('request_paths')->whereIn('id', $top->pluck('subject_path')->filter()->unique()->values())->pluck('path', 'id');
 
         return new RuleBacktest(
             days: $days,
@@ -53,6 +55,7 @@ class BacktestRule
             requestCount: $subjects->sum('requests'),
             outsideHostingCount: $subjects->reject(fn (object $subject) => $subject->hosting)->count(),
             subjects: $top->map(fn (object $subject) => [
+                'scope' => $script->isScoped() ? $this->scopeLabel($hosts->get($subject->subject_domain), $paths->get($subject->subject_path)) : null,
                 'client_ip' => $subject->subject_ip,
                 'ja4' => $subject->subject_ja4 === null ? null : $ja4s->get($subject->subject_ja4),
                 'network' => $networks->get($latest->get($subject->last_id)?->asn),
@@ -67,24 +70,41 @@ class BacktestRule
     }
 
     /**
+     * Name a site, path, or path on a site as a scope rule's backtest lists it: "shop.example/api/login",
+     * "shop.example", or "/api/login on every site".
+     */
+    private function scopeLabel(?string $host, ?string $path): string
+    {
+        return match (true) {
+            $host !== null && $path !== null => $host.$path,
+            $host !== null => $host,
+            default => __(':path on every site', ['path' => $path ?? '/']),
+        };
+    }
+
+    /**
      * Count a plain rule's matches per subject in the database: every matching request in the period,
      * not a sample. Grouped by subject and domain first, then by subject, so the distinct domains come
      * from two hashed groupings rather than a sort of millions of rows. A subject is on hosting when
      * every one of its requests came from a hosting network.
      *
-     * @return Collection<int, object{subject_ip: ?string, subject_ja4: ?int, requests: int, hosts: int, first_seen: string, last_seen: string, last_id: int, hosting: bool}>
+     * @return Collection<int, object{subject_ip: ?string, subject_ja4: ?int, subject_domain: ?int, subject_path: ?int, requests: int, hosts: int, first_seen: string, last_seen: string, last_id: int, hosting: bool}>
      */
     private function groupedSubjects(RuleScript $script, Builder $query): Collection
     {
         $columns = array_filter([
             'subject_ip' => in_array(RuleSubject::Ip, $script->subjects, true) ? 'edge_requests.client_ip' : null,
             'subject_ja4' => in_array(RuleSubject::Ja4, $script->subjects, true) ? 'edge_requests.ja4_id' : null,
+            'subject_path' => in_array(RuleSubject::Path, $script->subjects, true) ? 'edge_requests.path_id' : null,
         ]);
+        $byHost = in_array(RuleSubject::Host, $script->subjects, true);
 
         $perDomain = $query
             ->selectRaw(implode(', ', [
                 ($columns['subject_ip'] ?? 'null').' as subject_ip',
                 ($columns['subject_ja4'] ?? 'null').' as subject_ja4',
+                ($byHost ? 'edge_requests.domain_id' : 'null').' as subject_domain',
+                ($columns['subject_path'] ?? 'null').' as subject_path',
                 'edge_requests.domain_id as domain_id',
                 'count(*) as requests',
                 'min(edge_requests.occurred_at) as first_seen',
@@ -95,13 +115,15 @@ class BacktestRule
             ->groupByRaw(implode(', ', [...array_values($columns), 'edge_requests.domain_id']));
 
         $subjects = WholePeriodQuery::run(fn () => DB::query()->fromSub($perDomain, 'per_domain')
-            ->selectRaw('subject_ip, subject_ja4, sum(requests) as requests, count(*) as hosts, min(first_seen) as first_seen, max(last_seen) as last_seen, max(last_id) as last_id, min(hosting) as hosting')
-            ->groupBy('subject_ip', 'subject_ja4')
+            ->selectRaw('subject_ip, subject_ja4, subject_domain, subject_path, sum(requests) as requests, count(*) as hosts, min(first_seen) as first_seen, max(last_seen) as last_seen, max(last_id) as last_id, min(hosting) as hosting')
+            ->groupBy('subject_ip', 'subject_ja4', 'subject_domain', 'subject_path')
             ->get(), hashAggregates: true);
 
         return $subjects->map(fn (object $subject) => (object) [
-            'subject_ip' => $subject->subject_ip,
+            'subject_ip' => $subject->subject_ip === null ? null : (string) $subject->subject_ip,
             'subject_ja4' => $subject->subject_ja4 === null ? null : (int) $subject->subject_ja4,
+            'subject_domain' => $subject->subject_domain === null ? null : (int) $subject->subject_domain,
+            'subject_path' => $subject->subject_path === null ? null : (int) $subject->subject_path,
             'requests' => (int) $subject->requests,
             'hosts' => (int) $subject->hosts,
             'first_seen' => (string) $subject->first_seen,
@@ -115,7 +137,7 @@ class BacktestRule
      * Replay a HAVING rule over each subject's requests in time order, keeping the subjects where HAVING
      * held in some window.
      *
-     * @return Collection<int, object{subject_ip: ?string, subject_ja4: ?int, requests: int, hosts: int, first_seen: string, last_seen: string, last_id: int, hosting: bool}>
+     * @return Collection<int, object{subject_ip: ?string, subject_ja4: ?int, subject_domain: ?int, subject_path: ?int, requests: int, hosts: int, first_seen: string, last_seen: string, last_id: int, hosting: bool}>
      */
     private function replayedSubjects(RuleScript $script, Builder $query): Collection
     {
@@ -124,6 +146,8 @@ class BacktestRule
         $rows = WholePeriodQuery::run(fn () => $query->selectRaw(implode(', ', [
             in_array(RuleSubject::Ip, $script->subjects, true) ? 'edge_requests.client_ip as subject_ip' : 'null as subject_ip',
             in_array(RuleSubject::Ja4, $script->subjects, true) ? 'edge_requests.ja4_id as subject_ja4' : 'null as subject_ja4',
+            in_array(RuleSubject::Host, $script->subjects, true) ? 'edge_requests.domain_id as subject_domain' : 'null as subject_domain',
+            in_array(RuleSubject::Path, $script->subjects, true) ? 'edge_requests.path_id as subject_path' : 'null as subject_path',
             'edge_requests.id as id',
             'edge_requests.occurred_at as occurred_at',
             'networks.kind as network_kind',
@@ -132,11 +156,13 @@ class BacktestRule
             ...$filters,
         ]), $filterBindings)->orderBy('edge_requests.occurred_at')->limit(self::WINDOWED_ROW_LIMIT)->get());
 
-        return $rows->groupBy(fn (object $row) => $row->subject_ip.'|'.$row->subject_ja4)
+        return $rows->groupBy(fn (object $row) => $row->subject_ip.'|'.$row->subject_ja4.'|'.$row->subject_domain.'|'.$row->subject_path)
             ->filter(fn (Collection $requests) => $this->anyWindowMatches($script, $requests))
             ->map(fn (Collection $requests) => (object) [
-                'subject_ip' => $requests->first()->subject_ip,
+                'subject_ip' => $requests->first()->subject_ip === null ? null : (string) $requests->first()->subject_ip,
                 'subject_ja4' => $requests->first()->subject_ja4 === null ? null : (int) $requests->first()->subject_ja4,
+                'subject_domain' => $requests->first()->subject_domain === null ? null : (int) $requests->first()->subject_domain,
+                'subject_path' => $requests->first()->subject_path === null ? null : (int) $requests->first()->subject_path,
                 'requests' => $requests->count(),
                 'hosts' => $requests->pluck('host')->unique()->count(),
                 'first_seen' => (string) $requests->first()->occurred_at,

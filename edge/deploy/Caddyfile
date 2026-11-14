@@ -20,6 +20,9 @@
 	order nicetry_allow before nicetry_gym
 	# Tarpitted clients wait first, so even a request the PHP guard or a lockdown refuses costs them the wait.
 	order nicetry_tarpit after nicetry_allow
+	# S3 Assets: CloudFront's pulls become requests for the key's site (let past the tarpit, gym and verdict),
+	# and visitors asking a site that's on for one of its files go to the CDN, before the tarpit holds anyone.
+	order nicetry_assets before nicetry_tarpit
 	# PHP's session upload progress field is refused before anything reaches an origin (or the gym).
 	order nicetry_php_guard after nicetry_tarpit
 	# A locked-down team's hostnames get the maintenance page before anything else (gym, origin) hears of it.
@@ -31,6 +34,10 @@
 	# A team's response rewrites ("foo" becomes "bar") sit inside encode, around reverse_proxy, so they read
 	# what the origin sent and encode compresses what they wrote.
 	order nicetry_rewrite after encode
+	# Honeypots: a trapped path's 404 from the origin is answered by the team's honeypot instead. Inside
+	# encode, after everything before the origin (fingerprints, gym, tarpits, verdicts), outside rewrites.
+	order nicetry_honeypot after encode
+	order nicetry_rewrite after nicetry_honeypot
 	# Where each domain's traffic goes (set in NiceTryBot), handed to reverse_proxy as vars.
 	order nicetry_origins after nicetry_gym
 	# Each domain's chosen Server header wraps the default disguise, so it wins.
@@ -94,6 +101,18 @@
 		endpoint {$NICETRY_APP_URL}/caddy/allow-feed
 		token {$NICETRY_EDGE_TOKEN}
 		interval 30s
+	}
+
+	# S3 Assets: a site's static files come from the installation's CloudFront (<key>.<asset domain>). On the
+	# pull host, CloudFront's /<key>/<path> (with its secret, GET or HEAD, a listed file type) is served as
+	# <path> on that key's site and isn't logged; anything else there gets a 404. A visitor asking a site
+	# that's on for one of its files gets a 302 to the CDN (logged with bot_tag s3_assets), except a classic
+	# script or stylesheet, which an integrity hash may pin. Pages are pointed at the CDN by nicetry_rewrite.
+	# A 404 from the feed (add-on off) means no CDN.
+	nicetry_assets {
+		endpoint {$NICETRY_APP_URL}/caddy/assets-feed
+		token {$NICETRY_EDGE_TOKEN}
+		interval 10s
 	}
 
 	# CVE-2026-109618 / CVE-2026-109619: PHP parses a multipart field named PHP_SESSION_UPLOAD_PROGRESS
@@ -311,6 +330,14 @@
 	header @cache_img >Cache-Control "public, max-age=86400"
 	header @cache_static >Cache-Control "public, max-age=604800"
 	encode gzip
+	# Honeypots (the Honeypots add-on): on a team's trapped paths (globs or regexes, on all its domains or
+	# one), a 404 from the origin is answered by the team's honeypot (a Galah server of its own) instead.
+	# Paths the site serves are never touched; allowed clients (White List, Nice Bots) get the real 404.
+	nicetry_honeypot {
+		endpoint {$NICETRY_APP_URL}/caddy/honeypot-feed
+		token {$NICETRY_EDGE_TOKEN}
+		interval 10s
+	}
 	# Rewrites: text a team set in NiceTryBot to change in its origins' responses (every "foo" becomes
 	# "bar"), on all its domains or one, in HTML pages or any text. On those hostnames the origin is asked
 	# for an uncompressed, whole answer; one that isn't text or is over 4 MB passes untouched.

@@ -1,6 +1,7 @@
 package nicetrycapture
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,6 +24,11 @@ const (
 	failedTTL   = 10 * time.Second
 	// At most this many lookups in flight; any more wait their turn.
 	maxResolving = 16
+	// Past this many hosts waiting on an answer, a new host is turned away instead of queued, so a flood
+	// of made-up Host headers can't pile up behind the slots.
+	maxPending = 64
+	// How long a lookup waits for a free slot before giving up on this request.
+	slotWait = 250 * time.Millisecond
 )
 
 var hostnamePattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
@@ -81,8 +87,9 @@ func newResolver(endpoint, token string, client *http.Client) *originResolver {
 }
 
 // lookup returns the host's route, asking the app if no recent answer is remembered. Concurrent
-// requests for the same host share one lookup.
-func (r *originResolver) lookup(host string) (originRoute, bool) {
+// requests for the same host share one lookup. A lookup is dropped when the visitor goes away, when
+// no slot frees up in time, or when too many hosts are already waiting; none of those are remembered.
+func (r *originResolver) lookup(ctx context.Context, host string) (originRoute, bool) {
 	if !hostnamePattern.MatchString(host) {
 		return originRoute{}, false
 	}
@@ -94,64 +101,87 @@ func (r *originResolver) lookup(host string) (originRoute, bool) {
 	}
 	call, waiting := r.inFlight[host]
 	if !waiting {
+		if len(r.inFlight) >= maxPending {
+			r.mu.Unlock()
+			return originRoute{}, false
+		}
 		call = &resolveCall{done: make(chan struct{})}
 		r.inFlight[host] = call
 	}
 	r.mu.Unlock()
 
 	if waiting {
-		<-call.done
-		return derefRoute(call.route)
+		select {
+		case <-call.done:
+			return derefRoute(call.route)
+		case <-ctx.Done():
+			return originRoute{}, false
+		}
 	}
 
-	route, ttl := r.fetch(host)
+	route, ttl, answered := r.fetch(ctx, host)
 	call.route = route
 
 	r.mu.Lock()
-	r.answers[host] = resolvedHost{route: route, until: time.Now().Add(ttl)}
+	if answered {
+		r.answers[host] = resolvedHost{route: route, until: time.Now().Add(ttl)}
+		r.pruneLocked()
+	}
 	delete(r.inFlight, host)
-	r.pruneLocked()
 	r.mu.Unlock()
 	close(call.done)
 
 	return derefRoute(route)
 }
 
-func (r *originResolver) fetch(host string) (*originRoute, time.Duration) {
-	r.slots <- struct{}{}
+// fetch asks the app about the host. answered is false when the app was never asked or the visitor
+// left mid-ask, so the caller doesn't remember a non-answer.
+func (r *originResolver) fetch(ctx context.Context, host string) (route *originRoute, ttl time.Duration, answered bool) {
+	wait := time.NewTimer(slotWait)
+	defer wait.Stop()
+	select {
+	case r.slots <- struct{}{}:
+	case <-wait.C:
+		return nil, 0, false
+	case <-ctx.Done():
+		return nil, 0, false
+	}
 	defer func() { <-r.slots }()
 
 	logger := caddy.Log().Named("nicetry_origins")
 
-	req, err := http.NewRequest(http.MethodGet, r.endpoint+"?host="+url.QueryEscape(host), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.endpoint+"?host="+url.QueryEscape(host), nil)
 	if err != nil {
-		return nil, failedTTL
+		return nil, failedTTL, true
 	}
 	req.Header.Set("Authorization", "Bearer "+r.token)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := r.client.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, 0, false
+		}
 		logger.Warn("couldn't resolve a new host", zap.String("host", host), zap.Error(err))
-		return nil, failedTTL
+		return nil, failedTTL, true
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return nil, declinedTTL
+		return nil, declinedTTL, true
 	default:
 		logger.Warn("couldn't resolve a new host", zap.String("host", host), zap.Error(fmt.Errorf("resolve returned %d", resp.StatusCode)))
-		return nil, failedTTL
+		return nil, failedTTL, true
 	}
 
-	var route originRoute
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&route); err != nil || !validOrigin(route) {
-		return nil, failedTTL
+	var found originRoute
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&found); err != nil || !validOrigin(found) {
+		return nil, failedTTL, true
 	}
 	logger.Info("resolved a new host", zap.String("host", host))
-	return &route, resolvedTTL
+	return &found, resolvedTTL, true
 }
 
 // pruneLocked drops expired answers once the table gets big, so random hostnames can't grow it forever.

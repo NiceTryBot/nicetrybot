@@ -1,6 +1,8 @@
 <?php
 
+use App\Addons\AddonSwitchboard;
 use App\Enums\TeamRole;
+use App\Models\AddonSwitch;
 use App\Models\Domain;
 use App\Models\EdgeRequest;
 use App\Models\EdgeRule;
@@ -15,7 +17,7 @@ use NiceTry\Tarpit\Enums\TarpitWhenFull;
 use NiceTry\Tarpit\Models\Tarpit;
 use NiceTry\Tarpit\Models\TarpitHold;
 
-test('an admin sets up a tarpit from the page, with its rules, waits and limits', function () {
+test('an admin sets up a tarpit from the page, with its waits and limits, and its rules show on it', function () {
     $user = User::factory()->create();
     $team = $user->currentTeam;
     $rule = EdgeRule::factory()->for($team)->create(['name' => 'Probers']);
@@ -27,7 +29,6 @@ test('an admin sets up a tarpit from the page, with its rules, waits and limits'
     Livewire::test('tarpit::index')
         ->call('create')
         ->set('name', 'Probers')
-        ->set('ruleIds', [$rule->id])
         ->set('countsNotFound', true)
         ->set('notFoundCount', 6)
         ->set('delays', '3, 9,27')
@@ -47,19 +48,19 @@ test('an admin sets up a tarpit from the page, with its rules, waits and limits'
         ->and($tarpit->burst_count)->toBeNull()
         ->and($tarpit->after_wait)->toBe(TarpitAfterWait::NotFound)
         ->and($tarpit->when_full)->toBe(TarpitWhenFull::Pass)
-        ->and($tarpit->rules->modelKeys())->toBe([$rule->id])
+        ->and($tarpit->rules)->toBeEmpty()
         ->and($tarpit->domains->modelKeys())->toBe([$shop->id])
         ->and($tarpit->describeWaits())->toBe('free, 3 s, 9 s, 20 s, then 20 s');
 
+    // Rules send clients in with their TARPIT clause; the page lists them, and saving keeps them.
+    $tarpit->rules()->attach($rule);
+
     Livewire::test('tarpit::index')
-        ->assertSee('Probers')
+        ->assertSeeHtml('data-test="tarpit-rule"')
         ->call('edit', $tarpit->id)
         ->assertSet('delays', '3, 9, 20')
-        ->set('ruleIds', [])
+        ->assertSeeHtml('data-test="tarpit-editor-rules"')
         ->set('countsNotFound', false)
-        ->set('takesGymNoShows', false)
-        ->call('save')
-        ->assertHasErrors('ruleIds')
         ->set('countsBursts', true)
         ->call('save')
         ->assertHasNoErrors()
@@ -67,7 +68,17 @@ test('an admin sets up a tarpit from the page, with its rules, waits and limits'
 
     expect($tarpit->fresh()->burst_count)->toBe(30)
         ->and($tarpit->fresh()->enabled)->toBeFalse()
-        ->and($tarpit->fresh()->rules)->toBeEmpty();
+        ->and($tarpit->fresh()->rules->modelKeys())->toBe([$rule->id]);
+});
+
+test('a tarpit no rule sends clients to says how to send them', function () {
+    $user = User::factory()->create();
+    Tarpit::factory()->for($user->currentTeam)->create(['name' => 'Empty']);
+    $this->actingAs($user);
+
+    Livewire::test('tarpit::index')
+        ->assertSeeHtml('data-test="tarpit-no-rules"')
+        ->assertSee("Add TARPIT 'Empty' to one.");
 });
 
 test('the activity chart counts holds over the period and toggles to tarpits added', function () {
@@ -195,4 +206,72 @@ test('a rule connected to a tarpit sits in the board\'s Tarpit column, until the
     $tarpit->update(['enabled' => false]);
 
     expect($columns()['tarpit'])->toBe(0)->and($columns()['tag'])->toBe(1);
+});
+
+test('the starter rules make their tarpits and fill them: the answer held for its status, the probe on the request', function () {
+    $user = User::factory()->create();
+    $this->actingAs($user);
+
+    foreach (['tarpit-http-status', 'tarpit-probe-path'] as $template) {
+        Livewire::test('pages::rules.index')
+            ->call('newRule', $template)
+            ->call('save')
+            ->assertHasNoErrors();
+    }
+
+    $tarpits = Tarpit::query()->with('rules')->orderBy('name')->get()->keyBy('name');
+
+    expect($tarpits->keys()->all())->toBe(['tarpit-http-status', 'tarpit-probe-path'])
+        ->and($tarpits['tarpit-http-status']->rules)->toHaveCount(1)
+        ->and($tarpits['tarpit-probe-path']->rules)->toHaveCount(1);
+
+    Livewire::test('tarpit::index')
+        ->assertSee('403, 404, 429, 500')
+        ->assertSee('on the request');
+});
+
+test('without Tarpit Pro the editor saves no ladder', function () {
+    $user = User::factory()->create();
+    $this->actingAs($user);
+
+    AddonSwitch::factory()->create(['slug' => Tarpit::PRO_ADDON]);
+    app(AddonSwitchboard::class)->forget();
+
+    Livewire::test('tarpit::index')
+        ->call('create')
+        ->assertDontSeeHtml('data-test="tarpit-cooldown"')
+        ->set('name', 'Free')
+        ->set('cooldowns', '10, 20')   // Pro: the ladder, should be ignored
+        ->call('save')
+        ->assertHasNoErrors();
+
+    $tarpit = Tarpit::sole();
+    expect($tarpit->cooldowns)->toBeNull();
+});
+
+test('a Tarpit Pro tarpit steps clients back on its ladder, or only on the start-over time', function () {
+    $user = User::factory()->create();
+    $this->actingAs($user);
+
+    $component = Livewire::test('tarpit::index')
+        ->call('create')
+        ->set('name', 'Laddered')
+        ->set('cooldowns', '10, 20, x')
+        ->call('save')
+        ->assertHasErrors('cooldowns')
+        ->set('cooldowns', '10, 20, 30, 60, 200')
+        ->call('save')
+        ->assertHasNoErrors();
+
+    $tarpit = Tarpit::sole();
+    expect($tarpit->cooldowns)->toBe([10, 20, 30, 60, 120]) // 200 clamped to the two-minute cap
+        ->and($tarpit->describeWaits())->toBe('free, 2 s, 8 s, 24 s, then 30 s · step back after 10 s, 20 s, 30 s, 60 s, 120 s of quiet');
+
+    $component->call('edit', $tarpit->id)
+        ->assertSet('cooldowns', '10, 20, 30, 60, 120')
+        ->set('cooldowns', '')
+        ->call('save')
+        ->assertHasNoErrors();
+
+    expect($tarpit->fresh()->cooldowns)->toBeNull();
 });

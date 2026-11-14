@@ -2,6 +2,8 @@
 
 namespace NiceTry\Tarpit\Models;
 
+use App\Addons\Addons;
+use App\Addons\AddonSwitchboard;
 use App\Models\Domain;
 use App\Models\EdgeRule;
 use App\Models\Team;
@@ -21,9 +23,12 @@ use NiceTry\Tarpit\Enums\TarpitWhenFull;
 /**
  * A team's tarpit: clients in it get its free tries, then each request waits at the edge a little
  * longer than the last (its delays in turn, never longer than its cap) before going on, getting a 404
- * or being hung up on. Clients get in through the rules it takes (the clients holding their verdicts,
- * and requests their single-request WHERE matches), as gym no-shows, or by the edge's own count of 404s
- * and bursts. It covers the team's domains in Enforce mode: all of them, or those it names.
+ * or being hung up on. Rules decide who goes in, through their TARPIT clause: the clients holding their
+ * verdicts, the very requests a single-request rule matches (a probe path), and the origin's answers
+ * whose status a status-only rule names (StatusHolds). Gym no-shows and the edge's own count of 404s and
+ * bursts put clients in without a rule. Quiet for a step's cooldown, a client steps back one try (the
+ * ladder); quiet for the forget time, it starts over. It covers the team's domains in Enforce mode: all
+ * of them, or those it names.
  *
  * @property int $id
  * @property int $team_id
@@ -37,6 +42,7 @@ use NiceTry\Tarpit\Enums\TarpitWhenFull;
  * @property TarpitWhenFull $when_full
  * @property TarpitAfterWait $after_wait
  * @property int $forget_after_seconds How long a client must be quiet to start over.
+ * @property list<int>|null $cooldowns Seconds of quiet to step back from each try, in turn; null steps back only on the forget time.
  * @property bool $takes_gym_no_shows
  * @property int|null $not_found_count
  * @property int $not_found_within_seconds
@@ -60,6 +66,7 @@ use NiceTry\Tarpit\Enums\TarpitWhenFull;
     'when_full',
     'after_wait',
     'forget_after_seconds',
+    'cooldowns',
     'takes_gym_no_shows',
     'not_found_count',
     'not_found_within_seconds',
@@ -80,6 +87,40 @@ class Tarpit extends Model
      * The longest any tarpit may hold a request, in seconds.
      */
     public const int LONGEST_DELAY = 120;
+
+    /**
+     * The response statuses a status-only rule may have a tarpit hold. 401 and 403 catch auth and
+     * forbidden-path probing; 500 catches input that breaks the app (opt in with care: holding on 500
+     * keeps connections open exactly when the origin is already struggling). 502/503 are left out:
+     * upstream being down is never held.
+     */
+    public const array ALLOWED_STATUSES = [401, 403, 404, 405, 429, 500];
+
+    /**
+     * The step-back ladder a tarpit suggests: the quiet needed to drop each try, in turn, to two minutes.
+     */
+    public const array DEFAULT_COOLDOWNS = [10, 20, 30, 60, 120];
+
+    /**
+     * The longest cooldown a tarpit may set, in seconds.
+     */
+    public const int LONGEST_COOLDOWN = 120;
+
+    /**
+     * The paid add-on that unlocks the advanced holds: any response status, asset-safe 404s, the
+     * per-try cooldown ladder.
+     */
+    public const string PRO_ADDON = 'tarpit-pro';
+
+    /**
+     * Whether Tarpit Pro is installed and on (licensed, where keys are enforced). When it isn't, the
+     * advanced holds fall back to the free behaviour, in the editor and in the edge feed.
+     */
+    public static function proIsOn(): bool
+    {
+        return app(Addons::class)->find(self::PRO_ADDON) !== null
+            && app(AddonSwitchboard::class)->isOn(self::PRO_ADDON);
+    }
 
     /**
      * The most requests one tarpit may hold at once on an edge. The edge also caps them across every
@@ -172,7 +213,15 @@ class Tarpit extends Model
             ...array_map(fn (int $seconds) => __(':s s', ['s' => min($seconds, $this->max_delay_seconds)]), $this->delays),
         ];
 
-        return __(':steps, then :cap s', ['steps' => implode(', ', $steps ?: [__('no free try')]), 'cap' => $this->max_delay_seconds]);
+        $waits = __(':steps, then :cap s', ['steps' => implode(', ', $steps ?: [__('no free try')]), 'cap' => $this->max_delay_seconds]);
+
+        if ($this->cooldowns === null || $this->cooldowns === []) {
+            return $waits;
+        }
+
+        $cooldowns = array_map(fn (int $seconds) => __(':s s', ['s' => $seconds]), $this->cooldowns);
+
+        return __(':waits · step back after :cooldowns of quiet', ['waits' => $waits, 'cooldowns' => implode(', ', $cooldowns)]);
     }
 
     protected function casts(): array
@@ -187,6 +236,7 @@ class Tarpit extends Model
             'when_full' => TarpitWhenFull::class,
             'after_wait' => TarpitAfterWait::class,
             'forget_after_seconds' => 'integer',
+            'cooldowns' => 'array',
             'takes_gym_no_shows' => 'boolean',
             'not_found_count' => 'integer',
             'not_found_within_seconds' => 'integer',

@@ -1,11 +1,13 @@
 <?php
 
 use App\Actions\Domains\MergeDomains;
+use App\Addons\Addon;
 use App\Addons\Addons;
 use App\Addons\AddonSwitchboard;
 use App\Gym\ObstacleRegistry;
 use App\Gym\RoutineTemplates;
 use App\Models\AddonSwitch;
+use App\Models\Administrator;
 use App\Models\Domain;
 use App\Models\GymRoutine;
 use App\Models\GymSession;
@@ -87,6 +89,21 @@ test('a switch another server wrote to the shared cache is read on the next requ
     app()->forgetScopedInstances();
 
     $this->get(route('example.settings'))->assertNotFound();
+});
+
+test('an add-on that needs another goes off with it, says why, and comes back when it does', function () {
+    app(Addons::class)->add(new Addon('acme/dependent', 'dependent', 'Dependent', '', null, false, __DIR__, needs: ['example']));
+    $switch = AddonSwitch::factory()->create(['slug' => 'example']);
+
+    expect(app(AddonSwitchboard::class)->isOn('dependent'))->toBeFalse();
+
+    $this->actingAs(Administrator::factory()->create()->user)
+        ->get(route('admin.addons'))
+        ->assertSee('Off: needs Example');
+
+    $switch->delete();
+
+    expect(app(AddonSwitchboard::class)->isOn('dependent'))->toBeTrue();
 });
 
 test('the core and add-ons that are on stay on when another add-on is off', function () {

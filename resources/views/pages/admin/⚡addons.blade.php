@@ -17,7 +17,8 @@ use Livewire\Attributes\Locked;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 
-new #[Title('Add-ons')] class extends Component {
+new #[Title('Add-ons')] class extends Component
+{
     /**
      * The add-on the confirmation is about, and what it confirms: "off" or "remove".
      */
@@ -295,6 +296,8 @@ new #[Title('Add-ons')] class extends Component {
                             <flux:badge size="sm" color="amber" data-test="addon-status">{{ __('Removing at next deploy') }}</flux:badge>
                         @elseif ($switch?->isOff())
                             <flux:badge size="sm" color="zinc" data-test="addon-status">{{ __('Off') }}</flux:badge>
+                        @elseif (($waitingOn = app(AddonSwitchboard::class)->waitingOn($addon)) !== [])
+                            <flux:badge size="sm" color="zinc" data-test="addon-status">{{ __('Off: needs :addons', ['addons' => collect($waitingOn)->pluck('name')->join(', ')]) }}</flux:badge>
                         @elseif (! app(AddonSwitchboard::class)->isOn($addon->slug))
                             <flux:badge size="sm" color="zinc" data-test="addon-status">{{ __('Off: no licence') }}</flux:badge>
                         @else

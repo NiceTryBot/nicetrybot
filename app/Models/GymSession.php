@@ -296,9 +296,10 @@ class GymSession extends Model
 
     /**
      * Get the signed pass cookie a cleared visitor carries back to the edge:
-     * "<team>.<expires>.<token>.<hmac>", signed with the gym pass secret.
+     * "<team>.<expires>.<token>.<hmac>", signed with the gym pass secret. Without a domain it's kept to
+     * the host that set it.
      */
-    public function passCookie(int $seconds, bool $secure): Cookie
+    public function passCookie(int $seconds, bool $secure, ?string $domain = null): Cookie
     {
         $payload = $this->team_id.'.'.now()->addSeconds($seconds)->getTimestamp().'.'.$this->token;
         $secret = (string) (config('gym.pass_secret') ?: config('app.key'));
@@ -307,6 +308,7 @@ class GymSession extends Model
             self::PASS_COOKIE,
             $payload.'.'.hash_hmac('sha256', $payload, $secret),
             minutes: (int) ceil($seconds / 60),
+            domain: $domain,
             secure: $secure,
             sameSite: 'lax',
         );

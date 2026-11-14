@@ -89,7 +89,7 @@ readonly class RuleScript
      */
     public function isLive(): bool
     {
-        if ($this->having !== null) {
+        if ($this->having !== null || $this->isScoped()) {
             return false;
         }
 
@@ -100,6 +100,17 @@ readonly class RuleScript
         }
 
         return true;
+    }
+
+    /**
+     * Determine if the rule's subjects are a scope (a site, a path, or both) rather than a client. Its
+     * verdicts are scope verdicts (App\Models\ScopeVerdict): they cover everyone on that site or path
+     * while they last, and only a destination that takes scopes (Swarm Mode) can act on them. One request
+     * never decides it, so the edge never judges it live.
+     */
+    public function isScoped(): bool
+    {
+        return $this->subjects !== [] && $this->subjects[0]->isScope();
     }
 
     /**

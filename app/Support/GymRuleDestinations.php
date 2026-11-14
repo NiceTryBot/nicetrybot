@@ -6,6 +6,7 @@ use App\Data\GymEntry;
 use App\Enums\GymExit;
 use App\Enums\GymField;
 use App\Enums\GymOperator;
+use App\Gym\FingerprintingRoutines;
 use App\Models\GymRoutine;
 use App\Models\Team;
 use Illuminate\Database\Eloquent\Collection;
@@ -16,6 +17,11 @@ use Illuminate\Database\Eloquent\Collection;
  */
 class GymRuleDestinations implements RuleDestinationSource
 {
+    public function __construct(private FingerprintingRoutines $fingerprinting)
+    {
+        //
+    }
+
     public function columns(): array
     {
         return [
@@ -27,6 +33,7 @@ class GymRuleDestinations implements RuleDestinationSource
     public function destinations(Team $team, Collection $rules): array
     {
         $routines = $team->gymRoutines()->get();
+        $fingerprinting = $this->fingerprinting->ids($routines->where('enabled', true));
         $destinations = [];
 
         foreach ($rules as $rule) {
@@ -41,6 +48,7 @@ class GymRuleDestinations implements RuleDestinationSource
                     icon: 'fire',
                     url: route('gym.routines.edit', ['current_team' => $team, 'routine' => $routine]),
                     note: $routine->enabled ? $this->note($routine) : null,
+                    fingerprints: in_array($routine->id, $fingerprinting, true),
                 );
             }
         }

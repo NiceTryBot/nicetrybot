@@ -154,6 +154,14 @@ class RuleScriptParser
 
         $script = new RuleScript($action, $subjects, $tag, $duration, $where, $window, $having, $until, $every, $destinations);
 
+        if ($script->isScoped() && $action !== RuleAction::Tag) {
+            $this->fail(__('A rule over a host or path tags it: TAG host AS \'name\' FOR 5 MINUTES.'));
+        }
+
+        if ($script->isScoped() && $until !== null) {
+            $this->fail(__('UNTIL lifts a client\'s verdict; a rule over a host or path just runs out.'));
+        }
+
         if ($action === RuleAction::Fingerprint && ! $script->isLive()) {
             $this->fail(__('FINGERPRINT happens on the request itself, so one request has to decide it: no WITHIN, and only what the edge knows before it answers.'));
         }
@@ -322,11 +330,19 @@ class RuleScriptParser
         do {
             $token = $this->expect('word', $grouping
                 ? __('Say what to group by: ip, ja4, or both (ip, ja4).')
-                : __('Say what to :action: ip, ja4, or both (ip, ja4).', ['action' => 'block']));
+                : __('Say what to :action: ip, ja4, or both (ip, ja4); or a scope: host, path, or both.', ['action' => 'block']));
             $subject = RuleSubject::tryFrom(strtolower($token['value']))
                 ?? $this->fail($grouping
                     ? __('You can group by ip or ja4, not “:value”.', ['value' => $token['value']])
-                    : __('You can block or tag ip or ja4, not “:value”.', ['value' => $token['value']]), back: 1);
+                    : __('You can block or tag ip or ja4 (or a scope: host, path), not “:value”.', ['value' => $token['value']]), back: 1);
+
+            if ($grouping && $subject->isScope()) {
+                $this->fail(__('You can group by ip or ja4, not “:value”.', ['value' => $token['value']]), back: 1);
+            }
+
+            if ($subjects !== [] && reset($subjects)->isScope() !== $subject->isScope()) {
+                $this->fail(__('A rule acts on clients (ip, ja4) or on a scope (host, path), not both.'), back: 1);
+            }
 
             $subjects[$subject->value] = $subject;
         } while ($this->accept('comma'));
